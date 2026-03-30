@@ -1,0 +1,12 @@
+node_modules
+.next
+dist
+coverage
+*.log
+*.tsbuildinfo
+.env
+.env.local
+.env.docker
+apps/web/.env.local
+apps/worker/.env
+packages/db/.env
