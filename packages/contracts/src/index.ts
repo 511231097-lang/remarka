@@ -1,21 +1,38 @@
 import { z } from "zod";
 
-export const ENTITY_TYPES = [
-  "character",
-  "location",
-  "event",
-] as const;
+export const ENTITY_TYPES = ["character", "location", "event"] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];
-
 export const EntityTypeSchema = z.enum(ENTITY_TYPES);
-export const LOCATION_ENTITY_TYPES = ["location"] as const;
-export type LocationEntityType = (typeof LOCATION_ENTITY_TYPES)[number];
-export const LocationEntityTypeSchema = z.enum(LOCATION_ENTITY_TYPES);
 
-export const ANALYSIS_STATUSES = ["idle", "queued", "running", "completed", "failed"] as const;
-export type AnalysisStatus = (typeof ANALYSIS_STATUSES)[number];
+export const ANALYSIS_RUN_STATES = ["queued", "running", "completed", "failed", "superseded"] as const;
+export type AnalysisRunState = (typeof ANALYSIS_RUN_STATES)[number];
+export const AnalysisRunStateSchema = z.enum(ANALYSIS_RUN_STATES);
 
-export const AnalysisStatusSchema = z.enum(ANALYSIS_STATUSES);
+export const ANALYSIS_RUN_PHASES = [
+  "queued",
+  "prepass",
+  "entity_pass",
+  "sweep",
+  "mention_completion",
+  "apply",
+  "completed",
+  "failed",
+  "superseded",
+] as const;
+export type AnalysisRunPhase = (typeof ANALYSIS_RUN_PHASES)[number];
+export const AnalysisRunPhaseSchema = z.enum(ANALYSIS_RUN_PHASES);
+
+export const MENTION_ROUTINGS = ["deterministic", "patch"] as const;
+export type MentionRouting = (typeof MENTION_ROUTINGS)[number];
+export const MentionRoutingSchema = z.enum(MENTION_ROUTINGS);
+
+export const MENTION_DECISIONS = ["pending", "accepted", "rejected"] as const;
+export type MentionDecisionStatus = (typeof MENTION_DECISIONS)[number];
+export const MentionDecisionStatusSchema = z.enum(MENTION_DECISIONS);
+
+export const MENTION_CANDIDATE_TYPES = ["alias", "role", "coreference", "ambiguous"] as const;
+export type MentionCandidateType = (typeof MENTION_CANDIDATE_TYPES)[number];
+export const MentionCandidateTypeSchema = z.enum(MENTION_CANDIDATE_TYPES);
 
 export const RichTextDocumentSchema = z
   .object({
@@ -59,68 +76,6 @@ function extractRichNodeText(node: unknown): string {
   return children.map((child) => extractRichNodeText(child)).join("");
 }
 
-export function richTextToPlainText(richContent: unknown): string {
-  const parsed = RichTextDocumentSchema.safeParse(richContent);
-  if (!parsed.success) return "";
-
-  const blocks = Array.isArray(parsed.data.content) ? parsed.data.content : [];
-  const parts = blocks
-    .map((block) => extractRichNodeText(block))
-    .map((text) => text.trim())
-    .filter(Boolean);
-
-  return canonicalizeDocumentContent(parts.join("\n\n"));
-}
-
-export const ExtractionEntitySchema = z
-  .object({
-    entityRef: z.string().trim().min(1).max(120),
-    type: EntityTypeSchema,
-    name: z.string().trim().min(1),
-    summary: z.string().trim().max(500).optional().default(""),
-  })
-  .strict();
-
-export const ExtractionMentionSchema = z.object({
-  entityRef: z.string().trim().min(1).max(120),
-  type: EntityTypeSchema,
-  name: z.string().trim().min(1),
-  paragraphIndex: z.number().int().nonnegative(),
-  mentionText: z.string().trim().min(1),
-});
-
-export const ExtractionAnnotationSchema = z.object({
-  entityRef: z.string().trim().min(1).max(120).optional(),
-  paragraphIndex: z.number().int().nonnegative(),
-  type: EntityTypeSchema,
-  label: z.string().trim().min(1).max(120),
-  name: z.string().trim().min(1).optional(),
-});
-
-export const ExtractionLocationContainmentSchema = z.object({
-  childRef: z.string().trim().min(1).max(120),
-  parentRef: z.string().trim().min(1).max(120),
-});
-
-export const ExtractionResultSchema = z.object({
-  entities: z.array(ExtractionEntitySchema).default([]),
-  mentions: z.array(ExtractionMentionSchema).default([]),
-  annotations: z.array(ExtractionAnnotationSchema).default([]),
-  locationContainments: z.array(ExtractionLocationContainmentSchema).default([]),
-});
-
-export type ExtractionResult = z.infer<typeof ExtractionResultSchema>;
-export type ExtractionEntity = z.infer<typeof ExtractionEntitySchema>;
-export type ExtractionMention = z.infer<typeof ExtractionMentionSchema>;
-export type ExtractionAnnotation = z.infer<typeof ExtractionAnnotationSchema>;
-export type ExtractionLocationContainment = z.infer<typeof ExtractionLocationContainmentSchema>;
-
-export interface ParagraphSlice {
-  index: number;
-  text: string;
-  startOffset: number;
-}
-
 export function normalizeEntityName(name: string): string {
   return name
     .toLowerCase()
@@ -139,6 +94,25 @@ export function canonicalizeDocumentContent(content: string): string {
     .trim();
 
   return normalized.replace(/\n{3,}/g, "\n\n");
+}
+
+export function richTextToPlainText(richContent: unknown): string {
+  const parsed = RichTextDocumentSchema.safeParse(richContent);
+  if (!parsed.success) return "";
+
+  const blocks = Array.isArray(parsed.data.content) ? parsed.data.content : [];
+  const parts = blocks
+    .map((block) => extractRichNodeText(block))
+    .map((text) => text.trim())
+    .filter(Boolean);
+
+  return canonicalizeDocumentContent(parts.join("\n\n"));
+}
+
+export interface ParagraphSlice {
+  index: number;
+  text: string;
+  startOffset: number;
 }
 
 export function splitParagraphs(content: string): ParagraphSlice[] {
@@ -170,13 +144,9 @@ function isWholeWordMatch(haystack: string, start: number, length: number): bool
   return (!before || !isWordBoundaryChar(before)) && (!after || !isWordBoundaryChar(after));
 }
 
-function findNthOccurrence(
-  haystack: string,
-  needle: string,
-  nth: number,
-  options: { wholeWord?: boolean } = {}
-): number {
+function findNthOccurrence(haystack: string, needle: string, nth: number, options: { wholeWord?: boolean } = {}): number {
   if (!needle) return -1;
+
   const haystackLower = haystack.toLowerCase();
   const needleLower = needle.toLowerCase();
   let cursor = 0;
@@ -202,44 +172,48 @@ function findNthOccurrence(
 }
 
 export interface ResolvedMentionOffset {
-  entityRef: string;
   paragraphIndex: number;
   startOffset: number;
   endOffset: number;
   sourceText: string;
-  type: EntityType;
-  name: string;
 }
 
-export function resolveMentionOffsets(content: string, mentions: ExtractionMention[]): ResolvedMentionOffset[] {
+export function resolveMentionOffsets<T extends { paragraphIndex: number; mentionText: string; name?: string; fallbackText?: string }>(
+  content: string,
+  mentions: T[]
+): Array<T & ResolvedMentionOffset> {
   const paragraphs = splitParagraphs(content);
   if (!paragraphs.length) return [];
 
   const occurrenceCounter = new Map<string, number>();
-  const resolved: ResolvedMentionOffset[] = [];
+  const resolved: Array<T & ResolvedMentionOffset> = [];
 
   for (const mention of mentions) {
     const paragraph = paragraphs[mention.paragraphIndex];
     if (!paragraph) continue;
 
-    const key = `${mention.paragraphIndex}::${mention.mentionText.toLowerCase()}`;
+    const mentionText = String(mention.mentionText || "").trim();
+    const fallbackText = String(mention.fallbackText || mention.name || "").trim();
+    if (!mentionText && !fallbackText) continue;
+
+    const key = `${mention.paragraphIndex}::${mentionText.toLowerCase()}`;
     const seen = occurrenceCounter.get(key) ?? 0;
 
-    let localStart = findNthOccurrence(paragraph.text, mention.mentionText, seen, { wholeWord: true });
-    let sourceText = mention.mentionText;
+    let localStart = mentionText ? findNthOccurrence(paragraph.text, mentionText, seen, { wholeWord: true }) : -1;
+    let sourceText = mentionText;
 
-    if (localStart === -1) {
-      localStart = findNthOccurrence(paragraph.text, mention.mentionText, seen);
+    if (localStart === -1 && mentionText) {
+      localStart = findNthOccurrence(paragraph.text, mentionText, seen);
     }
 
-    if (localStart === -1) {
-      localStart = findNthOccurrence(paragraph.text, mention.name, seen, { wholeWord: true });
-      sourceText = mention.name;
+    if (localStart === -1 && fallbackText) {
+      localStart = findNthOccurrence(paragraph.text, fallbackText, seen, { wholeWord: true });
+      sourceText = fallbackText;
     }
 
-    if (localStart === -1) {
-      localStart = findNthOccurrence(paragraph.text, mention.name, seen);
-      sourceText = mention.name;
+    if (localStart === -1 && fallbackText) {
+      localStart = findNthOccurrence(paragraph.text, fallbackText, seen);
+      sourceText = fallbackText;
     }
 
     if (localStart === -1) {
@@ -249,18 +223,310 @@ export function resolveMentionOffsets(content: string, mentions: ExtractionMenti
     occurrenceCounter.set(key, seen + 1);
 
     resolved.push({
-      entityRef: mention.entityRef,
+      ...mention,
       paragraphIndex: mention.paragraphIndex,
       startOffset: paragraph.startOffset + localStart,
       endOffset: paragraph.startOffset + localStart + sourceText.length,
       sourceText,
-      type: mention.type,
-      name: mention.name,
     });
   }
 
   return resolved;
 }
+
+export const ExtractionEntitySchema = z
+  .object({
+    entityRef: z.string().trim().min(1).max(120),
+    type: EntityTypeSchema,
+    name: z.string().trim().min(1),
+    summary: z.string().trim().max(500).optional().default(""),
+  })
+  .strict();
+
+export const ExtractionMentionSchema = z
+  .object({
+    entityRef: z.string().trim().min(1).max(120),
+    type: EntityTypeSchema,
+    name: z.string().trim().min(1),
+    paragraphIndex: z.number().int().nonnegative(),
+    mentionText: z.string().trim().min(1),
+  })
+  .strict();
+
+export const ExtractionLocationContainmentSchema = z
+  .object({
+    childRef: z.string().trim().min(1).max(120),
+    parentRef: z.string().trim().min(1).max(120),
+  })
+  .strict();
+
+export const ExtractionResultSchema = z
+  .object({
+    entities: z.array(ExtractionEntitySchema).default([]),
+    mentions: z.array(ExtractionMentionSchema).default([]),
+    annotations: z.array(z.unknown()).default([]),
+    locationContainments: z.array(ExtractionLocationContainmentSchema).default([]),
+  })
+  .strict();
+
+export type ExtractionResult = z.infer<typeof ExtractionResultSchema>;
+
+export const NameCandidateSchema = z
+  .object({
+    candidateId: z.string().min(1),
+    text: z.string().min(1),
+    normalizedText: z.string().min(1),
+    paragraphIndex: z.number().int().nonnegative(),
+    startOffset: z.number().int().nonnegative(),
+    endOffset: z.number().int().nonnegative(),
+    confidence: z.number().min(0).max(1),
+  })
+  .strict();
+
+export const ContextSnippetSchema = z
+  .object({
+    snippetId: z.string().min(1),
+    paragraphIndex: z.number().int().nonnegative(),
+    text: z.string().min(1),
+  })
+  .strict();
+
+export const PrepassResultSchema = z
+  .object({
+    contentVersion: z.number().int().nonnegative(),
+    paragraphs: z.array(
+      z
+        .object({
+          index: z.number().int().nonnegative(),
+          text: z.string(),
+          startOffset: z.number().int().nonnegative(),
+        })
+        .strict()
+    ),
+    candidates: z.array(NameCandidateSchema),
+    snippets: z.array(ContextSnippetSchema),
+  })
+  .strict();
+
+export type PrepassResult = z.infer<typeof PrepassResultSchema>;
+
+export const EntityPassAliasSchema = z
+  .object({
+    alias: z.string().min(1),
+    normalizedAlias: z.string().min(1),
+    observed: z.boolean(),
+    confidence: z.number().min(0).max(1),
+  })
+  .strict();
+
+export const EntityPassEntitySchema = z
+  .object({
+    tempEntityId: z.string().min(1),
+    type: EntityTypeSchema,
+    canonicalName: z.string().min(1),
+    normalizedName: z.string().min(1),
+    summary: z.string().default(""),
+    resolution: z
+      .object({
+        action: z.enum(["link_existing", "create_new"]),
+        existingEntityId: z.string().nullable(),
+      })
+      .strict(),
+    aliases: z.array(EntityPassAliasSchema),
+    evidence: z.array(
+      z
+        .object({
+          snippetId: z.string().min(1),
+          quote: z.string().min(1),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
+export const EntityPassResultSchema = z
+  .object({
+    contentVersion: z.number().int().nonnegative(),
+    entities: z.array(EntityPassEntitySchema),
+  })
+  .strict();
+
+export type EntityPassResult = z.infer<typeof EntityPassResultSchema>;
+
+export const PatchWindowOpSchema = z
+  .object({
+    op: z.enum(["accept_candidate", "reject_candidate", "link_candidate", "create_entity_and_link", "set_location_parent"]),
+    candidateId: z.string().min(1),
+    entityId: z.string().nullable(),
+    newEntity: z
+      .object({
+        type: EntityTypeSchema,
+        canonicalName: z.string().min(1),
+        normalizedName: z.string().min(1),
+      })
+      .nullable()
+      .optional(),
+    parentLocationId: z.string().nullable().optional(),
+  })
+  .strict();
+
+export const PatchWindowsResultSchema = z
+  .object({
+    runId: z.string().min(1),
+    contentVersion: z.number().int().nonnegative(),
+    windows: z.array(
+      z
+        .object({
+          windowKey: z.string().min(1),
+          ops: z.array(PatchWindowOpSchema),
+        })
+        .strict()
+    ),
+  })
+  .strict();
+
+export type PatchWindowsResult = z.infer<typeof PatchWindowsResultSchema>;
+
+export const EntityAliasPayloadSchema = z
+  .object({
+    entityId: z.string(),
+    alias: z.string().min(1),
+    normalizedAlias: z.string().min(1),
+    source: z.string().min(1),
+    confidence: z.number().min(0).max(1),
+    observed: z.boolean(),
+  })
+  .strict();
+
+export type EntityAliasPayload = z.infer<typeof EntityAliasPayloadSchema>;
+
+export const MentionCandidatePayloadSchema = z
+  .object({
+    id: z.string(),
+    runId: z.string(),
+    documentId: z.string(),
+    contentVersion: z.number().int().nonnegative(),
+    paragraphIndex: z.number().int().nonnegative(),
+    startOffset: z.number().int().nonnegative(),
+    endOffset: z.number().int().nonnegative(),
+    sourceText: z.string(),
+    candidateType: MentionCandidateTypeSchema,
+    routing: MentionRoutingSchema,
+    decisionStatus: MentionDecisionStatusSchema,
+    confidence: z.number().min(0).max(1),
+    conflictGroupId: z.string().nullable(),
+    entityHintId: z.string().nullable(),
+  })
+  .strict();
+
+export type MentionCandidatePayload = z.infer<typeof MentionCandidatePayloadSchema>;
+
+export const PatchWindowDecisionSchema = z
+  .object({
+    id: z.string(),
+    runId: z.string(),
+    windowKey: z.string(),
+    inputCandidateIds: z.array(z.string()),
+    model: z.string(),
+    applied: z.boolean(),
+    validationError: z.string().nullable(),
+    responseHashSha256: z.string().nullable().optional(),
+    responseBytes: z.number().int().nullable().optional(),
+  })
+  .strict();
+
+export type PatchWindowDecision = z.infer<typeof PatchWindowDecisionSchema>;
+
+export const QualityFlagsSchema = z
+  .object({
+    isPatched: z.boolean(),
+    patchBudgetReached: z.boolean(),
+    uncertainCountRemaining: z.number().int().nonnegative(),
+    eligibleCoverage: z.number().min(0).max(1),
+    hasConflicts: z.boolean(),
+  })
+  .strict();
+
+export type QualityFlags = z.infer<typeof QualityFlagsSchema>;
+
+export const SnapshotMentionSchema = z
+  .object({
+    id: z.string(),
+    entityId: z.string(),
+    paragraphIndex: z.number().int().nonnegative(),
+    startOffset: z.number().int().nonnegative(),
+    endOffset: z.number().int().nonnegative(),
+    sourceText: z.string(),
+    entity: z
+      .object({
+        id: z.string(),
+        type: EntityTypeSchema,
+        name: z.string(),
+      })
+      .strict(),
+  })
+  .strict();
+
+export const DocumentSnapshotSchema = z
+  .object({
+    id: z.string(),
+    projectId: z.string(),
+    chapterId: z.string(),
+    content: z.string(),
+    richContent: RichTextDocumentSchema,
+    contentVersion: z.number().int().nonnegative(),
+    mentions: z.array(SnapshotMentionSchema),
+    updatedAt: z.string(),
+  })
+  .strict();
+
+export type DocumentSnapshot = z.infer<typeof DocumentSnapshotSchema>;
+
+export const DocumentPayloadSchema = DocumentSnapshotSchema;
+export type DocumentPayload = DocumentSnapshot;
+
+export const AnalysisRunPayloadSchema = z
+  .object({
+    id: z.string(),
+    projectId: z.string(),
+    documentId: z.string(),
+    chapterId: z.string(),
+    contentVersion: z.number().int().nonnegative(),
+    state: AnalysisRunStateSchema,
+    phase: AnalysisRunPhaseSchema,
+    error: z.string().nullable(),
+    startedAt: z.string().nullable(),
+    completedAt: z.string().nullable(),
+    createdAt: z.string(),
+    updatedAt: z.string(),
+    qualityFlags: QualityFlagsSchema.nullable(),
+  })
+  .strict();
+
+export type AnalysisRunPayload = z.infer<typeof AnalysisRunPayloadSchema>;
+
+export const DocumentViewResponseSchema = z
+  .object({
+    run: AnalysisRunPayloadSchema.nullable(),
+    snapshot: DocumentSnapshotSchema,
+    qualityFlags: QualityFlagsSchema.nullable(),
+  })
+  .strict();
+
+export type DocumentViewResponse = z.infer<typeof DocumentViewResponseSchema>;
+
+export const PutDocumentResponseSchema = z
+  .object({
+    runId: z.string(),
+    contentVersion: z.number().int().nonnegative(),
+    runState: AnalysisRunStateSchema,
+    snapshotAvailable: z.boolean(),
+    snapshot: DocumentSnapshotSchema.nullable(),
+    qualityFlags: QualityFlagsSchema.nullable(),
+  })
+  .strict();
+
+export type PutDocumentResponse = z.infer<typeof PutDocumentResponseSchema>;
 
 export const ProjectSchema = z.object({
   id: z.string(),
@@ -269,47 +535,3 @@ export const ProjectSchema = z.object({
   createdAt: z.string(),
   updatedAt: z.string(),
 });
-
-export const DocumentPayloadSchema = z.object({
-  id: z.string(),
-  projectId: z.string(),
-  chapterId: z.string(),
-  content: z.string(),
-  richContent: RichTextDocumentSchema,
-  contentVersion: z.number().int().nonnegative(),
-  analysisStatus: AnalysisStatusSchema,
-  lastAnalyzedVersion: z.number().int().nullable(),
-  mentions: z.array(
-    z.object({
-      id: z.string(),
-      entityId: z.string(),
-      paragraphIndex: z.number().int().nonnegative(),
-      startOffset: z.number().int().nonnegative(),
-      endOffset: z.number().int().nonnegative(),
-      sourceText: z.string(),
-      entity: z.object({
-        id: z.string(),
-        type: EntityTypeSchema,
-        name: z.string(),
-      }),
-    })
-  ),
-  annotations: z.array(
-    z.object({
-      id: z.string(),
-      paragraphIndex: z.number().int().nonnegative(),
-      label: z.string(),
-      type: EntityTypeSchema,
-      entityId: z.string().nullable(),
-      entity: z
-        .object({
-          id: z.string(),
-          type: EntityTypeSchema,
-          name: z.string(),
-        })
-        .nullable(),
-    })
-  ),
-});
-
-export type DocumentPayload = z.infer<typeof DocumentPayloadSchema>;

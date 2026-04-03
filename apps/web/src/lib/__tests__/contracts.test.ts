@@ -44,6 +44,7 @@ describe("contracts utilities", () => {
       {
         entityRef: "e_char_1",
         paragraphIndex: 0,
+        mentionText: "Eren",
         startOffset: 0,
         endOffset: 4,
         sourceText: "Eren",
@@ -53,6 +54,7 @@ describe("contracts utilities", () => {
       {
         entityRef: "e_event_1",
         paragraphIndex: 1,
+        mentionText: "left",
         startOffset: 37,
         endOffset: 41,
         sourceText: "left",

@@ -1,6 +1,7 @@
 import {
   ChapterNotFoundError,
   getProjectDocument,
+  PreconditionFailedError,
   ProjectNotFoundError,
   saveProjectDocument,
 } from "@/lib/projectState";
@@ -21,8 +22,8 @@ export async function GET(_request: Request, context: RouteContext) {
     const { projectId } = await Promise.resolve(context.params);
     const url = new URL(_request.url);
     const chapterId = url.searchParams.get("chapter")?.trim() || null;
-    const document = await getProjectDocument(projectId, chapterId);
-    return Response.json({ document });
+    const state = await getProjectDocument(projectId, chapterId);
+    return Response.json(state);
   } catch (error) {
     if (error instanceof ProjectNotFoundError || error instanceof ChapterNotFoundError) {
       return Response.json({ error: "NOT_FOUND" }, { status: 404 });
@@ -48,10 +49,18 @@ export async function PUT(request: Request, context: RouteContext) {
     }
     const body = await request.json();
     const input = SaveDocumentSchema.parse(body);
+    const ifMatchRaw = request.headers.get("if-match")?.trim() || "";
+    const ifMatchVersion = ifMatchRaw ? Number.parseInt(ifMatchRaw, 10) : null;
+    const idempotencyKey = request.headers.get("idempotency-key")?.trim() || null;
+    const result = await saveProjectDocument(projectId, chapterId, input.richContent, {
+      ifMatchContentVersion:
+        ifMatchVersion !== null && Number.isFinite(ifMatchVersion) && Number.isInteger(ifMatchVersion)
+          ? ifMatchVersion
+          : null,
+      idempotencyKey,
+    });
 
-    const document = await saveProjectDocument(projectId, chapterId, input.richContent);
-
-    return Response.json({ document });
+    return Response.json(result);
   } catch (error) {
     if (error instanceof ProjectNotFoundError || error instanceof ChapterNotFoundError) {
       return Response.json(
@@ -69,6 +78,16 @@ export async function PUT(request: Request, context: RouteContext) {
           issues: error.issues,
         },
         { status: 400 }
+      );
+    }
+
+    if (error instanceof PreconditionFailedError) {
+      return Response.json(
+        {
+          error: "PRECONDITION_FAILED",
+          currentContentVersion: error.currentContentVersion,
+        },
+        { status: 412 }
       );
     }
 

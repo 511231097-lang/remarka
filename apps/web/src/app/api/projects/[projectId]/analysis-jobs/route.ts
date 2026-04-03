@@ -22,7 +22,7 @@ export async function GET(request: Request, context: RouteContext) {
   const limitRaw = Number(url.searchParams.get("limit") || "20");
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 200) : 20;
 
-  const jobs = await prisma.analysisJob.findMany({
+  const jobs = await prisma.analysisRun.findMany({
     where: {
       projectId,
     },
@@ -31,7 +31,7 @@ export async function GET(request: Request, context: RouteContext) {
     include: {
       _count: {
         select: {
-          modelCalls: true,
+          patchDecisions: true,
         },
       },
     },
@@ -42,10 +42,12 @@ export async function GET(request: Request, context: RouteContext) {
       id: job.id,
       projectId: job.projectId,
       documentId: job.documentId,
+      chapterId: job.chapterId,
       contentVersion: job.contentVersion,
-      status: job.status,
+      status: job.state,
+      phase: job.phase,
       error: job.error,
-      modelCallCount: job._count.modelCalls,
+      patchDecisionCount: job._count.patchDecisions,
       createdAt: job.createdAt.toISOString(),
       startedAt: job.startedAt?.toISOString() || null,
       completedAt: job.completedAt?.toISOString() || null,

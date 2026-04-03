@@ -2,13 +2,16 @@ import { prisma } from "@remarka/db";
 import type { Prisma } from "@prisma/client";
 import {
   EMPTY_RICH_TEXT_DOCUMENT,
+  QualityFlagsSchema,
   RichTextDocumentSchema,
   canonicalizeDocumentContent,
   richTextToPlainText,
+  type AnalysisRunPayload,
+  type DocumentSnapshot,
+  type DocumentViewResponse,
+  type PutDocumentResponse,
+  type QualityFlags,
 } from "@remarka/contracts";
-import { getBoss } from "./pgBoss";
-import { DOCUMENT_EXTRACT_QUEUE } from "./queue";
-import { toDocumentPayload, type DocumentWithRelations } from "./serializers";
 
 const DEFAULT_CHAPTER_TITLE = "Новая глава";
 
@@ -33,6 +36,16 @@ export class LastChapterDeletionError extends Error {
   }
 }
 
+export class PreconditionFailedError extends Error {
+  currentContentVersion: number;
+
+  constructor(currentContentVersion: number) {
+    super(`If-Match failed: current contentVersion=${currentContentVersion}`);
+    this.name = "PreconditionFailedError";
+    this.currentContentVersion = currentContentVersion;
+  }
+}
+
 type ChapterRecord = {
   id: string;
   projectId: string;
@@ -52,6 +65,56 @@ type ProjectRecord = {
   updatedAt: Date;
   chapters: ChapterRecord[];
 };
+
+function parseQualityFlags(value: unknown): QualityFlags | null {
+  const parsed = QualityFlagsSchema.safeParse(value);
+  return parsed.success ? parsed.data : null;
+}
+
+function serializeRun(run: any | null): AnalysisRunPayload | null {
+  if (!run) return null;
+
+  return {
+    id: run.id,
+    projectId: run.projectId,
+    documentId: run.documentId,
+    chapterId: run.chapterId,
+    contentVersion: run.contentVersion,
+    state: run.state,
+    phase: run.phase,
+    error: run.error || null,
+    startedAt: run.startedAt ? run.startedAt.toISOString() : null,
+    completedAt: run.completedAt ? run.completedAt.toISOString() : null,
+    createdAt: run.createdAt.toISOString(),
+    updatedAt: run.updatedAt.toISOString(),
+    qualityFlags: parseQualityFlags(run.qualityFlags),
+  };
+}
+
+function serializeSnapshot(document: any, mentions: any[]): DocumentSnapshot {
+  return {
+    id: document.id,
+    projectId: document.projectId,
+    chapterId: document.chapterId,
+    content: document.content,
+    richContent: document.richContent,
+    contentVersion: document.contentVersion,
+    updatedAt: document.updatedAt.toISOString(),
+    mentions: mentions.map((mention) => ({
+      id: mention.id,
+      entityId: mention.entityId,
+      paragraphIndex: mention.paragraphIndex,
+      startOffset: mention.startOffset,
+      endOffset: mention.endOffset,
+      sourceText: mention.sourceText,
+      entity: {
+        id: mention.entity.id,
+        type: mention.entity.type,
+        name: mention.entity.canonicalName,
+      },
+    })),
+  };
+}
 
 async function ensureProjectExists(projectId: string, tx: any = prisma) {
   const project = await tx.project.findUnique({
@@ -139,75 +202,61 @@ async function normalizeChapterOrder(projectId: string, tx: any = prisma) {
   });
 }
 
-async function getDocumentOrCreate(projectId: string, chapterId?: string | null): Promise<DocumentWithRelations> {
-  const chapter = await resolveProjectChapter(projectId, chapterId);
+async function getOrCreateDocument(projectId: string, chapterId?: string | null, tx: any = prisma) {
+  const chapter = await resolveProjectChapter(projectId, chapterId, tx);
 
-  const existing = await prisma.document.findUnique({
+  const existing = await tx.document.findUnique({
     where: { chapterId: chapter.id },
-    include: {
-      mentions: {
-        include: {
-          entity: {
-            select: {
-              id: true,
-              type: true,
-              name: true,
-            },
-          },
-        },
-        orderBy: { startOffset: "asc" },
-      },
-      annotations: {
-        include: {
-          entity: {
-            select: {
-              id: true,
-              type: true,
-              name: true,
-            },
-          },
-        },
-        orderBy: [{ paragraphIndex: "asc" }, { createdAt: "asc" }],
-      },
-    },
   });
 
-  if (existing) return existing as unknown as DocumentWithRelations;
+  if (existing) return existing;
 
-  return prisma.document.create({
+  return tx.document.create({
     data: {
       projectId,
       chapterId: chapter.id,
       content: "",
       richContent: EMPTY_RICH_TEXT_DOCUMENT as unknown as Prisma.InputJsonValue,
       contentVersion: 0,
-      analysisStatus: "idle",
+      currentRunId: null,
+    },
+  });
+}
+
+async function loadDocumentState(projectId: string, chapterId?: string | null, tx: any = prisma): Promise<DocumentViewResponse> {
+  const document = await getOrCreateDocument(projectId, chapterId, tx);
+
+  const currentRun = document.currentRunId
+    ? await tx.analysisRun.findUnique({ where: { id: document.currentRunId } })
+    : await tx.analysisRun.findFirst({
+        where: { documentId: document.id },
+        orderBy: [{ createdAt: "desc" }],
+      });
+
+  const mentions = await tx.mention.findMany({
+    where: {
+      documentId: document.id,
+      contentVersion: document.contentVersion,
     },
     include: {
-      mentions: {
-        include: {
-          entity: {
-            select: {
-              id: true,
-              type: true,
-              name: true,
-            },
-          },
-        },
-      },
-      annotations: {
-        include: {
-          entity: {
-            select: {
-              id: true,
-              type: true,
-              name: true,
-            },
-          },
+      entity: {
+        select: {
+          id: true,
+          type: true,
+          canonicalName: true,
         },
       },
     },
-  }) as unknown as DocumentWithRelations;
+    orderBy: [{ startOffset: "asc" }, { id: "asc" }],
+  });
+
+  const runPayload = serializeRun(currentRun);
+
+  return {
+    run: runPayload,
+    snapshot: serializeSnapshot(document, mentions),
+    qualityFlags: runPayload?.qualityFlags || null,
+  };
 }
 
 export async function listProjects(): Promise<ProjectRecord[]> {
@@ -248,7 +297,7 @@ export async function createProject(input: { title: string; description?: string
         content: "",
         richContent: EMPTY_RICH_TEXT_DOCUMENT as unknown as Prisma.InputJsonValue,
         contentVersion: 0,
-        analysisStatus: "idle",
+        currentRunId: null,
       },
     });
 
@@ -272,25 +321,7 @@ export async function listProjectChapters(projectId: string): Promise<ChapterRec
 
   const created = await prisma.$transaction(async (tx: any) => {
     const chapter = await getOrCreateFirstChapter(projectId, tx);
-
-    const existingDocument = await tx.document.findUnique({
-      where: { chapterId: chapter.id },
-      select: { id: true },
-    });
-
-    if (!existingDocument) {
-      await tx.document.create({
-        data: {
-          projectId,
-          chapterId: chapter.id,
-          content: "",
-          richContent: EMPTY_RICH_TEXT_DOCUMENT as unknown as Prisma.InputJsonValue,
-          contentVersion: 0,
-          analysisStatus: "idle",
-        },
-      });
-    }
-
+    await getOrCreateDocument(projectId, chapter.id, tx);
     return chapter;
   });
 
@@ -325,7 +356,7 @@ export async function createProjectChapter(projectId: string, input?: { title?: 
         content: "",
         richContent: EMPTY_RICH_TEXT_DOCUMENT as unknown as Prisma.InputJsonValue,
         contentVersion: 0,
-        analysisStatus: "idle",
+        currentRunId: null,
       },
     });
 
@@ -423,10 +454,7 @@ export async function deleteProjectChapter(projectId: string, chapterId: string)
       throw new LastChapterDeletionError(projectId);
     }
 
-    const fallbackChapter =
-      chapters[index + 1] ||
-      chapters[index - 1] ||
-      null;
+    const fallbackChapter = chapters[index + 1] || chapters[index - 1] || null;
     if (!fallbackChapter) {
       throw new LastChapterDeletionError(projectId);
     }
@@ -451,12 +479,19 @@ export async function deleteProjectChapter(projectId: string, chapterId: string)
   });
 }
 
-export async function getProjectDocument(projectId: string, chapterId?: string | null) {
-  const document = await getDocumentOrCreate(projectId, chapterId);
-  return toDocumentPayload(document);
+export async function getProjectDocument(projectId: string, chapterId?: string | null): Promise<DocumentViewResponse> {
+  return loadDocumentState(projectId, chapterId, prisma);
 }
 
-export async function saveProjectDocument(projectId: string, chapterId: string, rawRichContent: unknown) {
+export async function saveProjectDocument(
+  projectId: string,
+  chapterId: string,
+  rawRichContent: unknown,
+  options?: {
+    ifMatchContentVersion?: number | null;
+    idempotencyKey?: string | null;
+  }
+): Promise<PutDocumentResponse> {
   await ensureProjectExists(projectId);
   const parsedRich = RichTextDocumentSchema.safeParse(rawRichContent);
   if (!parsedRich.success) {
@@ -465,8 +500,13 @@ export async function saveProjectDocument(projectId: string, chapterId: string, 
 
   const richContent = parsedRich.data as unknown as Prisma.InputJsonValue;
   const content = canonicalizeDocumentContent(richTextToPlainText(richContent));
+  const ifMatch =
+    typeof options?.ifMatchContentVersion === "number" && Number.isInteger(options.ifMatchContentVersion)
+      ? options.ifMatchContentVersion
+      : null;
+  const idempotencyKey = String(options?.idempotencyKey || "").trim() || null;
 
-  const transactionResult = await prisma.$transaction(async (tx: any) => {
+  const result = await prisma.$transaction(async (tx: any) => {
     const chapter = await resolveProjectChapter(projectId, chapterId, tx);
     let document = await tx.document.findUnique({ where: { chapterId: chapter.id } });
 
@@ -475,30 +515,95 @@ export async function saveProjectDocument(projectId: string, chapterId: string, 
         data: {
           projectId,
           chapterId: chapter.id,
-          content,
-          richContent,
-          contentVersion: 1,
-          analysisStatus: "queued",
-        },
-      });
-    } else {
-      document = await tx.document.update({
-        where: { id: document.id },
-        data: {
-          content,
-          richContent,
-          contentVersion: { increment: 1 },
-          analysisStatus: "queued",
+          content: "",
+          richContent: EMPTY_RICH_TEXT_DOCUMENT as unknown as Prisma.InputJsonValue,
+          contentVersion: 0,
+          currentRunId: null,
         },
       });
     }
 
-    const job = await tx.analysisJob.create({
+    if (idempotencyKey) {
+      const existingByKey = await tx.analysisRun.findFirst({
+        where: {
+          documentId: document.id,
+          idempotencyKey,
+        },
+        orderBy: [{ createdAt: "desc" }],
+      });
+
+      if (existingByKey) {
+        const state = await loadDocumentState(projectId, chapter.id, tx);
+        return {
+          replay: true,
+          run: existingByKey,
+          state,
+        };
+      }
+    }
+
+    if (ifMatch !== null && document.contentVersion !== ifMatch) {
+      throw new PreconditionFailedError(document.contentVersion);
+    }
+
+    const nextVersion = document.contentVersion + 1;
+
+    document = await tx.document.update({
+      where: { id: document.id },
+      data: {
+        content,
+        richContent,
+        contentVersion: nextVersion,
+      },
+    });
+
+    const run = await tx.analysisRun.create({
       data: {
         projectId,
         documentId: document.id,
+        chapterId: chapter.id,
         contentVersion: document.contentVersion,
-        status: "queued",
+        state: "queued",
+        phase: "queued",
+        idempotencyKey,
+      },
+    });
+
+    await tx.analysisRun.updateMany({
+      where: {
+        documentId: document.id,
+        id: { not: run.id },
+        state: {
+          in: ["queued", "running"],
+        },
+      },
+      data: {
+        state: "superseded",
+        phase: "superseded",
+        supersededByRunId: run.id,
+        completedAt: new Date(),
+      },
+    });
+
+    await tx.document.update({
+      where: { id: document.id },
+      data: {
+        currentRunId: run.id,
+      },
+    });
+
+    await tx.outbox.create({
+      data: {
+        aggregateType: "analysis_run",
+        aggregateId: run.id,
+        eventType: "analysis.run.requested",
+        payloadJson: {
+          runId: run.id,
+          projectId,
+          documentId: document.id,
+          chapterId: chapter.id,
+          contentVersion: document.contentVersion,
+        },
       },
     });
 
@@ -509,72 +614,32 @@ export async function saveProjectDocument(projectId: string, chapterId: string, 
       },
     });
 
-    const hydrated = await tx.document.findUniqueOrThrow({
-      where: { id: document.id },
-      include: {
-        mentions: {
-          include: {
-            entity: {
-              select: {
-                id: true,
-                type: true,
-                name: true,
-              },
-            },
-          },
-          orderBy: { startOffset: "asc" },
-        },
-        annotations: {
-          include: {
-            entity: {
-              select: {
-                id: true,
-                type: true,
-                name: true,
-              },
-            },
-          },
-          orderBy: [{ paragraphIndex: "asc" }, { createdAt: "asc" }],
-        },
-      },
-    });
+    const state = await loadDocumentState(projectId, chapter.id, tx);
 
-    return { document: hydrated, job };
+    return {
+      replay: false,
+      run,
+      state,
+    };
   });
 
-  try {
-    const boss = await getBoss();
-    await boss.send(DOCUMENT_EXTRACT_QUEUE, {
-      jobId: transactionResult.job.id,
-      projectId,
-      documentId: transactionResult.job.documentId,
-      contentVersion: transactionResult.job.contentVersion,
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : "Queue send failed";
-
-    await prisma.$transaction(async (tx: any) => {
-      await tx.analysisJob.update({
-        where: { id: transactionResult.job.id },
-        data: {
-          status: "failed",
-          error: message.slice(0, 1000),
-          completedAt: new Date(),
-        },
-      });
-
-      await tx.document.updateMany({
-        where: {
-          id: transactionResult.job.documentId,
-          contentVersion: transactionResult.job.contentVersion,
-        },
-        data: {
-          analysisStatus: "failed",
-        },
-      });
-    });
+  if (result.replay) {
+    return {
+      runId: result.run.id,
+      contentVersion: result.run.contentVersion,
+      runState: result.run.state,
+      snapshotAvailable: true,
+      snapshot: result.state.snapshot,
+      qualityFlags: result.state.qualityFlags,
+    };
   }
 
-  const latest = await getDocumentOrCreate(projectId, chapterId);
-  return toDocumentPayload(latest);
+  return {
+    runId: result.run.id,
+    contentVersion: result.run.contentVersion,
+    runState: result.run.state,
+    snapshotAvailable: true,
+    snapshot: result.state.snapshot,
+    qualityFlags: result.state.qualityFlags,
+  };
 }

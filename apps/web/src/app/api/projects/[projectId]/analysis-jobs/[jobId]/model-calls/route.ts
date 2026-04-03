@@ -23,7 +23,7 @@ export async function GET(request: Request, context: RouteContext) {
     return Response.json({ error: "NOT_FOUND" }, { status: 404 });
   }
 
-  const job = await prisma.analysisJob.findFirst({
+  const run = await prisma.analysisRun.findFirst({
     where: {
       id: jobId,
       projectId,
@@ -32,179 +32,98 @@ export async function GET(request: Request, context: RouteContext) {
       id: true,
       projectId: true,
       documentId: true,
+      chapterId: true,
       contentVersion: true,
-      status: true,
+      state: true,
+      phase: true,
       error: true,
+      eligibleTotal: true,
+      eligibleResolved: true,
+      patchBudgetReached: true,
+      uncertainCountRemaining: true,
       createdAt: true,
       startedAt: true,
       completedAt: true,
+      qualityFlags: true,
     },
   });
 
-  if (!job) {
+  if (!run) {
     return Response.json({ error: "NOT_FOUND" }, { status: 404 });
   }
 
   const url = new URL(request.url);
-  const includeText = ["1", "true", "yes"].includes((url.searchParams.get("includeText") || "").toLowerCase());
-  const includeNormalized = ["1", "true", "yes"].includes(
-    (url.searchParams.get("includeNormalized") || "").toLowerCase()
-  );
+  const includePayload = ["1", "true", "yes"].includes((url.searchParams.get("includePayload") || "").toLowerCase());
 
   const limitRaw = Number(url.searchParams.get("limit") || "200");
   const limit = Number.isInteger(limitRaw) && limitRaw > 0 ? Math.min(limitRaw, 1000) : 200;
 
-  const calls = await prisma.analysisModelCall.findMany({
-    where: {
-      analysisJobId: jobId,
-    },
-    orderBy: [{ createdAt: "asc" }],
-    take: limit,
-  });
-  const stageMetrics = await prisma.analysisJobStageMetric.findMany({
-    where: {
-      analysisJobId: jobId,
-    },
-    orderBy: [{ startedAt: "asc" }],
-    take: 2000,
-  });
+  const [patchDecisions, candidateStats] = await Promise.all([
+    prisma.patchDecision.findMany({
+      where: {
+        runId: run.id,
+      },
+      orderBy: [{ createdAt: "asc" }],
+      take: limit,
+    }),
+    prisma.mentionCandidate.groupBy({
+      by: ["decisionStatus", "routing"],
+      where: {
+        runId: run.id,
+      },
+      _count: {
+        _all: true,
+      },
+    }),
+  ]);
 
-  const queueWaitMs = diffMs(job.createdAt, job.startedAt);
-  const processingDurationMs = diffMs(job.startedAt, job.completedAt);
-  const totalDurationMs = diffMs(job.createdAt, job.completedAt);
-
-  const stageSummary = Array.from(
-    stageMetrics.reduce((acc, stageMetric: any) => {
-      const key = String(stageMetric.stage || "").trim() || "unknown";
-      const existing = acc.get(key) || {
-        stage: key,
-        count: 0,
-        totalDurationMs: 0,
-        minDurationMs: Number.POSITIVE_INFINITY,
-        maxDurationMs: 0,
-      };
-      const durationMs = Number(stageMetric.durationMs || 0);
-      existing.count += 1;
-      existing.totalDurationMs += durationMs;
-      existing.minDurationMs = Math.min(existing.minDurationMs, durationMs);
-      existing.maxDurationMs = Math.max(existing.maxDurationMs, durationMs);
-      acc.set(key, existing);
-      return acc;
-    }, new Map<string, { stage: string; count: number; totalDurationMs: number; minDurationMs: number; maxDurationMs: number }>())
-  )
-    .map(([, summary]) => ({
-      stage: summary.stage,
-      count: summary.count,
-      totalDurationMs: summary.totalDurationMs,
-      minDurationMs: Number.isFinite(summary.minDurationMs) ? summary.minDurationMs : 0,
-      maxDurationMs: summary.maxDurationMs,
-      avgDurationMs: summary.count > 0 ? Math.round(summary.totalDurationMs / summary.count) : 0,
-    }))
-    .sort((a, b) => b.totalDurationMs - a.totalDurationMs);
-
-  const modelCallSummary = Array.from(
-    calls.reduce((acc, call: any) => {
-      const key = `${call.phase}:${call.extractionMode}`;
-      const existing = acc.get(key) || {
-        phase: call.phase,
-        extractionMode: call.extractionMode,
-        count: 0,
-        totalDurationMs: 0,
-        parseErrors: 0,
-      };
-      const durationMs = Number(call.durationMs || 0);
-      existing.count += 1;
-      existing.totalDurationMs += durationMs;
-      if (call.parseError) existing.parseErrors += 1;
-      acc.set(key, existing);
-      return acc;
-    }, new Map<string, { phase: string; extractionMode: string; count: number; totalDurationMs: number; parseErrors: number }>())
-  )
-    .map(([, summary]) => ({
-      phase: summary.phase,
-      extractionMode: summary.extractionMode,
-      count: summary.count,
-      parseErrors: summary.parseErrors,
-      totalDurationMs: summary.totalDurationMs,
-      avgDurationMs: summary.count > 0 ? Math.round(summary.totalDurationMs / summary.count) : 0,
-    }))
-    .sort((a, b) => b.totalDurationMs - a.totalDurationMs);
-
-  const finishReasonSummary = Array.from(
-    calls.reduce((acc, call: any) => {
-      const key = String(call.finishReason || "null");
-      acc.set(key, (acc.get(key) || 0) + 1);
-      return acc;
-    }, new Map<string, number>())
-  )
-    .map(([finishReason, count]) => ({
-      finishReason: finishReason === "null" ? null : finishReason,
-      count,
-    }))
-    .sort((a, b) => b.count - a.count);
+  const queueWaitMs = diffMs(run.createdAt, run.startedAt);
+  const processingDurationMs = diffMs(run.startedAt, run.completedAt);
+  const totalDurationMs = diffMs(run.createdAt, run.completedAt);
 
   return Response.json({
-    job: {
-      id: job.id,
-      projectId: job.projectId,
-      documentId: job.documentId,
-      contentVersion: job.contentVersion,
-      status: job.status,
-      error: job.error,
-      createdAt: job.createdAt.toISOString(),
-      startedAt: job.startedAt?.toISOString() || null,
-      completedAt: job.completedAt?.toISOString() || null,
+    run: {
+      id: run.id,
+      projectId: run.projectId,
+      documentId: run.documentId,
+      chapterId: run.chapterId,
+      contentVersion: run.contentVersion,
+      state: run.state,
+      phase: run.phase,
+      error: run.error,
+      eligibleTotal: run.eligibleTotal,
+      eligibleResolved: run.eligibleResolved,
+      patchBudgetReached: run.patchBudgetReached,
+      uncertainCountRemaining: run.uncertainCountRemaining,
+      qualityFlags: run.qualityFlags,
+      createdAt: run.createdAt.toISOString(),
+      startedAt: run.startedAt?.toISOString() || null,
+      completedAt: run.completedAt?.toISOString() || null,
     },
     stats: {
-      total: calls.length,
-      parseErrors: calls.filter((call: any) => Boolean(call.parseError)).length,
       queueWaitMs,
       processingDurationMs,
       totalDurationMs,
-      stageMetricsCount: stageMetrics.length,
-      timedModelCalls: calls.filter((call: any) => typeof call.durationMs === "number").length,
-      modelCallDurationMsTotal: calls.reduce((sum: number, call: any) => sum + Number(call.durationMs || 0), 0),
-      stageSummary,
-      modelCallSummary,
-      finishReasonSummary,
+      patchDecisionsCount: patchDecisions.length,
+      candidateStats,
     },
-    calls: calls.map((call: any) => ({
-      id: call.id,
-      phase: call.phase,
-      extractionMode: call.extractionMode,
-      batchIndex: call.batchIndex,
-      targetParagraphIndices: call.targetParagraphIndices,
-      model: call.model,
-      attempt: call.attempt,
-      finishReason: call.finishReason,
-      parseError: call.parseError,
-      promptChars: call.prompt.length,
-      rawResponseChars: call.rawResponse.length,
-      durationMs: call.durationMs,
-      requestStartedAt: call.requestStartedAt?.toISOString() || null,
-      requestCompletedAt: call.requestCompletedAt?.toISOString() || null,
-      createdAt: call.createdAt.toISOString(),
-      ...(includeText
+    patchDecisions: patchDecisions.map((item) => ({
+      id: item.id,
+      windowKey: item.windowKey,
+      model: item.model,
+      applied: item.applied,
+      validationError: item.validationError,
+      responseHashSha256: item.responseHashSha256,
+      responseBytes: item.responseBytes,
+      createdAt: item.createdAt.toISOString(),
+      ...(includePayload
         ? {
-            prompt: call.prompt,
-            rawResponse: call.rawResponse,
-            jsonCandidate: call.jsonCandidate,
+            inputCandidateIds: item.inputCandidateIds,
+            usageJson: item.usageJson,
+            rawResponseSnippet: item.rawResponseSnippet,
+            blobKey: item.blobKey,
           }
         : {}),
-      ...(includeNormalized
-        ? {
-            normalizedPayload: call.normalizedPayload,
-          }
-        : {}),
-    })),
-    stageMetrics: stageMetrics.map((stageMetric: any) => ({
-      id: stageMetric.id,
-      stage: stageMetric.stage,
-      durationMs: stageMetric.durationMs,
-      startedAt: stageMetric.startedAt.toISOString(),
-      completedAt: stageMetric.completedAt.toISOString(),
-      createdAt: stageMetric.createdAt.toISOString(),
-      metadata: stageMetric.metadata,
     })),
   });
 }

@@ -23,5 +23,6 @@ export function formatAnalysisStatusRu(status: string) {
   if (status === "running") return "Идет анализ";
   if (status === "completed") return "Анализ завершен";
   if (status === "failed") return "Ошибка анализа";
+  if (status === "superseded") return "Запуск отменен новой версией";
   return "Ожидание";
 }

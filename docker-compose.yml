@@ -53,6 +53,24 @@ services:
       - "3000:3000"
     restart: unless-stopped
 
+  preprocessor:
+    build:
+      context: .
+      dockerfile: apps/preprocessor/Dockerfile
+    environment:
+      PYTHONUNBUFFERED: "1"
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8010/health").read()
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    restart: unless-stopped
+
   worker:
     build:
       context: .
@@ -64,12 +82,15 @@ services:
       DATABASE_URL: postgresql://postgres:postgres@db:5432/remarka
       NODE_ENV: production
       TIMEWEB_PROXY_SOURCE: remarka-worker
-      QUEUE_POLL_INTERVAL_SECONDS: "2"
+      PREPROCESSOR_URL: http://preprocessor:8010
+      OUTBOX_POLL_INTERVAL_MS: "1200"
     depends_on:
       db:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      preprocessor:
+        condition: service_healthy
     restart: unless-stopped
 
 volumes:

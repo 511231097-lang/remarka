@@ -33,7 +33,7 @@ export async function GET(request: Request, context: RouteContext) {
       ...(parsedType?.success ? { type: parsedType.data } : {}),
       ...(q
         ? {
-            name: {
+            canonicalName: {
               contains: q,
               mode: "insensitive",
             },
@@ -47,7 +47,7 @@ export async function GET(request: Request, context: RouteContext) {
         },
       },
     },
-    orderBy: [{ type: "asc" }, { name: "asc" }],
+    orderBy: [{ type: "asc" }, { canonicalName: "asc" }],
   });
 
   const locationIds = entities.filter((entity: any) => entity.type === "location").map((entity: any) => entity.id);
@@ -75,7 +75,7 @@ export async function GET(request: Request, context: RouteContext) {
       id: entity.id,
       projectId: entity.projectId,
       type: entity.type,
-      name: entity.name,
+      name: entity.canonicalName,
       containerEntityId: entity.type === "location" ? containerByChildId.get(entity.id) || null : null,
       summary: entity.summary,
       mentionCount: entity._count.mentions,

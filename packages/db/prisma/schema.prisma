@@ -13,186 +13,272 @@ enum EntityType {
   event
 }
 
-enum AnalysisStatus {
-  idle
+enum AnalysisRunState {
   queued
   running
   completed
   failed
+  superseded
 }
 
-enum AnalysisJobStatus {
+enum AnalysisRunPhase {
   queued
-  running
+  prepass
+  entity_pass
+  sweep
+  mention_completion
+  apply
   completed
   failed
-  stale
+  superseded
+}
+
+enum MentionRouting {
+  deterministic
+  patch
+}
+
+enum MentionDecisionStatus {
+  pending
+  accepted
+  rejected
+}
+
+enum MentionCandidateType {
+  alias
+  role
+  coreference
+  ambiguous
 }
 
 model Project {
-  id          String       @id @default(cuid())
+  id          String   @id @default(cuid())
   title       String
   description String?
-  createdAt   DateTime     @default(now())
-  updatedAt   DateTime     @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  chapters    Chapter[]
-  documents   Document[]
-  entities    Entity[]
-  analysisJobs AnalysisJob[]
+  chapters             Chapter[]
+  documents            Document[]
+  entities             Entity[]
+  analysisRuns         AnalysisRun[]
   locationContainments LocationContainment[]
 }
 
 model Chapter {
-  id          String   @id @default(cuid())
-  projectId   String
-  title       String
-  orderIndex  Int      @default(0)
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  id         String   @id @default(cuid())
+  projectId  String
+  title      String
+  orderIndex Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 
-  project   Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  document  Document?
+  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document     Document?
+  analysisRuns AnalysisRun[]
 
   @@index([projectId, orderIndex])
 }
 
 model Document {
-  id                 String         @id @default(cuid())
-  projectId          String
-  chapterId          String         @unique
-  content            String         @db.Text
-  richContent        Json
-  lastAnalyzedContent String?       @db.Text
-  contentVersion     Int            @default(0)
-  analysisStatus     AnalysisStatus @default(idle)
-  lastAnalyzedVersion Int?
-  createdAt          DateTime       @default(now())
-  updatedAt          DateTime       @updatedAt
+  id            String   @id @default(cuid())
+  projectId     String
+  chapterId     String   @unique
+  content       String   @db.Text
+  richContent   Json
+  contentVersion Int     @default(0)
+  currentRunId  String?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
 
-  project     Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  chapter     Chapter      @relation(fields: [chapterId], references: [id], onDelete: Cascade)
-  mentions    Mention[]
-  annotations Annotation[]
-  analysisJobs AnalysisJob[]
+  project           Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chapter           Chapter            @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  currentRun        AnalysisRun?       @relation("DocumentCurrentRun", fields: [currentRunId], references: [id], onDelete: SetNull)
+  analysisRuns      AnalysisRun[]
+  mentions          Mention[]
+  mentionCandidates MentionCandidate[]
 
   @@index([projectId])
   @@index([chapterId])
+  @@index([currentRunId])
+}
+
+model AnalysisRun {
+  id                     String           @id @default(cuid())
+  projectId              String
+  documentId             String
+  chapterId              String
+  contentVersion         Int
+  idempotencyKey         String?
+  state                  AnalysisRunState @default(queued)
+  phase                  AnalysisRunPhase @default(queued)
+  error                  String?
+  patchBudgetReached     Boolean          @default(false)
+  uncertainCountRemaining Int             @default(0)
+  eligibleTotal          Int              @default(0)
+  eligibleResolved       Int              @default(0)
+  routingPolicyVersion   String?
+  qualityFlags           Json?
+  quickSnapshot          Json?
+  finalSnapshot          Json?
+  supersededByRunId      String?
+  startedAt              DateTime?
+  completedAt            DateTime?
+  createdAt              DateTime         @default(now())
+  updatedAt              DateTime         @updatedAt
+
+  project            Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document           Document           @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  chapter            Chapter            @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  supersededByRun    AnalysisRun?       @relation("RunSupersede", fields: [supersededByRunId], references: [id], onDelete: SetNull)
+  supersededRuns     AnalysisRun[]      @relation("RunSupersede")
+  currentForDocument Document[]         @relation("DocumentCurrentRun")
+  createdEntities    Entity[]           @relation("CreatedEntities")
+  mentionCandidates  MentionCandidate[]
+  mentions           Mention[]
+  patchDecisions     PatchDecision[]
+
+  @@index([projectId, state])
+  @@index([documentId, contentVersion])
+  @@index([chapterId, createdAt])
+  @@unique([documentId, idempotencyKey])
 }
 
 model Entity {
-  id             String    @id @default(cuid())
-  projectId      String
-  type           EntityType
-  name           String
-  normalizedName String
-  summary        String    @default("")
-  createdAt      DateTime  @default(now())
-  updatedAt      DateTime  @updatedAt
+  id               String    @id @default(cuid())
+  projectId        String
+  type             EntityType
+  canonicalName    String
+  normalizedName   String
+  summary          String    @default("")
+  status           String    @default("active")
+  createdByRunId   String?
+  mergedIntoEntityId String?
+  lastSeenAt       DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
 
-  project            Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  mentions           Mention[]
-  annotations        Annotation[]
-  containerLinks     LocationContainment[] @relation("LocationContainmentChild")
-  containedByLinks   LocationContainment[] @relation("LocationContainmentParent")
+  project          Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdByRun     AnalysisRun? @relation("CreatedEntities", fields: [createdByRunId], references: [id], onDelete: SetNull)
+  mergedIntoEntity Entity?      @relation("EntityMerge", fields: [mergedIntoEntityId], references: [id], onDelete: SetNull)
+  mergedFromEntities Entity[]   @relation("EntityMerge")
+  aliases          EntityAlias[]
+  mentions         Mention[]
+  hintedCandidates MentionCandidate[]
+  containerLinks   LocationContainment[] @relation("LocationContainmentChild")
+  containedByLinks LocationContainment[] @relation("LocationContainmentParent")
 
-  @@index([projectId, type, name])
+  @@unique([projectId, type, normalizedName])
+  @@index([projectId, type, canonicalName])
   @@index([projectId, type, normalizedName])
 }
 
-model Mention {
-  id            String   @id @default(cuid())
-  entityId      String
-  documentId    String
-  startOffset   Int
-  endOffset     Int
-  paragraphIndex Int
-  sourceText    String
-  createdAt     DateTime @default(now())
+model EntityAlias {
+  id              String   @id @default(cuid())
+  entityId         String
+  alias            String
+  normalizedAlias  String
+  source           String
+  confidence       Float
+  observed         Boolean  @default(true)
+  confirmedAt      DateTime?
+  createdAt        DateTime @default(now())
 
-  entity   Entity   @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
 
-  @@index([documentId, paragraphIndex])
+  @@unique([entityId, normalizedAlias])
   @@index([entityId])
+  @@index([normalizedAlias])
 }
 
-model Annotation {
-  id             String    @id @default(cuid())
-  documentId     String
-  paragraphIndex Int
-  entityId       String?
-  type           EntityType
-  label          String
-  createdAt      DateTime  @default(now())
-
-  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  entity   Entity?  @relation(fields: [entityId], references: [id], onDelete: SetNull)
-
-  @@index([documentId, paragraphIndex])
-  @@index([entityId])
-}
-
-model AnalysisJob {
-  id             String           @id @default(cuid())
-  projectId      String
+model MentionCandidate {
+  id             String                @id @default(cuid())
+  runId          String
   documentId     String
   contentVersion Int
-  status         AnalysisJobStatus @default(queued)
-  error          String?
-  startedAt      DateTime?
-  completedAt    DateTime?
-  createdAt      DateTime         @default(now())
-  updatedAt      DateTime         @updatedAt
+  paragraphIndex Int
+  startOffset    Int
+  endOffset      Int
+  sourceText     String
+  candidateType  MentionCandidateType
+  routing        MentionRouting        @default(deterministic)
+  decisionStatus MentionDecisionStatus @default(pending)
+  confidence     Float                 @default(0)
+  featuresJson   Json?
+  conflictGroupId String?
+  entityHintId   String?
+  createdAt      DateTime              @default(now())
+  updatedAt      DateTime              @updatedAt
 
-  project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  modelCalls AnalysisModelCall[]
-  stageMetrics AnalysisJobStageMetric[]
+  run       AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  document  Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  entityHint Entity?    @relation(fields: [entityHintId], references: [id], onDelete: SetNull)
+  mentions  Mention[]
 
-  @@index([documentId, createdAt])
-  @@index([projectId, status])
+  @@index([runId])
+  @@index([documentId, paragraphIndex])
+  @@index([decisionStatus])
 }
 
-model AnalysisModelCall {
-  id                     String   @id @default(cuid())
-  analysisJobId          String
-  phase                  String
-  extractionMode         String
-  batchIndex             Int?
-  targetParagraphIndices Int[]    @default([])
-  model                  String
-  attempt                Int      @default(1)
-  finishReason           String?
-  prompt                 String   @db.Text
-  rawResponse            String   @db.Text
-  jsonCandidate          String?  @db.Text
-  normalizedPayload      Json?
-  parseError             String?
-  requestStartedAt       DateTime?
-  requestCompletedAt     DateTime?
-  durationMs             Int?
-  createdAt              DateTime @default(now())
+model Mention {
+  id             String   @id @default(cuid())
+  runId          String
+  documentId     String
+  contentVersion Int
+  entityId       String
+  candidateId    String?
+  paragraphIndex Int
+  startOffset    Int
+  endOffset      Int
+  sourceText     String
+  confidence     Float    @default(1)
+  resolvedBy     String   @default("deterministic")
+  createdAt      DateTime @default(now())
 
-  analysisJob AnalysisJob @relation(fields: [analysisJobId], references: [id], onDelete: Cascade)
+  run       AnalysisRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
+  document  Document          @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  entity    Entity            @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  candidate MentionCandidate? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
 
-  @@index([analysisJobId, createdAt])
+  @@index([documentId, paragraphIndex])
+  @@index([documentId, entityId])
+  @@index([runId])
+  @@index([candidateId])
 }
 
-model AnalysisJobStageMetric {
+model PatchDecision {
   id                 String   @id @default(cuid())
-  analysisJobId      String
-  stage              String
-  startedAt          DateTime
-  completedAt        DateTime
-  durationMs         Int
-  metadata           Json?
+  runId              String
+  windowKey          String
+  inputCandidateIds  String[] @default([])
+  model              String
+  usageJson          Json?
+  applied            Boolean  @default(false)
+  validationError    String?
+  responseHashSha256 String?
+  rawResponseSnippet String?
+  responseBytes      Int?
+  blobKey            String?
   createdAt          DateTime @default(now())
 
-  analysisJob AnalysisJob @relation(fields: [analysisJobId], references: [id], onDelete: Cascade)
+  run AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
-  @@index([analysisJobId, createdAt])
-  @@index([analysisJobId, stage])
+  @@index([runId, windowKey])
+}
+
+model Outbox {
+  id            String   @id @default(cuid())
+  aggregateType String
+  aggregateId   String
+  eventType     String
+  payloadJson   Json
+  createdAt     DateTime @default(now())
+  processedAt   DateTime?
+  error         String?
+  attemptCount  Int      @default(0)
+
+  @@index([processedAt, createdAt])
+  @@index([aggregateType, aggregateId])
 }
 
 model LocationContainment {

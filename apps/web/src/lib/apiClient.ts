@@ -1,4 +1,11 @@
-import type { DocumentPayload, EntityType } from "@remarka/contracts";
+import type {
+  AnalysisRunPayload,
+  DocumentSnapshot,
+  DocumentViewResponse,
+  EntityType,
+  PutDocumentResponse,
+  QualityFlags,
+} from "@remarka/contracts";
 
 export interface SidebarChapterItem {
   id: string;
@@ -61,6 +68,10 @@ export interface SidebarProjectItem {
   updatedAt: string;
 }
 
+export interface ProjectDocumentState extends DocumentViewResponse {}
+
+export interface SaveDocumentResult extends PutDocumentResponse {}
+
 export type ChapterMoveDirection = "up" | "down";
 
 async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
@@ -105,26 +116,32 @@ function buildChapterQuery(chapterId: string | null | undefined): string {
   return `?chapter=${encodeURIComponent(chapterId)}`;
 }
 
-export async function fetchProjectDocument(projectId: string, chapterId?: string | null): Promise<DocumentPayload> {
-  const result = await requestJson<{ document: DocumentPayload }>(
-    `/api/projects/${projectId}/document${buildChapterQuery(chapterId)}`
-  );
-  return result.document;
+export async function fetchProjectDocument(projectId: string, chapterId?: string | null): Promise<ProjectDocumentState> {
+  return requestJson<ProjectDocumentState>(`/api/projects/${projectId}/document${buildChapterQuery(chapterId)}`);
 }
 
 export async function saveProjectDocument(
   projectId: string,
   chapterId: string,
-  richContent: unknown
-): Promise<DocumentPayload> {
-  const result = await requestJson<{ document: DocumentPayload }>(
-    `/api/projects/${projectId}/document${buildChapterQuery(chapterId)}`,
-    {
-      method: "PUT",
-      body: JSON.stringify({ richContent }),
-    }
-  );
-  return result.document;
+  richContent: unknown,
+  options?: {
+    ifMatchContentVersion?: number | null;
+    idempotencyKey?: string | null;
+  }
+): Promise<SaveDocumentResult> {
+  const headers: Record<string, string> = {};
+  if (typeof options?.ifMatchContentVersion === "number" && Number.isInteger(options.ifMatchContentVersion)) {
+    headers["If-Match"] = String(options.ifMatchContentVersion);
+  }
+  if (options?.idempotencyKey?.trim()) {
+    headers["Idempotency-Key"] = options.idempotencyKey.trim();
+  }
+
+  return requestJson<SaveDocumentResult>(`/api/projects/${projectId}/document${buildChapterQuery(chapterId)}`, {
+    method: "PUT",
+    headers,
+    body: JSON.stringify({ richContent }),
+  });
 }
 
 export async function fetchProjectEntities(
@@ -192,28 +209,27 @@ export function subscribeProjectStatus(
   projectId: string,
   chapterId: string,
   handlers: {
-    onStatus: (payload: {
-      chapterId: string | null;
-      analysisStatus: string;
+    onRunStarted?: (payload: { chapterId: string; run: AnalysisRunPayload | null }) => void;
+    onPhaseChanged?: (payload: { chapterId: string; run: AnalysisRunPayload | null }) => void;
+    onSnapshotUpdated?: (payload: {
+      chapterId: string;
+      runId: string | null;
       contentVersion: number;
-      lastAnalyzedVersion: number | null;
-      updatedAt: string | null;
+      updatedAt: string;
     }) => void;
+    onCompleted?: (payload: { chapterId: string; run: AnalysisRunPayload | null }) => void;
+    onFailed?: (payload: { chapterId: string; run: AnalysisRunPayload | null }) => void;
+    onSuperseded?: (payload: { chapterId: string; run: AnalysisRunPayload | null }) => void;
     onError?: (message: string) => void;
   }
 ) {
   const eventSource = new EventSource(`/api/projects/${projectId}/stream${buildChapterQuery(chapterId)}`);
 
-  const statusListener = (event: MessageEvent) => {
+  const parsePayload = <T>(event: MessageEvent, cb?: (payload: T) => void) => {
+    if (!cb) return;
     try {
-      const payload = JSON.parse(event.data) as {
-        chapterId: string | null;
-        analysisStatus: string;
-        contentVersion: number;
-        lastAnalyzedVersion: number | null;
-        updatedAt: string | null;
-      };
-      handlers.onStatus(payload);
+      const payload = JSON.parse(event.data) as T;
+      cb(payload);
     } catch (error) {
       handlers.onError?.(error instanceof Error ? error.message : "SSE parse error");
     }
@@ -228,7 +244,21 @@ export function subscribeProjectStatus(
     }
   };
 
-  eventSource.addEventListener("status", statusListener as EventListener);
+  eventSource.addEventListener("run_started", ((event: MessageEvent) =>
+    parsePayload<{ chapterId: string; run: AnalysisRunPayload | null }>(event, handlers.onRunStarted)) as EventListener);
+  eventSource.addEventListener("phase_changed", ((event: MessageEvent) =>
+    parsePayload<{ chapterId: string; run: AnalysisRunPayload | null }>(event, handlers.onPhaseChanged)) as EventListener);
+  eventSource.addEventListener("snapshot_updated", ((event: MessageEvent) =>
+    parsePayload<{ chapterId: string; runId: string | null; contentVersion: number; updatedAt: string }>(
+      event,
+      handlers.onSnapshotUpdated
+    )) as EventListener);
+  eventSource.addEventListener("completed", ((event: MessageEvent) =>
+    parsePayload<{ chapterId: string; run: AnalysisRunPayload | null }>(event, handlers.onCompleted)) as EventListener);
+  eventSource.addEventListener("failed", ((event: MessageEvent) =>
+    parsePayload<{ chapterId: string; run: AnalysisRunPayload | null }>(event, handlers.onFailed)) as EventListener);
+  eventSource.addEventListener("superseded", ((event: MessageEvent) =>
+    parsePayload<{ chapterId: string; run: AnalysisRunPayload | null }>(event, handlers.onSuperseded)) as EventListener);
   eventSource.addEventListener("error", errorListener as EventListener);
 
   return () => {

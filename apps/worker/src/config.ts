@@ -26,6 +26,14 @@ function getIntEnv(name: string, fallback: number): number {
   return parsed;
 }
 
+function getBoolEnv(name: string, fallback: boolean): boolean {
+  const raw = String(process.env[name] || "").trim().toLowerCase();
+  if (!raw) return fallback;
+  if (["1", "true", "yes", "on"].includes(raw)) return true;
+  if (["0", "false", "no", "off"].includes(raw)) return false;
+  return fallback;
+}
+
 const DEFAULT_KIA_EXTRACT_MODEL = "gemini-3-flash-openai";
 
 function resolveKiaModelRoute(model: string): string {
@@ -81,7 +89,21 @@ const isKiaProvider = configuredExtractProvider === "kia";
 
 export const workerConfig = {
   databaseUrl: getRequiredEnv("DATABASE_URL"),
-  queuePollIntervalSeconds: getIntEnv("QUEUE_POLL_INTERVAL_SECONDS", 2),
+  outbox: {
+    pollIntervalMs: getIntEnv("OUTBOX_POLL_INTERVAL_MS", 1200),
+    batchSize: getIntEnv("OUTBOX_BATCH_SIZE", 16),
+    maxAttempts: getIntEnv("OUTBOX_MAX_ATTEMPTS", 8),
+  },
+  pipeline: {
+    enableEventExtraction: getBoolEnv("ENABLE_EVENT_EXTRACTION", false),
+    patchWindowsCap: getIntEnv("PATCH_WINDOWS_CAP", 32),
+    patchWindowSize: getIntEnv("PATCH_WINDOW_SIZE", 12),
+  },
+  preprocessor: {
+    url: String(process.env.PREPROCESSOR_URL || "http://127.0.0.1:8010").replace(/\/+$/, ""),
+    timeoutMs: getIntEnv("PREPROCESSOR_TIMEOUT_MS", 20_000),
+    retries: getIntEnv("PREPROCESSOR_RETRIES", 3),
+  },
   extraction: {
     provider: configuredExtractProvider,
   },

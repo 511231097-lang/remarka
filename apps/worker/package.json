@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "tsx --env-file=.env watch src/index.ts",
     "start": "tsx --env-file=.env src/index.ts",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "analytics:extraction": "TMPDIR=/tmp DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@127.0.0.1:5432/remarka} tsx src/scripts/extractionAnalytics.ts"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",

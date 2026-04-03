@@ -1,82 +1,171 @@
-import PgBoss from "pg-boss";
 import { prisma } from "@remarka/db";
 import { workerConfig } from "./config";
-import { logger } from "./logger";
 import { processDocumentExtract } from "./jobs/processDocumentExtract";
+import { logger } from "./logger";
 
-const DOCUMENT_EXTRACT_QUEUE = "document.extract";
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
-async function enqueuePendingAnalysisJobs(boss: PgBoss) {
-  const pendingJobs = await prisma.analysisJob.findMany({
-    where: {
-      status: {
-        in: ["queued", "running"],
-      },
-    },
-    select: {
-      id: true,
-      projectId: true,
-      documentId: true,
-      contentVersion: true,
-    },
-  });
+async function handleReindexEvent(payload: any) {
+  const documentId = String(payload?.documentId || "").trim();
+  const projectId = String(payload?.projectId || "").trim();
+  const chapterId = String(payload?.chapterId || "").trim();
+  const contentVersion = Number(payload?.contentVersion);
 
-  for (const job of pendingJobs) {
-    await boss.send(DOCUMENT_EXTRACT_QUEUE, {
-      jobId: job.id,
-      projectId: job.projectId,
-      documentId: job.documentId,
-      contentVersion: job.contentVersion,
-    });
+  if (!documentId || !projectId || !chapterId || !Number.isInteger(contentVersion)) {
+    throw new Error("Invalid document.reindex.requested payload");
   }
 
-  if (pendingJobs.length) {
-    logger.info({ count: pendingJobs.length }, "Enqueued pending analysis jobs");
+  const runId = await prisma.$transaction(async (tx: any) => {
+    const document = await tx.document.findUnique({
+      where: { id: documentId },
+      select: {
+        id: true,
+        contentVersion: true,
+        currentRunId: true,
+      },
+    });
+
+    if (!document) {
+      throw new Error("Document not found");
+    }
+
+    if (document.contentVersion !== contentVersion) {
+      return null;
+    }
+
+    const run = await tx.analysisRun.create({
+      data: {
+        projectId,
+        documentId,
+        chapterId,
+        contentVersion,
+        state: "queued",
+        phase: "queued",
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    await tx.analysisRun.updateMany({
+      where: {
+        documentId,
+        id: { not: run.id },
+        state: {
+          in: ["queued", "running"],
+        },
+      },
+      data: {
+        state: "superseded",
+        phase: "superseded",
+        supersededByRunId: run.id,
+        completedAt: new Date(),
+      },
+    });
+
+    await tx.document.update({
+      where: { id: documentId },
+      data: {
+        currentRunId: run.id,
+      },
+    });
+
+    return run.id;
+  });
+
+  if (runId) {
+    await processDocumentExtract({ runId });
   }
 }
 
-async function main() {
-  const boss = new PgBoss({
-    connectionString: workerConfig.databaseUrl,
-    application_name: "remarka-worker",
+async function handleOutboxEvent(entry: any) {
+  const eventType = String(entry.eventType || "").trim();
+  const payload = entry.payloadJson || {};
+
+  if (eventType === "analysis.run.requested") {
+    const runId = String(payload?.runId || "").trim();
+    if (!runId) {
+      throw new Error("Invalid analysis.run.requested payload");
+    }
+    await processDocumentExtract({ runId });
+    return;
+  }
+
+  if (eventType === "document.reindex.requested") {
+    await handleReindexEvent(payload);
+    return;
+  }
+
+  logger.warn({ eventType, outboxId: entry.id }, "Skipping unknown outbox event type");
+}
+
+async function pollOutboxOnce() {
+  const entries = await prisma.outbox.findMany({
+    where: {
+      processedAt: null,
+    },
+    orderBy: [{ createdAt: "asc" }],
+    take: workerConfig.outbox.batchSize,
   });
 
-  await boss.start();
-  await boss.createQueue(DOCUMENT_EXTRACT_QUEUE);
-  await enqueuePendingAnalysisJobs(boss);
+  for (const entry of entries) {
+    try {
+      await handleOutboxEvent(entry);
+      await prisma.outbox.update({
+        where: { id: entry.id },
+        data: {
+          processedAt: new Date(),
+          error: null,
+        },
+      });
+    } catch (error) {
+      const nextAttempt = Number(entry.attemptCount || 0) + 1;
+      const message = error instanceof Error ? error.message : String(error);
 
-  await boss.work(
-    DOCUMENT_EXTRACT_QUEUE,
-    {
-      pollingIntervalSeconds: workerConfig.queuePollIntervalSeconds,
-    },
-    async (jobs) => {
-      const entries = Array.isArray(jobs) ? jobs : [jobs];
+      await prisma.outbox.update({
+        where: { id: entry.id },
+        data: {
+          attemptCount: nextAttempt,
+          error: message.slice(0, 2000),
+          processedAt: nextAttempt >= workerConfig.outbox.maxAttempts ? new Date() : null,
+        },
+      });
 
-      for (const job of entries) {
-        const payload = job.data as {
-          jobId: string;
-          projectId: string;
-          documentId: string;
-          contentVersion: number;
-        };
-
-        await processDocumentExtract(payload);
-      }
+      logger.error(
+        {
+          err: error,
+          outboxId: entry.id,
+          eventType: entry.eventType,
+          attempt: nextAttempt,
+        },
+        "Failed to process outbox event"
+      );
     }
-  );
+  }
 
+  return entries.length;
+}
+
+async function main() {
   logger.info(
     {
-      queue: DOCUMENT_EXTRACT_QUEUE,
-      pollIntervalSeconds: workerConfig.queuePollIntervalSeconds,
+      pollIntervalMs: workerConfig.outbox.pollIntervalMs,
+      batchSize: workerConfig.outbox.batchSize,
+      maxAttempts: workerConfig.outbox.maxAttempts,
+      preprocessorUrl: workerConfig.preprocessor.url,
     },
     "Worker started"
   );
 
+  let shuttingDown = false;
+
   const shutdown = async (signal: string) => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     logger.info({ signal }, "Shutting down worker");
-    await boss.stop();
+    await prisma.$disconnect();
     process.exit(0);
   };
 
@@ -87,6 +176,13 @@ async function main() {
   process.on("SIGTERM", () => {
     void shutdown("SIGTERM");
   });
+
+  while (!shuttingDown) {
+    const processed = await pollOutboxOnce();
+    if (processed === 0) {
+      await sleep(workerConfig.outbox.pollIntervalMs);
+    }
+  }
 }
 
 main().catch((error) => {

@@ -17,6 +17,7 @@ import {
 import {
   EMPTY_RICH_TEXT_DOCUMENT,
   richTextToPlainText,
+  type AnalysisRunPayload,
   type DocumentPayload,
 } from "@remarka/contracts";
 import { NarrativeEditor } from "@/components/NarrativeEditor";
@@ -26,6 +27,7 @@ import {
   fetchProjectEntityDetails,
   saveProjectDocument,
   subscribeProjectStatus,
+  type ProjectDocumentState,
   type ProjectEntityDetails,
   type ProjectEntityListItem,
 } from "@/lib/apiClient";
@@ -63,6 +65,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
   const activeMentionId = useMemo(() => getMentionIdFromSearch(searchParams.toString()), [searchParams]);
 
   const [document, setDocument] = useState<DocumentPayload | null>(null);
+  const [run, setRun] = useState<AnalysisRunPayload | null>(null);
   const [draftRichContent, setDraftRichContent] = useState<unknown>(EMPTY_RICH_TEXT_DOCUMENT);
   const [entities, setEntities] = useState<ProjectEntityListItem[]>([]);
   const [entityDetails, setEntityDetails] = useState<ProjectEntityDetails | null>(null);
@@ -92,24 +95,27 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     [projectId, chapterId]
   );
 
-  const applyServerDocument = useCallback((loaded: DocumentPayload) => {
-    const loadedServerSnapshot = serializeRichContent(loaded.richContent);
+  const applyServerDocument = useCallback((loaded: ProjectDocumentState) => {
+    const snapshot = loaded.snapshot;
+    const loadedServerSnapshot = serializeRichContent(snapshot.richContent);
     const currentSnapshot = draftSnapshotRef.current;
     const shouldReplaceDraft = currentSnapshot === previousServerRichRef.current;
     const nextSnapshot = shouldReplaceDraft ? loadedServerSnapshot : currentSnapshot;
 
-    setDocument(loaded);
+    setDocument(snapshot);
+    setRun(loaded.run);
     if (shouldReplaceDraft) {
-      setDraftRichContent(loaded.richContent);
+      setDraftRichContent(snapshot.richContent);
       draftSnapshotRef.current = loadedServerSnapshot;
       hasUserEditedRef.current = false;
     }
 
     debugLog("applyServerDocument", {
-      loadedVersion: loaded.contentVersion,
-      loadedStatus: loaded.analysisStatus,
-      loadedPlainLength: loaded.content.length,
-      loadedRichPlainLength: plainLength(loaded.richContent),
+      loadedVersion: snapshot.contentVersion,
+      loadedStatus: loaded.run?.state || "none",
+      loadedPhase: loaded.run?.phase || "none",
+      loadedPlainLength: snapshot.content.length,
+      loadedRichPlainLength: plainLength(snapshot.richContent),
       currentDraftSerializedLength: currentSnapshot.length,
       shouldReplaceDraft,
     });
@@ -123,11 +129,12 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     debugLog("loadDocument:start");
     const loaded = await fetchProjectDocument(projectId, chapterId);
     debugLog("loadDocument:success", {
-      loadedVersion: loaded.contentVersion,
-      loadedStatus: loaded.analysisStatus,
-      loadedPlainLength: loaded.content.length,
-      loadedRichPlainLength: plainLength(loaded.richContent),
-      mentions: loaded.mentions.length,
+      loadedVersion: loaded.snapshot.contentVersion,
+      loadedStatus: loaded.run?.state || "none",
+      loadedPhase: loaded.run?.phase || "none",
+      loadedPlainLength: loaded.snapshot.content.length,
+      loadedRichPlainLength: plainLength(loaded.snapshot.richContent),
+      mentions: loaded.snapshot.mentions.length,
     });
     applyServerDocument(loaded);
   }, [projectId, chapterId, applyServerDocument, debugLog]);
@@ -154,6 +161,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     pendingServerRefreshRef.current = false;
     saveRequestVersion.current = 0;
     setDocument(null);
+    setRun(null);
     setDraftRichContent(EMPTY_RICH_TEXT_DOCUMENT);
     setSaveStatus("idle");
     setEntityDetails(null);
@@ -188,10 +196,11 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
         ]);
         if (!active) return;
         debugLog("initialLoad:success", {
-          loadedVersion: loadedDocument.contentVersion,
-          loadedStatus: loadedDocument.analysisStatus,
-          loadedPlainLength: loadedDocument.content.length,
-          loadedRichPlainLength: plainLength(loadedDocument.richContent),
+          loadedVersion: loadedDocument.snapshot.contentVersion,
+          loadedStatus: loadedDocument.run?.state || "none",
+          loadedPhase: loadedDocument.run?.phase || "none",
+          loadedPlainLength: loadedDocument.snapshot.content.length,
+          loadedRichPlainLength: plainLength(loadedDocument.snapshot.richContent),
           entities: loadedEntities.length,
         });
         applyServerDocument(loadedDocument);
@@ -251,22 +260,31 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
             ticket,
             draftPlainLength: plainLength(snapshotRich),
           });
-          const saved = await saveProjectDocument(projectId, chapterId, snapshotRich);
+          const saved = await saveProjectDocument(projectId, chapterId, snapshotRich, {
+            ifMatchContentVersion: document.contentVersion,
+            idempotencyKey: `${projectId}:${chapterId}:${document.contentVersion}:${ticket}`,
+          });
           if (ticket !== saveRequestVersion.current) return;
 
-          const savedSerialized = serializeRichContent(saved.richContent);
+          const savedSnapshot = saved.snapshot;
+          if (!savedSnapshot) {
+            await loadDocument();
+            return;
+          }
+          const savedSerialized = serializeRichContent(savedSnapshot.richContent);
           debugLog("autosave:response", {
             ticket,
             savedVersion: saved.contentVersion,
-            savedPlainLength: saved.content.length,
-            savedRichPlainLength: plainLength(saved.richContent),
+            savedRunState: saved.runState,
+            savedPlainLength: savedSnapshot.content.length,
+            savedRichPlainLength: plainLength(savedSnapshot.richContent),
           });
-          setDocument(saved);
+          setDocument(savedSnapshot);
           previousServerRichRef.current = savedSerialized;
           const currentSerialized = draftSnapshotRef.current;
           const shouldReplaceDraft = currentSerialized === snapshotSerialized;
           if (shouldReplaceDraft) {
-            setDraftRichContent(saved.richContent);
+            setDraftRichContent(savedSnapshot.richContent);
             draftSnapshotRef.current = savedSerialized;
           }
           hasUnsavedChangesRef.current = (shouldReplaceDraft ? savedSerialized : currentSerialized) !== savedSerialized;
@@ -291,7 +309,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     }, 900);
 
     return () => clearTimeout(timeout);
-  }, [document, draftRichContent, projectId, chapterId, debugLog]);
+  }, [document, draftRichContent, projectId, chapterId, debugLog, loadDocument]);
 
   useEffect(() => {
     draftSnapshotRef.current = serializeRichContent(draftRichContent);
@@ -306,41 +324,59 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
 
   useEffect(() => {
     return subscribeProjectStatus(projectId, chapterId, {
-      onStatus: (payload) => {
-        if (payload.chapterId && payload.chapterId !== chapterId) return;
+      onRunStarted: (payload) => {
+        if (payload.chapterId !== chapterId) return;
+        setRun(payload.run);
+      },
+      onPhaseChanged: (payload) => {
+        if (payload.chapterId !== chapterId) return;
+        setRun(payload.run);
+      },
+      onSnapshotUpdated: (payload) => {
+        if (payload.chapterId !== chapterId) return;
         setDocument((previous) => {
           if (!previous) return previous;
           return {
             ...previous,
-            analysisStatus: payload.analysisStatus as DocumentPayload["analysisStatus"],
             contentVersion: payload.contentVersion,
-            lastAnalyzedVersion: payload.lastAnalyzedVersion,
+            updatedAt: payload.updatedAt,
           };
         });
 
-        if (payload.analysisStatus === "running") {
-          const now = Date.now();
-          if (now - lastRunningRefreshAtRef.current < 700) {
-            return;
-          }
-          lastRunningRefreshAtRef.current = now;
-
-          if (hasUnsavedChangesRef.current) {
-            pendingServerRefreshRef.current = true;
-          } else {
-            void loadDocument();
-          }
+        const now = Date.now();
+        if (now - lastRunningRefreshAtRef.current < 700) {
           return;
         }
+        lastRunningRefreshAtRef.current = now;
 
-        if (payload.analysisStatus === "completed" || payload.analysisStatus === "failed") {
-          if (hasUnsavedChangesRef.current) {
-            pendingServerRefreshRef.current = true;
-          } else {
-            void loadDocument();
-          }
-          void loadEntities();
+        if (hasUnsavedChangesRef.current) {
+          pendingServerRefreshRef.current = true;
+        } else {
+          void loadDocument();
         }
+      },
+      onCompleted: (payload) => {
+        if (payload.chapterId !== chapterId) return;
+        setRun(payload.run);
+        if (hasUnsavedChangesRef.current) {
+          pendingServerRefreshRef.current = true;
+        } else {
+          void loadDocument();
+        }
+        void loadEntities();
+      },
+      onFailed: (payload) => {
+        if (payload.chapterId !== chapterId) return;
+        setRun(payload.run);
+        if (hasUnsavedChangesRef.current) {
+          pendingServerRefreshRef.current = true;
+        } else {
+          void loadDocument();
+        }
+      },
+      onSuperseded: (payload) => {
+        if (payload.chapterId !== chapterId) return;
+        setRun(payload.run);
       },
       onError: (message) => setError(message),
     });
@@ -439,7 +475,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
           <div className="workspace-header-actions">
             <span className="status-chip">
               <IconBrain size={14} stroke={1.8} />
-              {formatAnalysisStatusRu(document?.analysisStatus || "idle")}
+              {formatAnalysisStatusRu(run?.state || "queued")}
             </span>
             <span className="save-chip">
               <SaveChipIcon size={14} stroke={1.8} className={saveStatus === "saving" ? "icon-spin" : undefined} />

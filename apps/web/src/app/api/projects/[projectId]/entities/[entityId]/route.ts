@@ -65,7 +65,7 @@ export async function GET(_request: Request, context: RouteContext) {
             select: {
               id: true,
               type: true,
-              name: true,
+              canonicalName: true,
             },
           },
         },
@@ -76,7 +76,7 @@ export async function GET(_request: Request, context: RouteContext) {
             select: {
               id: true,
               type: true,
-              name: true,
+              canonicalName: true,
             },
           },
         },
@@ -112,7 +112,7 @@ export async function GET(_request: Request, context: RouteContext) {
     .sort((a: any, b: any) => {
       const byType = String(a.type).localeCompare(String(b.type), "ru", { sensitivity: "base" });
       if (byType !== 0) return byType;
-      return String(a.name).localeCompare(String(b.name), "ru", { sensitivity: "base" });
+      return String(a.canonicalName).localeCompare(String(b.canonicalName), "ru", { sensitivity: "base" });
     });
 
   const sortedMentions = [...entity.mentions].sort((a: any, b: any) => {
@@ -128,7 +128,7 @@ export async function GET(_request: Request, context: RouteContext) {
       id: entity.id,
       projectId: entity.projectId,
       type: entity.type,
-      name: entity.name,
+      name: entity.canonicalName,
       containerEntityId: containers[0]?.id || null,
       summary: entity.summary,
       createdAt: entity.createdAt.toISOString(),
@@ -136,12 +136,12 @@ export async function GET(_request: Request, context: RouteContext) {
       containers: containers.map((container: any) => ({
         id: container.id,
         type: container.type,
-        name: container.name,
+        name: container.canonicalName,
       })),
       containedLocations: containedLocations.map((child: any) => ({
         id: child.id,
         type: child.type,
-        name: child.name,
+        name: child.canonicalName,
       })),
       mentions: sortedMentions.map((mention: any) => ({
         id: mention.id,
