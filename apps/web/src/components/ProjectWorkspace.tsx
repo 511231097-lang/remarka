@@ -12,6 +12,7 @@ import {
   IconMapPin,
   IconQuote,
   IconHierarchy2,
+  IconRefresh,
   IconX,
 } from "@tabler/icons-react";
 import {
@@ -19,13 +20,16 @@ import {
   richTextToPlainText,
   type AnalysisRunPayload,
   type DocumentPayload,
+  type ProjectImportPayload,
 } from "@remarka/contracts";
 import { NarrativeEditor } from "@/components/NarrativeEditor";
 import {
   fetchProjectDocument,
   fetchProjectEntities,
   fetchProjectEntityDetails,
+  fetchProjectImportStatus,
   saveProjectDocument,
+  rerunChapterAnalysis,
   subscribeProjectStatus,
   type ProjectDocumentState,
   type ProjectEntityDetails,
@@ -56,6 +60,26 @@ function plainLength(value: unknown): number {
   }
 }
 
+function formatImportStageRu(stage: ProjectImportPayload["stage"] | null | undefined): string {
+  switch (stage) {
+    case "loading_source":
+      return "чтение файла";
+    case "parsing":
+      return "разбор книги";
+    case "persisting":
+      return "сохранение глав";
+    case "scheduling_analysis":
+      return "постановка анализа";
+    case "completed":
+      return "завершено";
+    case "failed":
+      return "ошибка";
+    case "queued":
+    default:
+      return "в очереди";
+  }
+}
+
 export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -66,6 +90,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
 
   const [document, setDocument] = useState<DocumentPayload | null>(null);
   const [run, setRun] = useState<AnalysisRunPayload | null>(null);
+  const [latestImport, setLatestImport] = useState<ProjectImportPayload | null>(null);
   const [draftRichContent, setDraftRichContent] = useState<unknown>(EMPTY_RICH_TEXT_DOCUMENT);
   const [entities, setEntities] = useState<ProjectEntityListItem[]>([]);
   const [entityDetails, setEntityDetails] = useState<ProjectEntityDetails | null>(null);
@@ -75,6 +100,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
   const [scrollToMentionRequest, setScrollToMentionRequest] = useState<{ mentionId: string; token: number } | null>(
     null
   );
+  const [isRerunSubmitting, setIsRerunSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const saveRequestVersion = useRef(0);
@@ -85,6 +111,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
   const hasLoadedServerDocumentRef = useRef(false);
   const pendingServerRefreshRef = useRef(false);
   const lastRunningRefreshAtRef = useRef(0);
+  const previousImportLockedRef = useRef(false);
   const debugSeqRef = useRef(0);
 
   const debugLog = useCallback(
@@ -144,6 +171,11 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     setEntities(loaded);
   }, [projectId]);
 
+  const loadImportStatus = useCallback(async () => {
+    const status = await fetchProjectImportStatus(projectId);
+    setLatestImport(status);
+  }, [projectId]);
+
   const setEntityInUrl = useCallback(
     (entityId: string | null) => {
       const queryString = buildSearchWithEntity(searchParams.toString(), entityId);
@@ -159,15 +191,18 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     hasUserEditedRef.current = false;
     hasLoadedServerDocumentRef.current = false;
     pendingServerRefreshRef.current = false;
+    previousImportLockedRef.current = false;
     saveRequestVersion.current = 0;
     setDocument(null);
     setRun(null);
+    setLatestImport(null);
     setDraftRichContent(EMPTY_RICH_TEXT_DOCUMENT);
     setSaveStatus("idle");
     setEntityDetails(null);
     setIsEntityDetailsLoading(false);
     setIsInspectorOpen(false);
     setScrollToMentionRequest(null);
+    setIsRerunSubmitting(false);
     debugLog("project:reset");
     setError(null);
   }, [projectId, chapterId, debugLog]);
@@ -190,9 +225,10 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     (async () => {
       try {
         debugLog("initialLoad:start");
-        const [loadedDocument, loadedEntities] = await Promise.all([
+        const [loadedDocument, loadedEntities, loadedImport] = await Promise.all([
           fetchProjectDocument(projectId, chapterId),
           fetchProjectEntities(projectId),
+          fetchProjectImportStatus(projectId),
         ]);
         if (!active) return;
         debugLog("initialLoad:success", {
@@ -202,9 +238,12 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
           loadedPlainLength: loadedDocument.snapshot.content.length,
           loadedRichPlainLength: plainLength(loadedDocument.snapshot.richContent),
           entities: loadedEntities.length,
+          importState: loadedImport?.state || null,
+          importStage: loadedImport?.stage || null,
         });
         applyServerDocument(loadedDocument);
         setEntities(loadedEntities);
+        setLatestImport(loadedImport);
       } catch (loadError) {
         if (!active) return;
         debugLog("initialLoad:error", {
@@ -218,6 +257,33 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
       active = false;
     };
   }, [projectId, chapterId, applyServerDocument, debugLog]);
+
+  useEffect(() => {
+    const isImportActive = Boolean(latestImport && ["queued", "running"].includes(latestImport.state));
+    if (!isImportActive) return;
+
+    const interval = window.setInterval(() => {
+      void loadImportStatus().catch((statusError) => {
+        setError(statusError instanceof Error ? statusError.message : "Ошибка загрузки импорта");
+      });
+    }, 1500);
+
+    return () => {
+      window.clearInterval(interval);
+    };
+  }, [latestImport?.id, latestImport?.state, loadImportStatus]);
+
+  useEffect(() => {
+    const isLocked = Boolean(latestImport && ["queued", "running"].includes(latestImport.state));
+    const wasLocked = previousImportLockedRef.current;
+    previousImportLockedRef.current = isLocked;
+
+    if (wasLocked && !isLocked) {
+      router.refresh();
+      void loadDocument();
+      void loadEntities();
+    }
+  }, [latestImport, router, loadDocument, loadEntities]);
 
   useEffect(() => {
     if (!document) return;
@@ -467,12 +533,56 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     saveStatus === "saving" ? "Сохранение..." : saveStatus === "saved" ? "Сохранено" : "Ошибка сохранения";
   const SaveChipIcon =
     saveStatus === "saving" ? IconLoader2 : saveStatus === "saved" ? IconCircleCheck : IconAlertTriangle;
+  const isImportLocked = Boolean(latestImport && ["queued", "running"].includes(latestImport.state));
+  const importStageLabel = latestImport ? formatImportStageRu(latestImport.stage) : null;
+  const importChipLabel = latestImport
+    ? latestImport.state === "failed"
+      ? "Импорт: ошибка"
+      : latestImport.state === "completed"
+        ? "Импорт: готово"
+        : `Импорт: ${importStageLabel}`
+    : null;
+  const ImportChipIcon = latestImport
+    ? latestImport.state === "failed"
+      ? IconAlertTriangle
+      : latestImport.state === "completed"
+        ? IconCircleCheck
+        : IconLoader2
+    : null;
+  const isRunInFlight = Boolean(run && (run.state === "queued" || run.state === "running"));
+  const isRerunDisabled = isImportLocked || !document || isRerunSubmitting || isRunInFlight;
+
+  const handleRerun = useCallback(async () => {
+    if (isRerunDisabled) return;
+    setError(null);
+    setIsRerunSubmitting(true);
+    try {
+      await rerunChapterAnalysis(projectId, chapterId, {
+        idempotencyKey: `${projectId}:${chapterId}:manual-rerun:${Date.now()}`,
+      });
+      await loadDocument();
+    } catch (rerunError) {
+      setError(rerunError instanceof Error ? rerunError.message : "Не удалось перезапустить анализ");
+    } finally {
+      setIsRerunSubmitting(false);
+    }
+  }, [chapterId, isRerunDisabled, loadDocument, projectId]);
 
   return (
     <div className="workspace-grid">
       <section className="editor-column">
         <header className="workspace-header">
           <div className="workspace-header-actions">
+            {latestImport && importChipLabel && ImportChipIcon ? (
+              <span className={`status-chip ${latestImport.state === "failed" ? "status-chip-danger" : ""}`}>
+                <ImportChipIcon
+                  size={14}
+                  stroke={1.8}
+                  className={latestImport.state === "queued" || latestImport.state === "running" ? "icon-spin" : undefined}
+                />
+                {importChipLabel}
+              </span>
+            ) : null}
             <span className="status-chip">
               <IconBrain size={14} stroke={1.8} />
               {formatAnalysisStatusRu(run?.state || "queued")}
@@ -481,6 +591,18 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
               <SaveChipIcon size={14} stroke={1.8} className={saveStatus === "saving" ? "icon-spin" : undefined} />
               {saveChipLabel}
             </span>
+            <button
+              className="status-chip workspace-rerun-btn"
+              type="button"
+              onClick={() => {
+                void handleRerun();
+              }}
+              disabled={isRerunDisabled}
+              title={isRunInFlight ? "Текущий анализ еще выполняется" : "Перезапустить анализ главы"}
+            >
+              <IconRefresh size={14} stroke={1.8} className={isRerunSubmitting ? "icon-spin" : undefined} />
+              Перезапустить анализ
+            </button>
             <button
               className="button ghost mobile-only with-icon"
               type="button"
@@ -493,6 +615,14 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
         </header>
 
         {error ? <div className="error-banner">{error}</div> : null}
+        {isImportLocked && latestImport ? (
+          <div className="info-banner">
+            Импорт книги выполняется ({formatImportStageRu(latestImport.stage)}). Редактор будет доступен после завершения.
+          </div>
+        ) : null}
+        {latestImport?.state === "failed" ? (
+          <div className="error-banner">Импорт книги завершился с ошибкой: {latestImport.error || "без деталей"}</div>
+        ) : null}
 
         <div className="editor-canvas">
           {!document ? (
@@ -501,6 +631,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
             <NarrativeEditor
               richContent={draftRichContent}
               mentions={document.mentions}
+              editable={!isImportLocked}
               activeEntityId={activeEntityId}
               activeMentionId={activeMentionId}
               scrollToMentionRequest={scrollToMentionRequest}
@@ -516,6 +647,12 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
                 }
                 if (!meta.userInitiated) {
                   debugLog("editor:onChange_ignored_non_user", {
+                    nextPlainLength: plainLength(nextRichContent),
+                  });
+                  return;
+                }
+                if (isImportLocked) {
+                  debugLog("editor:onChange_ignored_import_locked", {
                     nextPlainLength: plainLength(nextRichContent),
                   });
                   return;

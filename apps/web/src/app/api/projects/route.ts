@@ -1,4 +1,5 @@
 import { createProject, listProjects } from "@/lib/projectState";
+import { serializeLatestImportForProject } from "@/lib/projectImportState";
 import { z } from "zod";
 
 export const runtime = "nodejs";
@@ -24,6 +25,7 @@ export async function GET() {
         createdAt: chapter.createdAt.toISOString(),
         updatedAt: chapter.updatedAt.toISOString(),
       })),
+      latestImport: serializeLatestImportForProject(project),
       createdAt: project.createdAt.toISOString(),
       updatedAt: project.updatedAt.toISOString(),
     })),
@@ -51,6 +53,7 @@ export async function POST(request: Request) {
             createdAt: chapter.createdAt.toISOString(),
             updatedAt: chapter.updatedAt.toISOString(),
           })),
+          latestImport: null,
           firstChapterId: project.chapters[0]?.id ?? null,
           createdAt: project.createdAt.toISOString(),
           updatedAt: project.updatedAt.toISOString(),

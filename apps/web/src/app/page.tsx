@@ -2,6 +2,7 @@ import Link from "next/link";
 import { prisma } from "@remarka/db";
 import { AppShell } from "@/components/AppShell";
 import type { SidebarProjectItem } from "@/lib/apiClient";
+import { serializeLatestImportForProject } from "@/lib/projectImportState";
 
 export const dynamic = "force-dynamic";
 
@@ -11,6 +12,10 @@ export default async function HomePage() {
     include: {
       chapters: {
         orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+      },
+      projectImports: {
+        orderBy: [{ createdAt: "desc" }],
+        take: 1,
       },
     },
   });
@@ -27,6 +32,7 @@ export default async function HomePage() {
       createdAt: chapter.createdAt.toISOString(),
       updatedAt: chapter.updatedAt.toISOString(),
     })),
+    latestImport: serializeLatestImportForProject(project),
     createdAt: project.createdAt.toISOString(),
     updatedAt: project.updatedAt.toISOString(),
   }));

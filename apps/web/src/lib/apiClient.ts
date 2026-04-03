@@ -3,6 +3,7 @@ import type {
   DocumentSnapshot,
   DocumentViewResponse,
   EntityType,
+  ProjectImportPayload,
   PutDocumentResponse,
   QualityFlags,
 } from "@remarka/contracts";
@@ -64,6 +65,7 @@ export interface SidebarProjectItem {
   title: string;
   description: string | null;
   chapters: SidebarChapterItem[];
+  latestImport: ProjectImportPayload | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -144,6 +146,24 @@ export async function saveProjectDocument(
   });
 }
 
+export async function rerunChapterAnalysis(
+  projectId: string,
+  chapterId: string,
+  options?: {
+    idempotencyKey?: string | null;
+  }
+): Promise<SaveDocumentResult> {
+  const headers: Record<string, string> = {};
+  if (options?.idempotencyKey?.trim()) {
+    headers["Idempotency-Key"] = options.idempotencyKey.trim();
+  }
+
+  return requestJson<SaveDocumentResult>(`/api/projects/${projectId}/chapters/${chapterId}/analysis/rerun`, {
+    method: "POST",
+    headers,
+  });
+}
+
 export async function fetchProjectEntities(
   projectId: string,
   options: { q?: string; type?: EntityType | "" } = {}
@@ -171,6 +191,60 @@ export async function createProjectRequest(input: { title: string; description?:
     body: JSON.stringify(input),
   });
   return result.project;
+}
+
+export async function createProjectImportRequest(input: {
+  file: File;
+  title?: string | null;
+  description?: string | null;
+}) {
+  const formData = new FormData();
+  formData.set("file", input.file);
+  if (input.title?.trim()) {
+    formData.set("title", input.title.trim());
+  }
+  if (input.description?.trim()) {
+    formData.set("description", input.description.trim());
+  }
+
+  const response = await fetch(`/api/projects/import`, {
+    method: "POST",
+    body: formData,
+    cache: "no-store",
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    if (text) {
+      let payload: { message?: string; error?: string } | null = null;
+      try {
+        payload = JSON.parse(text) as { message?: string; error?: string };
+      } catch {
+        payload = null;
+      }
+
+      if (payload?.message) {
+        throw new Error(payload.message);
+      }
+
+      if (payload?.error) {
+        throw new Error(payload.error);
+      }
+
+      throw new Error(text);
+    }
+    throw new Error(`Request failed: ${response.status}`);
+  }
+
+  return (await response.json()) as {
+    project: SidebarProjectItem & { firstChapterId: string | null };
+    import: ProjectImportPayload;
+  };
+}
+
+export async function fetchProjectImportStatus(projectId: string): Promise<ProjectImportPayload | null> {
+  const response = await requestJson<{ import: ProjectImportPayload | null }>(`/api/projects/${projectId}/import`);
+  return response.import;
 }
 
 export async function createProjectChapterRequest(projectId: string, input?: { title?: string | null }) {

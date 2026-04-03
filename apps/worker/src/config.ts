@@ -94,10 +94,31 @@ export const workerConfig = {
     batchSize: getIntEnv("OUTBOX_BATCH_SIZE", 16),
     maxAttempts: getIntEnv("OUTBOX_MAX_ATTEMPTS", 8),
   },
+  imports: {
+    blobDir: String(process.env.IMPORT_BLOB_DIR || "/tmp/remarka-imports").trim() || "/tmp/remarka-imports",
+    maxZipUncompressedBytes: getIntEnv("IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES", 50 * 1024 * 1024),
+  },
   pipeline: {
     enableEventExtraction: getBoolEnv("ENABLE_EVENT_EXTRACTION", false),
+    analysisAutoRerunEnabled: getBoolEnv("ANALYSIS_AUTO_RERUN_ENABLED", true),
+    analysisAutoRerunMaxAttempts: getIntEnv("ANALYSIS_AUTO_RERUN_MAX_ATTEMPTS", 1),
+    analysisAutoRerunEmptyMinCandidates: getIntEnv("ANALYSIS_AUTO_RERUN_EMPTY_MIN_CANDIDATES", 120),
+    analysisAutoRerunEmptyMinContentChars: getIntEnv("ANALYSIS_AUTO_RERUN_EMPTY_MIN_CONTENT_CHARS", 2500),
     patchWindowsCap: getIntEnv("PATCH_WINDOWS_CAP", 32),
     patchWindowSize: getIntEnv("PATCH_WINDOW_SIZE", 12),
+    entityPassBatchCandidates: getIntEnv("ENTITY_PASS_BATCH_CANDIDATES", getIntEnv("ENTITY_PASS_CANDIDATES_CAP", 1200)),
+    entityPassBatchSnippetsCap: getIntEnv("ENTITY_PASS_BATCH_SNIPPETS_CAP", getIntEnv("ENTITY_PASS_SNIPPETS_CAP", 192)),
+    entityPassBatchSnippetMaxChars: getIntEnv(
+      "ENTITY_PASS_BATCH_SNIPPET_MAX_CHARS",
+      getIntEnv("ENTITY_PASS_SNIPPET_MAX_CHARS", 1200)
+    ),
+    entityPassBatchCandidateTextMaxChars: getIntEnv(
+      "ENTITY_PASS_BATCH_CANDIDATE_TEXT_MAX_CHARS",
+      getIntEnv("ENTITY_PASS_CANDIDATE_TEXT_MAX_CHARS", 160)
+    ),
+    entityPassKnownEntitiesCap: getIntEnv("ENTITY_PASS_KNOWN_ENTITIES_CAP", 400),
+    entityPassKnownAliasesPerEntity: getIntEnv("ENTITY_PASS_KNOWN_ALIASES_PER_ENTITY", 8),
+    entityPassSkipWhenNoCandidates: getBoolEnv("ENTITY_PASS_SKIP_WHEN_NO_CANDIDATES", true),
   },
   preprocessor: {
     url: String(process.env.PREPROCESSOR_URL || "http://127.0.0.1:8010").replace(/\/+$/, ""),

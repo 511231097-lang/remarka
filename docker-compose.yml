@@ -44,6 +44,7 @@ services:
       NODE_ENV: production
       NEXT_TELEMETRY_DISABLED: "1"
       TIMEWEB_PROXY_SOURCE: remarka-web
+      IMPORT_BLOB_DIR: /var/remarka/imports
     depends_on:
       db:
         condition: service_healthy
@@ -51,6 +52,8 @@ services:
         condition: service_completed_successfully
     ports:
       - "3000:3000"
+    volumes:
+      - remarka_import_blobs:/var/remarka/imports
     restart: unless-stopped
 
   preprocessor:
@@ -84,6 +87,7 @@ services:
       TIMEWEB_PROXY_SOURCE: remarka-worker
       PREPROCESSOR_URL: http://preprocessor:8010
       OUTBOX_POLL_INTERVAL_MS: "1200"
+      IMPORT_BLOB_DIR: /var/remarka/imports
     depends_on:
       db:
         condition: service_healthy
@@ -91,7 +95,10 @@ services:
         condition: service_completed_successfully
       preprocessor:
         condition: service_healthy
+    volumes:
+      - remarka_import_blobs:/var/remarka/imports
     restart: unless-stopped
 
 volumes:
   remarka_postgres_data:
+  remarka_import_blobs:

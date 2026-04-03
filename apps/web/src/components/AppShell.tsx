@@ -17,10 +17,12 @@ import {
   IconPlus,
   IconSunHigh,
   IconTrash,
+  IconUpload,
   IconX,
 } from "@tabler/icons-react";
 import {
   createProjectChapterRequest,
+  createProjectImportRequest,
   createProjectRequest,
   deleteProjectChapterRequest,
   updateProjectChapterRequest,
@@ -36,6 +38,7 @@ interface AppShellProps {
 }
 
 type ThemeMode = "light" | "dark";
+type CreateMode = "blank" | "import";
 
 function applyTheme(theme: ThemeMode) {
   document.documentElement.setAttribute("data-theme", theme);
@@ -74,6 +77,7 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
   const [chapterError, setChapterError] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemeMode>("light");
   const [isThemeReady, setIsThemeReady] = useState(false);
+  const [createMode, setCreateMode] = useState<CreateMode>("blank");
 
   useEffect(() => {
     setTheme(resolveInitialTheme());
@@ -136,19 +140,35 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
   async function handleCreateProject(formData: FormData) {
     const title = String(formData.get("title") || "").trim();
     const description = String(formData.get("description") || "").trim();
-
-    if (!title) {
-      setCreateError("Введите название проекта");
-      return;
-    }
+    const file = formData.get("file");
 
     setCreateError(null);
     setIsSavingProject(true);
     try {
-      const project = await createProjectRequest({
-        title,
-        description: description || null,
-      });
+      let project: SidebarProjectItem & { firstChapterId: string | null };
+      if (createMode === "import") {
+        if (!(file instanceof File) || !file.size) {
+          setCreateError("Выберите файл .fb2 или .fb2.zip");
+          return;
+        }
+
+        const imported = await createProjectImportRequest({
+          file,
+          title: title || null,
+          description: description || null,
+        });
+        project = imported.project;
+      } else {
+        if (!title) {
+          setCreateError("Введите название проекта");
+          return;
+        }
+
+        project = await createProjectRequest({
+          title,
+          description: description || null,
+        });
+      }
       setIsCreateOpen(false);
       setIsSidebarOpen(false);
       router.push(buildProjectHref(project.id, project.firstChapterId));
@@ -320,15 +340,34 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
               <IconFolder size={14} stroke={1.8} />
               Проекты
             </div>
-            <button
-              className="icon-btn"
-              type="button"
-              onClick={() => setIsCreateOpen(true)}
-              aria-label="Создать проект"
-              title="Создать проект"
-            >
-              <IconPlus size={16} stroke={1.8} />
-            </button>
+            <div className="sidebar-header-actions">
+              <button
+                className="icon-btn"
+                type="button"
+                onClick={() => {
+                  setCreateMode("import");
+                  setCreateError(null);
+                  setIsCreateOpen(true);
+                }}
+                aria-label="Импорт книги"
+                title="Импорт книги"
+              >
+                <IconUpload size={16} stroke={1.8} />
+              </button>
+              <button
+                className="icon-btn"
+                type="button"
+                onClick={() => {
+                  setCreateMode("blank");
+                  setCreateError(null);
+                  setIsCreateOpen(true);
+                }}
+                aria-label="Создать проект"
+                title="Создать проект"
+              >
+                <IconPlus size={16} stroke={1.8} />
+              </button>
+            </div>
           </div>
 
           {chapterError ? <div className="error-text">{chapterError}</div> : null}
@@ -492,6 +531,22 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal">
             <div className="modal-title">Новый проект</div>
+            <div className="modal-create-mode">
+              <button
+                className={`button ghost ${createMode === "blank" ? "active" : ""}`}
+                type="button"
+                onClick={() => setCreateMode("blank")}
+              >
+                Пустой проект
+              </button>
+              <button
+                className={`button ghost ${createMode === "import" ? "active" : ""}`}
+                type="button"
+                onClick={() => setCreateMode("import")}
+              >
+                Импорт книги
+              </button>
+            </div>
             <form
               className="modal-form"
               onSubmit={async (event) => {
@@ -500,7 +555,13 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
                 await handleCreateProject(formData);
               }}
             >
-              <input className="input" name="title" placeholder="Название проекта" maxLength={120} required />
+              <input
+                className="input"
+                name="title"
+                placeholder={createMode === "import" ? "Название проекта (опционально)" : "Название проекта"}
+                maxLength={120}
+                required={createMode === "blank"}
+              />
               <textarea
                 className="textarea"
                 name="description"
@@ -508,13 +569,16 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
                 maxLength={500}
                 rows={4}
               />
+              {createMode === "import" ? (
+                <input className="input" name="file" type="file" accept=".fb2,.zip,.fb2.zip" required />
+              ) : null}
               {createError ? <div className="error-text">{createError}</div> : null}
               <div className="modal-actions">
                 <button className="button ghost" type="button" onClick={() => setIsCreateOpen(false)}>
                   Отмена
                 </button>
                 <button className="button primary" type="submit" disabled={isSavingProject}>
-                  {isSavingProject ? "Создание..." : "Создать"}
+                  {isSavingProject ? "Создание..." : createMode === "import" ? "Импортировать" : "Создать"}
                 </button>
               </div>
             </form>

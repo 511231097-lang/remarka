@@ -51,6 +51,28 @@ enum MentionCandidateType {
   ambiguous
 }
 
+enum BookFormat {
+  fb2
+  fb2_zip
+}
+
+enum ProjectImportState {
+  queued
+  running
+  completed
+  failed
+}
+
+enum ProjectImportStage {
+  queued
+  loading_source
+  parsing
+  persisting
+  scheduling_analysis
+  completed
+  failed
+}
+
 model Project {
   id          String   @id @default(cuid())
   title       String
@@ -63,6 +85,44 @@ model Project {
   entities             Entity[]
   analysisRuns         AnalysisRun[]
   locationContainments LocationContainment[]
+  projectImports       ProjectImport[]
+}
+
+model SourceAsset {
+  id         String   @id @default(cuid())
+  provider   String
+  storageKey String
+  fileName   String
+  mimeType   String
+  sizeBytes  Int
+  sha256     String
+  createdAt  DateTime @default(now())
+
+  projectImports ProjectImport[]
+
+  @@index([provider, storageKey])
+}
+
+model ProjectImport {
+  id           String             @id @default(cuid())
+  projectId    String
+  sourceAssetId String
+  format       BookFormat
+  state        ProjectImportState @default(queued)
+  stage        ProjectImportStage @default(queued)
+  error        String?
+  chapterCount Int?
+  metadataJson Json?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime           @default(now())
+  updatedAt    DateTime           @updatedAt
+
+  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  sourceAsset SourceAsset @relation(fields: [sourceAssetId], references: [id], onDelete: Restrict)
+
+  @@index([projectId, createdAt])
+  @@index([state, createdAt])
 }
 
 model Chapter {

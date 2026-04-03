@@ -64,6 +64,26 @@ type ProjectRecord = {
   createdAt: Date;
   updatedAt: Date;
   chapters: ChapterRecord[];
+  projectImports: Array<{
+    id: string;
+    projectId: string;
+    format: "fb2" | "fb2_zip";
+    state: "queued" | "running" | "completed" | "failed";
+    stage:
+      | "queued"
+      | "loading_source"
+      | "parsing"
+      | "persisting"
+      | "scheduling_analysis"
+      | "completed"
+      | "failed";
+    error: string | null;
+    chapterCount: number | null;
+    startedAt: Date | null;
+    completedAt: Date | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }>;
 };
 
 function parseQualityFlags(value: unknown): QualityFlags | null {
@@ -223,6 +243,68 @@ async function getOrCreateDocument(projectId: string, chapterId?: string | null,
   });
 }
 
+async function enqueueAnalysisRun(params: {
+  tx: any;
+  projectId: string;
+  documentId: string;
+  chapterId: string;
+  contentVersion: number;
+  idempotencyKey?: string | null;
+}) {
+  const idempotencyKey = String(params.idempotencyKey || "").trim() || null;
+  const run = await params.tx.analysisRun.create({
+    data: {
+      projectId: params.projectId,
+      documentId: params.documentId,
+      chapterId: params.chapterId,
+      contentVersion: params.contentVersion,
+      state: "queued",
+      phase: "queued",
+      idempotencyKey,
+    },
+  });
+
+  await params.tx.analysisRun.updateMany({
+    where: {
+      documentId: params.documentId,
+      id: { not: run.id },
+      state: {
+        in: ["queued", "running"],
+      },
+    },
+    data: {
+      state: "superseded",
+      phase: "superseded",
+      supersededByRunId: run.id,
+      completedAt: new Date(),
+    },
+  });
+
+  await params.tx.document.update({
+    where: { id: params.documentId },
+    data: {
+      currentRunId: run.id,
+    },
+  });
+
+  await params.tx.outbox.create({
+    data: {
+      aggregateType: "analysis_run",
+      aggregateId: run.id,
+      eventType: "analysis.run.requested",
+      payloadJson: {
+        runId: run.id,
+        projectId: params.projectId,
+        documentId: params.documentId,
+        chapterId: params.chapterId,
+        contentVersion: params.contentVersion,
+      },
+    },
+  });
+
+  return run;
+}
+
 async function loadDocumentState(projectId: string, chapterId?: string | null, tx: any = prisma): Promise<DocumentViewResponse> {
   const document = await getOrCreateDocument(projectId, chapterId, tx);
 
@@ -266,6 +348,10 @@ export async function listProjects(): Promise<ProjectRecord[]> {
       chapters: {
         orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
       },
+      projectImports: {
+        orderBy: [{ createdAt: "desc" }],
+        take: 1,
+      },
     },
   });
 }
@@ -304,6 +390,7 @@ export async function createProject(input: { title: string; description?: string
     return {
       ...project,
       chapters: [firstChapter],
+      projectImports: [],
     };
   });
 }
@@ -557,54 +644,13 @@ export async function saveProjectDocument(
       },
     });
 
-    const run = await tx.analysisRun.create({
-      data: {
-        projectId,
-        documentId: document.id,
-        chapterId: chapter.id,
-        contentVersion: document.contentVersion,
-        state: "queued",
-        phase: "queued",
-        idempotencyKey,
-      },
-    });
-
-    await tx.analysisRun.updateMany({
-      where: {
-        documentId: document.id,
-        id: { not: run.id },
-        state: {
-          in: ["queued", "running"],
-        },
-      },
-      data: {
-        state: "superseded",
-        phase: "superseded",
-        supersededByRunId: run.id,
-        completedAt: new Date(),
-      },
-    });
-
-    await tx.document.update({
-      where: { id: document.id },
-      data: {
-        currentRunId: run.id,
-      },
-    });
-
-    await tx.outbox.create({
-      data: {
-        aggregateType: "analysis_run",
-        aggregateId: run.id,
-        eventType: "analysis.run.requested",
-        payloadJson: {
-          runId: run.id,
-          projectId,
-          documentId: document.id,
-          chapterId: chapter.id,
-          contentVersion: document.contentVersion,
-        },
-      },
+    const run = await enqueueAnalysisRun({
+      tx,
+      projectId,
+      documentId: document.id,
+      chapterId: chapter.id,
+      contentVersion: document.contentVersion,
+      idempotencyKey,
     });
 
     await tx.project.update({
@@ -616,6 +662,99 @@ export async function saveProjectDocument(
 
     const state = await loadDocumentState(projectId, chapter.id, tx);
 
+    return {
+      replay: false,
+      run,
+      state,
+    };
+  });
+
+  if (result.replay) {
+    return {
+      runId: result.run.id,
+      contentVersion: result.run.contentVersion,
+      runState: result.run.state,
+      snapshotAvailable: true,
+      snapshot: result.state.snapshot,
+      qualityFlags: result.state.qualityFlags,
+    };
+  }
+
+  return {
+    runId: result.run.id,
+    contentVersion: result.run.contentVersion,
+    runState: result.run.state,
+    snapshotAvailable: true,
+    snapshot: result.state.snapshot,
+    qualityFlags: result.state.qualityFlags,
+  };
+}
+
+export async function rerunProjectChapterAnalysis(
+  projectId: string,
+  chapterId: string,
+  options?: {
+    idempotencyKey?: string | null;
+  }
+): Promise<PutDocumentResponse> {
+  await ensureProjectExists(projectId);
+  const idempotencyKey = String(options?.idempotencyKey || "").trim() || null;
+
+  const result = await prisma.$transaction(async (tx: any) => {
+    const chapter = await resolveProjectChapter(projectId, chapterId, tx);
+    let document = await tx.document.findUnique({
+      where: { chapterId: chapter.id },
+    });
+
+    if (!document) {
+      document = await tx.document.create({
+        data: {
+          projectId,
+          chapterId: chapter.id,
+          content: "",
+          richContent: EMPTY_RICH_TEXT_DOCUMENT as unknown as Prisma.InputJsonValue,
+          contentVersion: 0,
+          currentRunId: null,
+        },
+      });
+    }
+
+    if (idempotencyKey) {
+      const existingByKey = await tx.analysisRun.findFirst({
+        where: {
+          documentId: document.id,
+          idempotencyKey,
+        },
+        orderBy: [{ createdAt: "desc" }],
+      });
+
+      if (existingByKey) {
+        const state = await loadDocumentState(projectId, chapter.id, tx);
+        return {
+          replay: true,
+          run: existingByKey,
+          state,
+        };
+      }
+    }
+
+    const run = await enqueueAnalysisRun({
+      tx,
+      projectId,
+      documentId: document.id,
+      chapterId: chapter.id,
+      contentVersion: document.contentVersion,
+      idempotencyKey,
+    });
+
+    await tx.project.update({
+      where: { id: projectId },
+      data: {
+        updatedAt: new Date(),
+      },
+    });
+
+    const state = await loadDocumentState(projectId, chapter.id, tx);
     return {
       replay: false,
       run,

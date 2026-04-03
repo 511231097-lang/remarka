@@ -1,6 +1,7 @@
 import { prisma } from "@remarka/db";
 import { workerConfig } from "./config";
 import { processDocumentExtract } from "./jobs/processDocumentExtract";
+import { processProjectImport } from "./jobs/processProjectImport";
 import { logger } from "./logger";
 
 function sleep(ms: number) {
@@ -90,6 +91,15 @@ async function handleOutboxEvent(entry: any) {
       throw new Error("Invalid analysis.run.requested payload");
     }
     await processDocumentExtract({ runId });
+    return;
+  }
+
+  if (eventType === "project.import.requested") {
+    const importId = String(payload?.importId || "").trim();
+    if (!importId) {
+      throw new Error("Invalid project.import.requested payload");
+    }
+    await processProjectImport({ importId });
     return;
   }
 

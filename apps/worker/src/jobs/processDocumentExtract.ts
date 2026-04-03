@@ -8,6 +8,7 @@ import {
   type EntityType,
   type MentionCandidateType,
   type MentionRouting,
+  type PrepassResult,
 } from "@remarka/contracts";
 import { workerConfig } from "../config";
 import { runEntityPass, runPatchCompletion, type StrictJsonCallMeta } from "../extractionV2";
@@ -80,6 +81,18 @@ interface RunLlmUsageSummary {
   mentionCompletion?: RunLlmUsagePhase;
 }
 
+type AutoRerunReason = "failed" | "quality_gate_empty";
+
+interface AutoRerunScheduleResult {
+  scheduled: boolean;
+  reason: AutoRerunReason;
+  attempt: number;
+  maxAttempts: number;
+  runId: string | null;
+}
+
+const AUTO_RERUN_IDEMPOTENCY_PREFIX = "auto-rerun";
+
 function createRunLlmUsageSummary(): RunLlmUsageSummary {
   return {
     total: {
@@ -120,6 +133,41 @@ function registerPhaseUsage(
 
 function hasAnyPhaseUsage(usageSummary: RunLlmUsageSummary): boolean {
   return Boolean(usageSummary.entityPass || usageSummary.mentionCompletion);
+}
+
+function buildAutoRerunIdempotencyKey(params: {
+  reason: AutoRerunReason;
+  documentId: string;
+  contentVersion: number;
+  attempt: number;
+}): string {
+  return `${AUTO_RERUN_IDEMPOTENCY_PREFIX}:${params.reason}:${params.documentId}:${params.contentVersion}:${params.attempt}`;
+}
+
+function shouldAutoRerunForFailure(message: string): boolean {
+  const normalized = String(message || "").trim().toLowerCase();
+  if (!normalized) return true;
+
+  const skipPatterns = [
+    "version gate failed",
+    "document not found",
+    "contentversion mismatch",
+    "run superseded",
+    "entity normalizedname cannot be empty",
+  ];
+
+  return !skipPatterns.some((pattern) => normalized.includes(pattern));
+}
+
+function shouldFailQualityGate(params: {
+  prepassCandidates: number;
+  mentionCount: number;
+  contentChars: number;
+}): boolean {
+  if (params.mentionCount > 0) return false;
+  if (params.prepassCandidates < workerConfig.pipeline.analysisAutoRerunEmptyMinCandidates) return false;
+  if (params.contentChars < workerConfig.pipeline.analysisAutoRerunEmptyMinContentChars) return false;
+  return true;
 }
 
 function isWordBoundaryChar(value: string): boolean {
@@ -166,6 +214,165 @@ function chunkArray<T>(items: T[], chunkSize: number): T[][] {
 function clamp01(value: number): number {
   if (!Number.isFinite(value)) return 0;
   return Math.max(0, Math.min(1, value));
+}
+
+function clampText(value: string, maxChars: number): string {
+  const text = String(value || "");
+  if (maxChars <= 0 || text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(1, maxChars - 3)).trimEnd()}...`;
+}
+
+interface EntityPassBatchStats {
+  batches: number;
+  candidatesTotal: number;
+  snippetsTotal: number;
+  candidatesMaxPerBatch: number;
+  snippetsMaxPerBatch: number;
+}
+
+function buildEntityPassBatches(prepass: PrepassResult): { batches: PrepassResult[]; stats: EntityPassBatchStats } {
+  const batchCandidates = workerConfig.pipeline.entityPassBatchCandidates;
+  const batchSnippetsCap = workerConfig.pipeline.entityPassBatchSnippetsCap;
+  const snippetMaxChars = workerConfig.pipeline.entityPassBatchSnippetMaxChars;
+  const candidateTextMaxChars = workerConfig.pipeline.entityPassBatchCandidateTextMaxChars;
+
+  const sortedCandidates = [...prepass.candidates].sort((left, right) => {
+    if (left.paragraphIndex !== right.paragraphIndex) return left.paragraphIndex - right.paragraphIndex;
+    if (left.startOffset !== right.startOffset) return left.startOffset - right.startOffset;
+    return left.endOffset - right.endOffset;
+  });
+
+  const snippetByParagraph = new Map<number, PrepassResult["snippets"][number]>();
+  for (const snippet of prepass.snippets) {
+    if (!snippetByParagraph.has(snippet.paragraphIndex)) {
+      snippetByParagraph.set(snippet.paragraphIndex, {
+        ...snippet,
+        text: clampText(snippet.text, snippetMaxChars),
+      });
+    }
+  }
+
+  for (const paragraph of prepass.paragraphs) {
+    if (snippetByParagraph.has(paragraph.index)) continue;
+    const text = clampText(paragraph.text, snippetMaxChars);
+    if (!text.trim()) continue;
+    snippetByParagraph.set(paragraph.index, {
+      snippetId: `snip:auto:${paragraph.index}`,
+      paragraphIndex: paragraph.index,
+      text,
+    });
+  }
+
+  const fallbackSnippets = [...snippetByParagraph.values()].sort((left, right) => left.paragraphIndex - right.paragraphIndex);
+  const candidateChunks = chunkArray(sortedCandidates, batchCandidates);
+
+  const batches = candidateChunks.map((chunk) => {
+    const candidates = chunk.map((candidate) => ({
+      ...candidate,
+      text: clampText(candidate.text, candidateTextMaxChars),
+      normalizedText: clampText(candidate.normalizedText, candidateTextMaxChars),
+    }));
+
+    const targetParagraphs = [...new Set(candidates.map((candidate) => candidate.paragraphIndex))];
+    const snippets: PrepassResult["snippets"] = [];
+    const snippetIds = new Set<string>();
+
+    for (const paragraphIndex of targetParagraphs) {
+      const snippet = snippetByParagraph.get(paragraphIndex);
+      if (!snippet || snippetIds.has(snippet.snippetId)) continue;
+      snippets.push(snippet);
+      snippetIds.add(snippet.snippetId);
+      if (snippets.length >= batchSnippetsCap) break;
+    }
+
+    const minimumSnippetFallback = Math.min(3, batchSnippetsCap);
+    if (snippets.length < minimumSnippetFallback) {
+      for (const snippet of fallbackSnippets) {
+        if (snippetIds.has(snippet.snippetId)) continue;
+        snippets.push(snippet);
+        snippetIds.add(snippet.snippetId);
+        if (snippets.length >= minimumSnippetFallback || snippets.length >= batchSnippetsCap) break;
+      }
+    }
+
+    return {
+      ...prepass,
+      candidates,
+      snippets,
+    };
+  });
+
+  const stats = batches.reduce<EntityPassBatchStats>(
+    (acc, batch) => {
+      acc.batches += 1;
+      acc.candidatesTotal += batch.candidates.length;
+      acc.snippetsTotal += batch.snippets.length;
+      acc.candidatesMaxPerBatch = Math.max(acc.candidatesMaxPerBatch, batch.candidates.length);
+      acc.snippetsMaxPerBatch = Math.max(acc.snippetsMaxPerBatch, batch.snippets.length);
+      return acc;
+    },
+    {
+      batches: 0,
+      candidatesTotal: 0,
+      snippetsTotal: 0,
+      candidatesMaxPerBatch: 0,
+      snippetsMaxPerBatch: 0,
+    }
+  );
+
+  return {
+    batches,
+    stats,
+  };
+}
+
+function mergeEntityPassResults(contentVersion: number, results: EntityPassResult[]): EntityPassResult {
+  const merged = new Map<string, EntityPassResult["entities"][number]>();
+
+  for (const result of results) {
+    for (const entity of result.entities) {
+      const normalizedKey = normalizeEntityName(entity.normalizedName || entity.canonicalName) || entity.tempEntityId;
+      const key = `${entity.type}:${normalizedKey}`;
+      const existing = merged.get(key);
+
+      if (!existing) {
+        merged.set(key, {
+          ...entity,
+          aliases: [...entity.aliases],
+          evidence: [...entity.evidence],
+        });
+        continue;
+      }
+
+      if (!existing.summary && entity.summary) {
+        existing.summary = entity.summary;
+      }
+
+      if (existing.resolution.action !== "link_existing" && entity.resolution.action === "link_existing") {
+        existing.resolution = entity.resolution;
+      }
+
+      const aliasSeen = new Set(existing.aliases.map((alias) => alias.normalizedAlias));
+      for (const alias of entity.aliases) {
+        if (aliasSeen.has(alias.normalizedAlias)) continue;
+        existing.aliases.push(alias);
+        aliasSeen.add(alias.normalizedAlias);
+      }
+
+      const evidenceSeen = new Set(existing.evidence.map((item) => `${item.snippetId}:${item.quote}`));
+      for (const evidence of entity.evidence) {
+        const evidenceKey = `${evidence.snippetId}:${evidence.quote}`;
+        if (evidenceSeen.has(evidenceKey)) continue;
+        existing.evidence.push(evidence);
+        evidenceSeen.add(evidenceKey);
+      }
+    }
+  }
+
+  return {
+    contentVersion,
+    entities: [...merged.values()],
+  };
 }
 
 async function markRunSuperseded(runId: string, supersededByRunId?: string | null) {
@@ -780,6 +987,189 @@ async function computeAndFinalizeRun(params: {
   });
 }
 
+async function markRunFailed(params: {
+  runId: string;
+  message: string;
+  llmUsage?: RunLlmUsageSummary | null;
+}) {
+  const failedUpdateData: Prisma.AnalysisRunUpdateManyMutationInput = {
+    state: "failed",
+    phase: "failed",
+    error: String(params.message || "Analysis run failed").slice(0, 2000),
+    completedAt: new Date(),
+  };
+
+  if (params.llmUsage && hasAnyPhaseUsage(params.llmUsage)) {
+    failedUpdateData.qualityFlags = {
+      llmUsage: params.llmUsage,
+    } as unknown as Prisma.InputJsonValue;
+  }
+
+  await prisma.analysisRun.updateMany({
+    where: { id: params.runId },
+    data: failedUpdateData,
+  });
+}
+
+async function scheduleAutoRerun(params: {
+  runId: string;
+  projectId: string;
+  documentId: string;
+  chapterId: string;
+  contentVersion: number;
+  reason: AutoRerunReason;
+}): Promise<AutoRerunScheduleResult> {
+  const maxAttempts = workerConfig.pipeline.analysisAutoRerunMaxAttempts;
+  if (!workerConfig.pipeline.analysisAutoRerunEnabled || maxAttempts <= 0) {
+    return {
+      scheduled: false,
+      reason: params.reason,
+      attempt: 0,
+      maxAttempts,
+      runId: null,
+    };
+  }
+
+  return prisma.$transaction(async (tx: Tx) => {
+    const gateDocument = await tx.document.findUnique({
+      where: { id: params.documentId },
+      select: {
+        currentRunId: true,
+        contentVersion: true,
+      },
+    });
+
+    if (!gateDocument) {
+      return {
+        scheduled: false,
+        reason: params.reason,
+        attempt: 0,
+        maxAttempts,
+        runId: null,
+      };
+    }
+
+    if (gateDocument.currentRunId !== params.runId || gateDocument.contentVersion !== params.contentVersion) {
+      return {
+        scheduled: false,
+        reason: params.reason,
+        attempt: 0,
+        maxAttempts,
+        runId: null,
+      };
+    }
+
+    const existingAttempts = await tx.analysisRun.count({
+      where: {
+        documentId: params.documentId,
+        contentVersion: params.contentVersion,
+        idempotencyKey: {
+          startsWith: `${AUTO_RERUN_IDEMPOTENCY_PREFIX}:`,
+        },
+      },
+    });
+    const nextAttempt = existingAttempts + 1;
+
+    if (nextAttempt > maxAttempts) {
+      return {
+        scheduled: false,
+        reason: params.reason,
+        attempt: nextAttempt,
+        maxAttempts,
+        runId: null,
+      };
+    }
+
+    const idempotencyKey = buildAutoRerunIdempotencyKey({
+      reason: params.reason,
+      documentId: params.documentId,
+      contentVersion: params.contentVersion,
+      attempt: nextAttempt,
+    });
+
+    const existingByKey = await tx.analysisRun.findFirst({
+      where: {
+        documentId: params.documentId,
+        idempotencyKey,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    if (existingByKey) {
+      return {
+        scheduled: true,
+        reason: params.reason,
+        attempt: nextAttempt,
+        maxAttempts,
+        runId: existingByKey.id,
+      };
+    }
+
+    const rerun = await tx.analysisRun.create({
+      data: {
+        projectId: params.projectId,
+        documentId: params.documentId,
+        chapterId: params.chapterId,
+        contentVersion: params.contentVersion,
+        state: "queued",
+        phase: "queued",
+        idempotencyKey,
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    await tx.analysisRun.updateMany({
+      where: {
+        documentId: params.documentId,
+        id: { not: rerun.id },
+        state: {
+          in: ["queued", "running"],
+        },
+      },
+      data: {
+        state: "superseded",
+        phase: "superseded",
+        supersededByRunId: rerun.id,
+        completedAt: new Date(),
+      },
+    });
+
+    await tx.document.update({
+      where: { id: params.documentId },
+      data: {
+        currentRunId: rerun.id,
+      },
+    });
+
+    await tx.outbox.create({
+      data: {
+        aggregateType: "analysis_run",
+        aggregateId: rerun.id,
+        eventType: "analysis.run.requested",
+        payloadJson: {
+          runId: rerun.id,
+          projectId: params.projectId,
+          documentId: params.documentId,
+          chapterId: params.chapterId,
+          contentVersion: params.contentVersion,
+        },
+      },
+    });
+
+    return {
+      scheduled: true,
+      reason: params.reason,
+      attempt: nextAttempt,
+      maxAttempts,
+      runId: rerun.id,
+    };
+  });
+}
+
 export async function processDocumentExtract(payload: ProcessRunPayload) {
   const run = await prisma.analysisRun.findUnique({
     where: { id: payload.runId },
@@ -842,6 +1232,22 @@ export async function processDocumentExtract(payload: ProcessRunPayload) {
       content: document.content,
       contentVersion: run.contentVersion,
     });
+    const entityPassBatches = buildEntityPassBatches(prepass);
+
+    logger.info(
+      {
+        runId: run.id,
+        contentVersion: run.contentVersion,
+        candidatesBefore: prepass.candidates.length,
+        snippetsBefore: prepass.snippets.length,
+        batchCount: entityPassBatches.stats.batches,
+        batchCandidatesTotal: entityPassBatches.stats.candidatesTotal,
+        batchSnippetsTotal: entityPassBatches.stats.snippetsTotal,
+        batchCandidatesMax: entityPassBatches.stats.candidatesMaxPerBatch,
+        batchSnippetsMax: entityPassBatches.stats.snippetsMaxPerBatch,
+      },
+      "Prepared entity-pass batches"
+    );
 
     if (!(await isRunCurrent(run.id))) {
       await markRunSuperseded(run.id);
@@ -850,15 +1256,58 @@ export async function processDocumentExtract(payload: ProcessRunPayload) {
 
     await updateRunPhase(run.id, "entity_pass");
 
-    const knownEntities = await loadKnownEntities(run.projectId);
-    const entityPassCall = await runEntityPass({
-      contentVersion: run.contentVersion,
-      prepass,
-      knownEntities,
-    });
-    registerPhaseUsage(llmUsage, "entityPass", entityPassCall.meta);
+    let entityPass: EntityPassResult;
+    if (workerConfig.pipeline.entityPassSkipWhenNoCandidates && prepass.candidates.length === 0) {
+      entityPass = {
+        contentVersion: run.contentVersion,
+        entities: [],
+      };
+      logger.info(
+        {
+          runId: run.id,
+          contentVersion: run.contentVersion,
+        },
+        "Skip entity pass: prepass produced no candidates"
+      );
+    } else {
+      const knownEntities = await loadKnownEntities(run.projectId);
+      const batchResults: EntityPassResult[] = [];
 
-    const entityPass = entityPassCall.result;
+      for (let index = 0; index < entityPassBatches.batches.length; index += 1) {
+        const batch = entityPassBatches.batches[index];
+        const entityPassCall = await runEntityPass({
+          contentVersion: run.contentVersion,
+          prepass: batch,
+          knownEntities,
+        });
+        registerPhaseUsage(llmUsage, "entityPass", entityPassCall.meta);
+
+        if (entityPassCall.result.contentVersion !== run.contentVersion) {
+          throw new Error(
+            `Entity-pass contentVersion mismatch: expected ${run.contentVersion}, got ${entityPassCall.result.contentVersion}`
+          );
+        }
+
+        batchResults.push(entityPassCall.result);
+
+        logger.info(
+          {
+            runId: run.id,
+            contentVersion: run.contentVersion,
+            batchIndex: index + 1,
+            batchCount: entityPassBatches.batches.length,
+            candidates: batch.candidates.length,
+            snippets: batch.snippets.length,
+            promptTokens: entityPassCall.meta.usage?.promptTokens ?? null,
+            totalTokens: entityPassCall.meta.usage?.totalTokens ?? null,
+          },
+          "Entity-pass batch completed"
+        );
+      }
+
+      entityPass = mergeEntityPassResults(run.contentVersion, batchResults);
+    }
+
     if (entityPass.contentVersion !== run.contentVersion) {
       throw new Error(
         `Entity-pass contentVersion mismatch: expected ${run.contentVersion}, got ${entityPass.contentVersion}`
@@ -1029,6 +1478,53 @@ export async function processDocumentExtract(payload: ProcessRunPayload) {
       return;
     }
 
+    const mentionCountAfterPatch = await prisma.mention.count({
+      where: {
+        runId: run.id,
+      },
+    });
+
+    if (
+      shouldFailQualityGate({
+        prepassCandidates: prepass.candidates.length,
+        mentionCount: mentionCountAfterPatch,
+        contentChars: document.content.length,
+      })
+    ) {
+      const message = `Quality gate failed: empty mentions (candidates=${prepass.candidates.length}, contentChars=${document.content.length})`;
+      await markRunFailed({
+        runId: run.id,
+        message,
+        llmUsage: hasAnyPhaseUsage(llmUsage) ? llmUsage : null,
+      });
+
+      const rerun = await scheduleAutoRerun({
+        runId: run.id,
+        projectId: run.projectId,
+        documentId: run.documentId,
+        chapterId: run.chapterId,
+        contentVersion: run.contentVersion,
+        reason: "quality_gate_empty",
+      });
+
+      logger.warn(
+        {
+          runId: run.id,
+          contentVersion: run.contentVersion,
+          reason: "quality_gate_empty",
+          prepassCandidates: prepass.candidates.length,
+          mentionCount: mentionCountAfterPatch,
+          contentChars: document.content.length,
+          rerunScheduled: rerun.scheduled,
+          rerunAttempt: rerun.attempt,
+          rerunMaxAttempts: rerun.maxAttempts,
+          rerunRunId: rerun.runId,
+        },
+        "Analysis quality gate failed"
+      );
+      return;
+    }
+
     await updateRunPhase(run.id, "apply");
     await computeAndFinalizeRun({
       runId: run.id,
@@ -1040,23 +1536,37 @@ export async function processDocumentExtract(payload: ProcessRunPayload) {
     logger.info({ runId: run.id, contentVersion: run.contentVersion }, "Analysis run completed");
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    const failedUpdateData: Prisma.AnalysisRunUpdateManyMutationInput = {
-      state: "failed",
-      phase: "failed",
-      error: message.slice(0, 2000),
-      completedAt: new Date(),
-    };
-    if (hasAnyPhaseUsage(llmUsage)) {
-      failedUpdateData.qualityFlags = {
-        llmUsage,
-      } as unknown as Prisma.InputJsonValue;
-    }
-
-    await prisma.analysisRun.updateMany({
-      where: { id: run.id },
-      data: failedUpdateData,
+    await markRunFailed({
+      runId: run.id,
+      message,
+      llmUsage: hasAnyPhaseUsage(llmUsage) ? llmUsage : null,
     });
 
+    let rerun: AutoRerunScheduleResult | null = null;
+    if (shouldAutoRerunForFailure(message)) {
+      rerun = await scheduleAutoRerun({
+        runId: run.id,
+        projectId: run.projectId,
+        documentId: run.documentId,
+        chapterId: run.chapterId,
+        contentVersion: run.contentVersion,
+        reason: "failed",
+      });
+    }
+
     logger.error({ err: error, runId: run.id }, "Analysis run failed");
+    if (rerun) {
+      logger.warn(
+        {
+          runId: run.id,
+          reason: rerun.reason,
+          rerunScheduled: rerun.scheduled,
+          rerunAttempt: rerun.attempt,
+          rerunMaxAttempts: rerun.maxAttempts,
+          rerunRunId: rerun.runId,
+        },
+        "Auto-rerun decision completed"
+      );
+    }
   }
 }

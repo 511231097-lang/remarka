@@ -4,6 +4,7 @@ import { AppShell } from "@/components/AppShell";
 import { ProjectWorkspace } from "@/components/ProjectWorkspace";
 import type { SidebarProjectItem } from "@/lib/apiClient";
 import { createProjectChapter } from "@/lib/projectState";
+import { serializeLatestImportForProject } from "@/lib/projectImportState";
 
 interface ProjectPageProps {
   params: Promise<{ projectId: string }>;
@@ -25,6 +26,10 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
         chapters: {
           orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
         },
+        projectImports: {
+          orderBy: [{ createdAt: "desc" }],
+          take: 1,
+        },
       },
     }),
     prisma.project.findMany({
@@ -32,6 +37,10 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
       include: {
         chapters: {
           orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+        },
+        projectImports: {
+          orderBy: [{ createdAt: "desc" }],
+          take: 1,
         },
       },
     }),
@@ -75,6 +84,7 @@ export default async function ProjectPage({ params, searchParams }: ProjectPageP
       createdAt: chapter.createdAt.toISOString(),
       updatedAt: chapter.updatedAt.toISOString(),
     })),
+    latestImport: serializeLatestImportForProject(item),
     createdAt: item.createdAt.toISOString(),
     updatedAt: item.updatedAt.toISOString(),
   }));

@@ -173,6 +173,12 @@ textarea {
   gap: 8px;
 }
 
+.sidebar-header-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .brand {
   font-weight: 700;
   letter-spacing: -0.02em;
@@ -482,6 +488,36 @@ textarea {
 .save-chip {
   min-width: 98px;
   text-align: center;
+}
+
+.status-chip-danger {
+  border-color: color-mix(in oklab, var(--danger) 36%, var(--line-soft));
+  color: var(--danger);
+}
+
+.workspace-rerun-btn {
+  cursor: pointer;
+  transition: border-color 0.18s ease, color 0.18s ease;
+}
+
+.workspace-rerun-btn:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--accent) 58%, var(--line-soft));
+  color: var(--ink);
+}
+
+.workspace-rerun-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.info-banner {
+  margin: 12px 16px 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklab, var(--accent) 28%, var(--line-soft));
+  color: color-mix(in oklab, var(--ink) 88%, var(--accent));
+  background: color-mix(in oklab, var(--accent-soft) 54%, transparent);
+  font-size: 13px;
 }
 
 .error-banner {
@@ -974,6 +1010,22 @@ textarea {
   margin: 2px 0 12px;
   font-size: 18px;
   font-weight: 600;
+}
+
+.modal-create-mode {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.modal-create-mode .button {
+  flex: 1;
+}
+
+.button.ghost.active {
+  border-color: color-mix(in oklab, var(--accent) 64%, var(--line-soft));
+  background: color-mix(in oklab, var(--accent-soft) 72%, var(--surface));
+  color: var(--ink);
 }
 
 .modal-form {

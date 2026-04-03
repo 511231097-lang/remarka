@@ -348,6 +348,18 @@ function buildKnownEntitiesLiteral(knownEntities: KnownEntityForPrompt[]): strin
   );
 }
 
+function limitKnownEntitiesForPrompt(knownEntities: KnownEntityForPrompt[]): KnownEntityForPrompt[] {
+  if (!knownEntities.length) return [];
+
+  const entitiesCap = workerConfig.pipeline.entityPassKnownEntitiesCap;
+  const aliasesCap = workerConfig.pipeline.entityPassKnownAliasesPerEntity;
+
+  return knownEntities.slice(0, entitiesCap).map((entity) => ({
+    ...entity,
+    aliases: entity.aliases.slice(0, aliasesCap),
+  }));
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   return value as Record<string, unknown>;
@@ -559,6 +571,7 @@ function normalizeEntityPassPayload(raw: unknown, input: EntityPassInput): Entit
 }
 
 export async function runEntityPass(input: EntityPassInput): Promise<StrictJsonCallResult<EntityPassResult>> {
+  const knownEntities = limitKnownEntitiesForPrompt(input.knownEntities);
   const prompt = [
     "You are extracting canonical entities and observed aliases from Russian fiction text.",
     "Rules:",
@@ -572,7 +585,7 @@ export async function runEntityPass(input: EntityPassInput): Promise<StrictJsonC
     "8) Do NOT output entityId field for new entities.",
     "",
     `contentVersion: ${input.contentVersion}`,
-    `knownEntities: ${buildKnownEntitiesLiteral(input.knownEntities)}`,
+    `knownEntities: ${buildKnownEntitiesLiteral(knownEntities)}`,
     `candidates: ${JSON.stringify(input.prepass.candidates)}`,
     `snippets: ${JSON.stringify(input.prepass.snippets)}`,
   ].join("\n");

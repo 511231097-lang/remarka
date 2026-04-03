@@ -10,6 +10,7 @@ import { EntityMentionDecorations } from "@/lib/editor/EntityMentionDecorations"
 interface NarrativeEditorProps {
   richContent: unknown;
   mentions: DocumentPayload["mentions"];
+  editable?: boolean;
   activeEntityId: string | null;
   activeMentionId: string | null;
   scrollToMentionRequest?: { mentionId: string; token: number } | null;
@@ -59,6 +60,7 @@ function ToolbarButton({
 export function NarrativeEditor({
   richContent,
   mentions,
+  editable = true,
   activeEntityId,
   activeMentionId,
   scrollToMentionRequest = null,
@@ -139,6 +141,7 @@ export function NarrativeEditor({
       EntityMentionDecorations,
     ],
     content: richContent || EMPTY_RICH_TEXT_DOCUMENT,
+    editable,
     immediatelyRender: false,
     editorProps: {
       attributes: {
@@ -163,6 +166,11 @@ export function NarrativeEditor({
       });
     },
   }, []);
+
+  useEffect(() => {
+    if (!editor) return;
+    editor.setEditable(editable);
+  }, [editor, editable]);
 
   useEffect(() => {
     if (!editor) return;
