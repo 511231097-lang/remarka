@@ -11,7 +11,6 @@ enum EntityType {
   character
   location
   event
-  time_marker
 }
 
 enum AnalysisStatus {
@@ -149,6 +148,7 @@ model AnalysisJob {
   project  Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
   document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
   modelCalls AnalysisModelCall[]
+  stageMetrics AnalysisJobStageMetric[]
 
   @@index([documentId, createdAt])
   @@index([projectId, status])
@@ -162,16 +162,37 @@ model AnalysisModelCall {
   batchIndex             Int?
   targetParagraphIndices Int[]    @default([])
   model                  String
+  attempt                Int      @default(1)
+  finishReason           String?
   prompt                 String   @db.Text
   rawResponse            String   @db.Text
   jsonCandidate          String?  @db.Text
   normalizedPayload      Json?
   parseError             String?
+  requestStartedAt       DateTime?
+  requestCompletedAt     DateTime?
+  durationMs             Int?
   createdAt              DateTime @default(now())
 
   analysisJob AnalysisJob @relation(fields: [analysisJobId], references: [id], onDelete: Cascade)
 
   @@index([analysisJobId, createdAt])
+}
+
+model AnalysisJobStageMetric {
+  id                 String   @id @default(cuid())
+  analysisJobId      String
+  stage              String
+  startedAt          DateTime
+  completedAt        DateTime
+  durationMs         Int
+  metadata           Json?
+  createdAt          DateTime @default(now())
+
+  analysisJob AnalysisJob @relation(fields: [analysisJobId], references: [id], onDelete: Cascade)
+
+  @@index([analysisJobId, createdAt])
+  @@index([analysisJobId, stage])
 }
 
 model LocationContainment {

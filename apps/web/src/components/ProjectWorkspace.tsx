@@ -81,6 +81,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
   const hasUserEditedRef = useRef(false);
   const hasLoadedServerDocumentRef = useRef(false);
   const pendingServerRefreshRef = useRef(false);
+  const lastRunningRefreshAtRef = useRef(0);
   const debugSeqRef = useRef(0);
 
   const debugLog = useCallback(
@@ -317,6 +318,21 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
           };
         });
 
+        if (payload.analysisStatus === "running") {
+          const now = Date.now();
+          if (now - lastRunningRefreshAtRef.current < 700) {
+            return;
+          }
+          lastRunningRefreshAtRef.current = now;
+
+          if (hasUnsavedChangesRef.current) {
+            pendingServerRefreshRef.current = true;
+          } else {
+            void loadDocument();
+          }
+          return;
+        }
+
         if (payload.analysisStatus === "completed" || payload.analysisStatus === "failed") {
           if (hasUnsavedChangesRef.current) {
             pendingServerRefreshRef.current = true;
@@ -371,6 +387,19 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
 
   const activeEntityName =
     entityDetails?.name || entities.find((entity) => entity.id === activeEntityId)?.name || null;
+  const handleEditorMentionOpenEntity = useCallback(
+    ({ mentionId, entityId }: { mentionId: string; entityId: string }) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("chapter", chapterId);
+      params.set("entity", entityId);
+      params.set("mention", mentionId);
+      const query = params.toString();
+      const nextUrl = query ? `${pathname}?${query}` : pathname;
+      router.replace(nextUrl, { scroll: false });
+      setIsInspectorOpen(true);
+    },
+    [chapterId, pathname, router, searchParams]
+  );
   const handleMentionClick = useCallback(
     (mention: {
       id: string;
@@ -440,6 +469,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
               activeMentionId={activeMentionId}
               scrollToMentionRequest={scrollToMentionRequest}
               debugTag={`${projectId}:${chapterId}`}
+              onMentionOpenEntity={handleEditorMentionOpenEntity}
               onChange={(nextRichContent, meta) => {
                 if (!hasLoadedServerDocumentRef.current) {
                   debugLog("editor:onChange_ignored_not_loaded", {

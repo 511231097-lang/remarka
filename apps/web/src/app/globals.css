@@ -18,7 +18,6 @@
   --entity-char: #ebe0ca;
   --entity-location: #dce4ec;
   --entity-event: #eadad8;
-  --entity-time: #dfe6d5;
 }
 
 [data-theme="dark"] {
@@ -40,7 +39,6 @@
   --entity-char: #554c39;
   --entity-location: #3a4654;
   --entity-event: #564342;
-  --entity-time: #434d3d;
 }
 
 :root,
@@ -311,11 +309,12 @@ textarea {
 .chapter-nav-item {
   border-radius: 8px;
   border: 1px solid transparent;
-  min-height: 28px;
-  padding: 4px 8px;
+  min-height: 30px;
+  padding: 2px 6px;
   display: flex;
   align-items: center;
-  gap: 6px;
+  justify-content: space-between;
+  gap: 4px;
   color: var(--ink-muted);
 }
 
@@ -331,11 +330,80 @@ textarea {
   color: var(--ink);
 }
 
+.chapter-nav-link {
+  min-width: 0;
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+}
+
 .chapter-nav-title {
   min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.chapter-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  opacity: 0.45;
+}
+
+.chapter-nav-item:hover .chapter-actions,
+.chapter-nav-item.active .chapter-actions {
+  opacity: 1;
+}
+
+.chapter-action-btn {
+  width: 20px;
+  height: 20px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--ink-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  padding: 0;
+}
+
+.chapter-action-btn:hover:not(:disabled) {
+  border-color: var(--line-soft);
+  color: var(--ink);
+}
+
+.chapter-action-btn.danger:hover:not(:disabled) {
+  border-color: color-mix(in oklab, var(--danger) 38%, var(--line-soft));
+  color: var(--danger);
+}
+
+.chapter-action-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.chapter-rename-form {
+  width: 100%;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.chapter-rename-input {
+  min-width: 0;
+  flex: 1;
+  height: 26px;
+  border: 1px solid var(--line-soft);
+  border-radius: 7px;
+  background: color-mix(in oklab, var(--surface) 84%, transparent);
+  color: var(--ink);
+  padding: 0 8px;
 }
 
 .chapter-empty {
@@ -572,6 +640,7 @@ textarea {
 .entity-highlight {
   border-radius: 3px;
   padding: 1px 2px;
+  cursor: pointer;
 }
 
 .entity-highlight.entity-character {
@@ -586,10 +655,6 @@ textarea {
   background: var(--entity-event);
 }
 
-.entity-highlight.entity-time_marker {
-  background: var(--entity-time);
-}
-
 .entity-highlight.entity-active {
   outline: 1px solid color-mix(in oklab, var(--accent) 45%, transparent);
 }
@@ -597,6 +662,41 @@ textarea {
 .entity-highlight.entity-mention-selected {
   outline: 2px solid color-mix(in oklab, var(--accent) 74%, transparent);
   box-shadow: 0 0 0 3px color-mix(in oklab, var(--accent-soft) 70%, transparent);
+}
+
+.mention-hover-tooltip {
+  position: fixed;
+  z-index: 30;
+  transform: translate(-50%, 0);
+  width: auto;
+  max-width: min(240px, calc(100vw - 20px));
+  border: 1px solid var(--line-soft);
+  border-radius: 8px;
+  background: var(--surface-elevated);
+  box-shadow: var(--shadow);
+  padding: 6px 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.mention-hover-caption {
+  font-size: 12px;
+  line-height: 1.3;
+  color: var(--ink);
+}
+
+.mention-hover-link {
+  border: none;
+  background: transparent;
+  padding: 0;
+  margin: 0;
+  color: color-mix(in oklab, var(--accent) 86%, var(--ink));
+  font-size: 12px;
+  line-height: 1.3;
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .inspector {

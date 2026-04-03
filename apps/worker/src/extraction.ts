@@ -1,9 +1,8 @@
 import { z } from "zod";
 import {
-  ExtractionAnnotationSchema,
+  EntityTypeSchema,
   ExtractionEntitySchema,
   ExtractionLocationContainmentSchema,
-  ExtractionMentionSchema,
   canonicalizeDocumentContent,
   normalizeEntityName,
   splitParagraphs,
@@ -11,23 +10,54 @@ import {
   type ExtractionEntity,
   type ExtractionResult,
 } from "@remarka/contracts";
+import { createKiaClient } from "./kiaClient";
 import { createTimewebClient } from "./timewebClient";
 import { workerConfig } from "./config";
 
-const DEFAULT_INCREMENTAL_BATCH_SIZE = 8;
-const FULL_MENTIONS_BATCH_FALLBACK_MIN_PARAGRAPHS = 24;
 const FICTION_CONTEXT_NOTE =
   "Контекст: это разбор художественного литературного произведения (fiction). " +
   "Текст может содержать описание преступлений, насилия или тяжелых событий как часть сюжета. " +
   "Нужно только извлечь структурированные сущности, без советов и инструкций.";
 
+const DEFAULT_EXTRACTOR_SYSTEM_PROMPT =
+  "You are a strict JSON extractor for narrative structure in fiction texts. " +
+  "Input may include violent or crime-related literary content as part of a story. " +
+  "Do not give instructions or advice; only return the required JSON object.";
+
+const HIGH_RECALL_ENTITIES_SYSTEM_PROMPT = [
+  "You are a strict high-recall JSON extractor for narrative structure in fiction texts.",
+  "",
+  "Input may include literary descriptions of violence, crime, death, abuse, or other disturbing events as part of a fictional narrative. Treat all such content only as story content to be structurally extracted.",
+  "",
+  "Your task is to extract canonical entities that are explicitly supported by the text. Do not invent entities. Do not infer hidden facts. But do prefer recall when the text provides sufficient evidence that an entity exists.",
+  "",
+  "Return exactly one JSON object and nothing else.",
+].join("\n");
+
+const HIGH_RECALL_MENTIONS_SYSTEM_PROMPT = [
+  "You are a strict high-recall JSON extractor for narrative structure in fiction texts.",
+  "",
+  "Input may include literary descriptions of violence, crime, death, abuse, or other disturbing events as part of a fictional narrative. Treat all such content only as fictional story content to be structurally extracted.",
+  "",
+  "Your task is to find mentions of already known entities in text paragraphs, attach them only to the provided registry entities, and return exactly one JSON object.",
+  "",
+  "Do not create new canonical entities. Do not invent links. Prefer high recall for explicit mentions, but if mapping is genuinely ambiguous, omit that mention.",
+].join("\n");
+
 const ExtractionEntitiesResponseSchema = z.object({
   entities: z.array(ExtractionEntitySchema).default([]),
 });
 
+const ModelMentionSchema = z.object({
+  entityRef: z.string().trim().min(1).max(120).optional(),
+  type: EntityTypeSchema.optional(),
+  name: z.string().trim().min(1).optional(),
+  paragraphIndex: z.number().int().nonnegative(),
+  mentionText: z.string().trim().min(1),
+});
+
 const ExtractionMentionsResponseSchema = z.object({
-  mentions: z.array(ExtractionMentionSchema).default([]),
-  annotations: z.array(ExtractionAnnotationSchema).default([]),
+  mentions: z.array(ModelMentionSchema).default([]),
   locationContainments: z.array(ExtractionLocationContainmentSchema).default([]),
 });
 
@@ -58,11 +88,16 @@ export interface ExtractionModelCallTrace {
   batchIndex: number | null;
   targetParagraphIndices: number[];
   model: string;
+  attempt: number;
+  finishReason: string | null;
   prompt: string;
   rawResponse: string;
   jsonCandidate: string;
   normalizedPayload: unknown;
   parseError: string | null;
+  requestStartedAt: Date | null;
+  requestCompletedAt: Date | null;
+  durationMs: number | null;
 }
 
 export type ExtractionTraceSink = (trace: ExtractionModelCallTrace) => Promise<void> | void;
@@ -92,17 +127,90 @@ interface CallExtractorTraceContext {
 interface CallExtractorOptions<T> {
   prompt: string;
   schema: z.ZodTypeAny;
+  systemPrompt?: string;
   traceSink?: ExtractionTraceSink;
   traceContext?: CallExtractorTraceContext;
 }
 
 interface RunExtractionOptions {
   traceSink?: ExtractionTraceSink;
+  knownEntities?: KnownProjectEntity[];
+  onFullMentionsBatch?: (payload: {
+    batchIndex: number;
+    targetParagraphIndices: number[];
+    mentions: ExtractionResult["mentions"];
+    locationContainments: ExtractionResult["locationContainments"];
+  }) => Promise<void> | void;
 }
 
-function isExtractionJsonParseError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error || "");
-  return message.includes("Extraction JSON parse error");
+interface ProviderChatCompletionChoice {
+  finish_reason?: unknown;
+  message?: {
+    content?: unknown;
+  } | null;
+}
+
+interface ProviderChatCompletionPayload {
+  choices?: ProviderChatCompletionChoice[];
+}
+
+function parseProviderChatCompletionResponse(response: unknown): ProviderChatCompletionPayload {
+  let payload: unknown = response;
+
+  if (typeof payload === "string") {
+    const text = payload.trim();
+    if (!text) {
+      throw new Error("Extraction provider returned empty payload");
+    }
+
+    try {
+      payload = JSON.parse(text);
+    } catch (error) {
+      throw new Error(`Extraction provider returned non-JSON payload: ${(error as Error).message}`);
+    }
+  }
+
+  if (!payload || typeof payload !== "object") {
+    throw new Error("Extraction provider returned unsupported payload type");
+  }
+
+  const envelope = payload as {
+    code?: unknown;
+    msg?: unknown;
+    data?: unknown;
+  };
+
+  const providerCode = Number(envelope.code);
+  const providerMessage = String(envelope.msg || "").trim();
+  if (Number.isFinite(providerCode) && providerCode !== 200) {
+    throw new Error(
+      providerMessage
+        ? `KIA provider error (${providerCode}): ${providerMessage}`
+        : `KIA provider error (${providerCode})`
+    );
+  }
+
+  let completionPayload: unknown = payload;
+  if (envelope.data !== undefined && envelope.data !== null) {
+    completionPayload = envelope.data;
+    if (typeof completionPayload === "string") {
+      const text = completionPayload.trim();
+      if (!text) {
+        throw new Error("Extraction provider returned empty data payload");
+      }
+      try {
+        completionPayload = JSON.parse(text);
+      } catch (error) {
+        throw new Error(`Extraction provider returned invalid data payload: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  if (!completionPayload || typeof completionPayload !== "object") {
+    throw new Error("Extraction provider completion payload has unsupported type");
+  }
+
+  return completionPayload as ProviderChatCompletionPayload;
 }
 
 function extractJsonCandidate(raw: string): string {
@@ -189,7 +297,6 @@ function normalizeModelPayload(payload: unknown): unknown {
   const source = payload as {
     entities?: Array<Record<string, unknown>>;
     mentions?: Array<Record<string, unknown>>;
-    annotations?: Array<Record<string, unknown>>;
     locationContainments?: Array<Record<string, unknown>>;
   };
 
@@ -244,54 +351,37 @@ function normalizeModelPayload(payload: unknown): unknown {
 
   const mentions = Array.isArray(source.mentions)
     ? source.mentions
-        .map((entry, index) => {
+        .map((entry) => {
           const type = normalizeEntityType(entry.type);
           const name = typeof entry.name === "string" ? entry.name.trim() : "";
           const mentionText = typeof entry.mentionText === "string" ? entry.mentionText.trim() : "";
           const paragraphIndexRaw = Number(entry.paragraphIndex);
           const paragraphIndex = Number.isInteger(paragraphIndexRaw) ? paragraphIndexRaw : 0;
 
-          if (!name || !mentionText) return null;
+          if (!mentionText) return null;
 
           const providedRef = typeof entry.entityRef === "string" ? entry.entityRef.trim() : "";
-          const inferredRef = resolveRefByTypeAndName(type, name);
-          const entityRef = providedRef || inferredRef || `m_${index + 1}`;
+          const inferredRef = type && name ? resolveRefByTypeAndName(type, name) : "";
+          const entityRef = providedRef || inferredRef;
+          if (!entityRef) return null;
 
-          return {
+          const mentionPayload: Record<string, unknown> = {
             entityRef,
-            type,
-            name,
             paragraphIndex: paragraphIndex >= 0 ? paragraphIndex : 0,
             mentionText,
           };
+
+          if (type) {
+            mentionPayload.type = type;
+          }
+
+          if (name) {
+            mentionPayload.name = name;
+          }
+
+          return mentionPayload;
         })
         .filter((mention): mention is NonNullable<typeof mention> => Boolean(mention))
-    : [];
-
-  const annotations = Array.isArray(source.annotations)
-    ? source.annotations
-        .map((entry, index) => {
-          const type = normalizeEntityType(entry.type);
-          const label = typeof entry.label === "string" ? entry.label.trim() : "";
-          const name = typeof entry.name === "string" ? entry.name.trim() : "";
-          const paragraphIndexRaw = Number(entry.paragraphIndex);
-          const paragraphIndex = Number.isInteger(paragraphIndexRaw) ? paragraphIndexRaw : 0;
-
-          if (!label) return null;
-
-          const providedRef = typeof entry.entityRef === "string" ? entry.entityRef.trim() : "";
-          const inferredRef = name ? resolveRefByTypeAndName(type, name) : "";
-          const entityRef = providedRef || inferredRef || undefined;
-
-          return {
-            ...(entityRef ? { entityRef } : {}),
-            paragraphIndex: paragraphIndex >= 0 ? paragraphIndex : 0,
-            type,
-            label,
-            ...(name ? { name } : {}),
-          };
-        })
-        .filter((annotation): annotation is NonNullable<typeof annotation> => Boolean(annotation))
     : [];
 
   const locationContainments: Array<{ childRef: string; parentRef: string }> = [];
@@ -329,7 +419,7 @@ function normalizeModelPayload(payload: unknown): unknown {
   return {
     entities,
     mentions,
-    annotations,
+    annotations: [],
     locationContainments,
   };
 }
@@ -405,6 +495,42 @@ function toRegistryFromExtractionEntities(entities: ExtractionEntity[]): EntityR
   );
 }
 
+const ENTITY_TYPE_SET = new Set<EntityType>(["character", "location", "event"]);
+
+function hydrateMentionsWithRegistry(
+  modelMentions: ExtractionMentionsResponse["mentions"],
+  entityRegistry: EntityRegistryEntry[]
+): ExtractionResult["mentions"] {
+  if (!modelMentions.length || !entityRegistry.length) return [];
+
+  const registryByRef = new Map(entityRegistry.map((entry) => [entry.entityRef, entry]));
+  const hydrated: ExtractionResult["mentions"] = [];
+
+  for (const mention of modelMentions) {
+    const entityRef = String(mention.entityRef || "").trim();
+    if (!entityRef) continue;
+
+    const registryEntity = registryByRef.get(entityRef);
+    const fallbackType = normalizeEntityType(mention.type);
+    const fallbackName = typeof mention.name === "string" ? mention.name.trim() : "";
+    const type = (registryEntity?.type || fallbackType) as EntityType;
+    const name = registryEntity?.name || fallbackName;
+
+    if (!ENTITY_TYPE_SET.has(type)) continue;
+    if (!name) continue;
+
+    hydrated.push({
+      entityRef,
+      type,
+      name,
+      paragraphIndex: mention.paragraphIndex,
+      mentionText: mention.mentionText,
+    });
+  }
+
+  return hydrated;
+}
+
 function buildEntityRegistryLiteral(registry: EntityRegistryEntry[]): string {
   if (!registry.length) {
     return "(пока нет известных сущностей проекта)";
@@ -419,29 +545,78 @@ function buildEntityRegistryLiteral(registry: EntityRegistryEntry[]): string {
     .join("\n");
 }
 
-function buildFullEntitiesPrompt(content: string): string {
-  const paragraphs = splitParagraphs(content)
+function buildFullEntitiesPrompt(params: { content: string; knownEntities: KnownProjectEntity[] }): string {
+  const paragraphs = splitParagraphs(params.content)
     .map((paragraph) => `P${paragraph.index}: ${paragraph.text}`)
     .join("\n\n");
+  const knownRegistry = toRegistryFromKnownEntities(params.knownEntities);
 
   return [
-    "Ты extraction-движок narrative-структуры.",
-    FICTION_CONTEXT_NOTE,
-    "Фаза 1: выдели только canonical entities.",
+    "Ты extraction-движок narrative-структуры для художественного текста.",
+    "",
+    "Задача:",
+    "Фаза 1. Извлеки только canonical entities, которые явно поддержаны текстом.",
     "Нельзя выдумывать сущности и факты.",
+    "Но нельзя и пропускать явно существующие сущности только из-за осторожности.",
+    "",
+    "Реестр уже известных сущностей проекта:",
+    buildEntityRegistryLiteral(knownRegistry),
     "",
     "Верни JSON строго по схеме:",
     "{",
-    '  "entities": [{ "entityRef": "e_1", "type": "character|location|event|time_marker", "name": "...", "summary": "..." }]',
+    '  "entities": [',
+    "    {",
+    '      "entityRef": "e_1",',
+    '      "type": "character|location|event",',
+    '      "name": "...",',
+    '      "summary": "..."',
+    "    }",
+    "  ]",
     "}",
     "",
-    "Правила:",
-    "1) Используй только типы: character, location, event, time_marker.",
+    "Правила формата:",
+    "1) Используй только типы: character, location, event.",
     "2) entityRef обязателен, уникален в ответе и стабилен внутри ответа.",
-    "3) summary короткий (1 фраза), только по фактам из текста; если фактов недостаточно, summary = ''.",
-    "4) Удали дубли и верни только канонические названия.",
-    "5) Для character извлекай любого явно именованного человека, даже если он упомянут один раз.",
-    "6) Не объединяй разных людей с одинаковой фамилией: Миссис Спенсер и Роберт Спенсер — разные entities.",
+    "3) Если сущность уже есть в реестре и это тот же объект, используй ТОЧНО тот же entityRef и ТОЧНО то же name из реестра.",
+    "4) Если сущности нет в реестре, создай новый entityRef в формате e_N.",
+    '5) summary - короткая factual-фраза по тексту, без домыслов. Если фактов недостаточно, summary = "".',
+    "6) Верни только валидный JSON-объект. Без markdown, без комментариев.",
+    "",
+    "Правила извлечения:",
+    "7) Извлекай только канонические сущности, а не их mention-формы.",
+    "8) Для новой сущности выбирай наиболее полную и нейтральную каноническую форму имени или названия, которая прямо есть в тексте.",
+    "9) Не включай в canonical name случайные эпитеты, эмоциональные оценки, местоимения, указатели или временные уточнения.",
+    "10) Удаляй дубли. Если несколько mention-форм обозначают одну и ту же сущность, верни одну canonical entity.",
+    "11) Не создавай новую сущность только из-за сокращенной формы, титула или альтернативного написания, если это тот же объект.",
+    "12) Не объединяй разных людей с одинаковой фамилией или похожими титулами.",
+    "",
+    "Что считать character:",
+    "13) Character = явно упомянутый человек, персонаж или индивидуализированная фигура.",
+    "14) Извлекай любого явно именованного человека, даже если он упомянут один раз.",
+    '15) Извлекай также явно индивидуализированного персонажа без личного имени, если текст подает его как устойчивую отдельную фигуру, например: "Император", "доктор", "королева", если это в данном фрагменте именно конкретный персонаж, а не роль вообще.',
+    '16) Не извлекай безличные группы и неиндивидуализированные множества: "солдаты", "люди", "толпа", если это не отдельная именованная сущность.',
+    "",
+    "Что считать location:",
+    "17) Location = конкретное место, явно фигурирующее в тексте как значимая точка действия.",
+    "18) Извлекай именованные места: города, страны, здания, комнаты, улицы, регионы, учреждения.",
+    '19) Не извлекай слишком общие неканонические места вроде "дом", "улица", "комната", если они не поданы как отдельная устойчивая сущность или не имеют собственного названия.',
+    "",
+    "Что считать event:",
+    "20) Event = явно выделяемое событие, происшествие, битва, казнь, встреча, война, катастрофа, церемония или иной narratively distinct occurrence.",
+    "21) Извлекай event только если текст действительно указывает на отдельное событие, а не просто на действие в обычном предложении.",
+    "22) Если это просто единичное локальное действие без статуса отдельного события, не создавай event.",
+    "23) Название event делай коротким и каноническим по тексту; не превращай целое предложение в name.",
+    "",
+    "Правила консервативности:",
+    "24) Не извлекай абстракции, темы, эмоции, свойства, профессии как таковые, если они не представлены как конкретная сущность.",
+    "25) Не извлекай местоимения, описания-в-один-раз и случайные noun phrases без статуса сущности.",
+    "26) Если есть разумное textual evidence, что это отдельная сущность нужного типа, лучше включить ее, чем пропустить.",
+    "27) Если evidence недостаточно для уверенной canonical entity, не извлекай.",
+    "",
+    "Порядок:",
+    "28) Сначала проверь совпадения с реестром.",
+    "29) Затем извлеки новые canonical entities из текущего текста.",
+    "30) Внутри каждого type постарайся не пропускать явно присутствующие сущности.",
     "",
     "Текст документа по параграфам:",
     paragraphs,
@@ -454,28 +629,85 @@ function buildFullMentionsPrompt(content: string, entityRegistry: EntityRegistry
     .join("\n\n");
 
   return [
-    "Ты extraction-движок narrative-структуры.",
-    FICTION_CONTEXT_NOTE,
-    "Фаза 2: выдели mentions, annotations и locationContainments по фиксированному реестру сущностей.",
+    "Ты extraction-движок narrative-структуры для художественного текста.",
+    "",
+    "Задача:",
+    "Фаза 2. Извлеки mentions и locationContainments только по уже известному фиксированному реестру сущностей.",
     "Нельзя создавать новые canonical entities.",
+    "Нельзя придумывать новые entityRef.",
+    "Нужно максимально полно собрать все явные mentions, которые можно однозначно сопоставить сущностям из реестра.",
     "",
     "Верни JSON строго по схеме:",
     "{",
-    '  "mentions": [{ "entityRef": "...", "type": "character|location|event|time_marker", "name": "...", "paragraphIndex": 0, "mentionText": "..." }],',
-    '  "annotations": [{ "entityRef": "...", "paragraphIndex": 0, "type": "character|location|event|time_marker", "label": "Короткая пометка", "name": "..." }],',
-    '  "locationContainments": [{ "childRef": "...", "parentRef": "..." }]',
+    '  "mentions": [',
+    "    {",
+    '      "entityRef": "...",',
+    '      "paragraphIndex": 0,',
+    '      "mentionText": "..."',
+    "    }",
+    "  ],",
+    '  "locationContainments": [',
+    "    {",
+    '      "childRef": "...",',
+    '      "parentRef": "..."',
+    "    }",
+    "  ]",
     "}",
     "",
-    "Обязательные правила:",
+    "Обязательные правила формата:",
     "1) entityRef должен ТОЧНО совпадать с entityRef из реестра.",
-    "2) type и name должны соответствовать той же сущности из реестра.",
-    "3) mentionText должен быть точной подстрокой соответствующего параграфа.",
-    "4) paragraphIndex должен существовать.",
-    "5) Аннотации только если есть явное локальное основание в абзаце.",
-    "6) label до 120 символов.",
-    "7) Если нельзя однозначно сопоставить mention к сущности из реестра — пропусти mention.",
-    "8) Возвращай ВСЕ явные вхождения mentions: если одно и то же mentionText встречается несколько раз, добавь отдельные элементы.",
-    "9) locationContainments добавляй только при явном сигнале 'локация внутри локации'; childRef и parentRef должны ссылаться на location.",
+    "2) mentionText должен быть точной подстрокой соответствующего параграфа, без нормализации и без перефразирования.",
+    "3) paragraphIndex должен существовать в тексте.",
+    "4) Не возвращай type и name в mentions: они берутся по entityRef из реестра на стороне системы.",
+    "5) Возвращай только валидный JSON-объект. Без markdown, без комментариев.",
+    "6) Верни компактный JSON (minified), без лишних пробелов и переносов.",
+    "",
+    "Правила для mentions:",
+    "6) Mention = конкретное текстовое вхождение, которое ссылается на сущность из реестра.",
+    "7) Возвращай ВСЕ явные вхождения mentions, которые можно однозначно сопоставить сущностям из реестра.",
+    "8) Если одно и то же mentionText встречается несколько раз в одном абзаце, добавь отдельный mention для каждого вхождения.",
+    "9) MentionText должен быть минимальной точной текстовой формой упоминания, а не расширенным фрагментом предложения.",
+    "10) Не объединяй несколько вхождений в один mention.",
+    "11) Если в абзаце есть несколько отдельных mention-ов одной сущности, верни несколько элементов.",
+    "12) Mention можно добавлять для:",
+    "   - полного имени,",
+    "   - короткой формы имени,",
+    "   - фамилии,",
+    "   - титула,",
+    "   - устойчивого обозначения,",
+    "   - явно отсылающего описательного референса,",
+    "   но только если его можно однозначно сопоставить сущности из реестра.",
+    "13) Не добавляй mention, если соответствие сущности из реестра неоднозначно.",
+    "14) Не создавай mention только на основе слабой догадки или world knowledge.",
+    "15) Не извлекай mention для местоимений, если у тебя нет очень надежного и локально однозначного соответствия сущности из реестра.",
+    "16) Если местоимения в твоем текущем пайплайне часто шумят, лучше пропустить местоимение, чем привязать его неверно.",
+    "",
+    "Правила для linking:",
+    "17) Сначала ищи совпадения по реестру сущностей.",
+    "18) Если в тексте встречается сокращенная, титульная или альтернативная форма, привязывай ее к сущности из реестра только если из локального контекста ясно, что это именно она.",
+    "19) Не создавай отдельные mentions для сущности, которой нет в реестре.",
+    "20) Если текст явно указывает на персонажа, но в реестре его нет, пропусти это mention.",
+    "21) Не сливай разные сущности реестра только потому, что у них похожие имена или общая фамилия.",
+    "",
+    "Правила для locationContainments:",
+    "22) Добавляй locationContainments только если текст явно указывает, что одна location находится внутри другой location.",
+    "23) childRef и parentRef должны обе ссылаться на location из реестра.",
+    "24) Не выводи containment по общему знанию мира.",
+    "25) Если отношение вложенности не сказано явно или почти явно в тексте, не добавляй его.",
+    "",
+    "Анти-шум правила:",
+    "26) Не возвращай абстрактные references, которые не являются точным текстовым mention.",
+    "27) Не возвращай mentionText, которого нет в буквальном виде в соответствующем абзаце.",
+    "28) Не расширяй mentionText лишними словами ради \"удобства\".",
+    "29) Не сокращай mentionText так, чтобы терялась фактическая точная форма упоминания.",
+    "30) Если сомневаешься между двумя сущностями из реестра - пропусти mention.",
+    "31) Если соответствие однозначно и mention явно есть в тексте - лучше включить его, чем пропустить.",
+    "",
+    "Рекомендуемый порядок работы:",
+    "32) Пройди абзацы по одному, сверху вниз.",
+    "33) Внутри каждого абзаца проверь все сущности реестра и все их возможные явные текстовые формы.",
+    "34) Для каждого найденного вхождения добавь отдельный mention.",
+    "35) Затем отдельно проверь, есть ли явные locationContainments.",
     "",
     "Реестр сущностей:",
     buildEntityRegistryLiteral(entityRegistry),
@@ -525,7 +757,7 @@ function buildIncrementalEntitiesPrompt(params: {
     "",
     "Верни JSON строго по схеме:",
     "{",
-    '  "entities": [{ "entityRef": "e_1", "type": "character|location|event|time_marker", "name": "...", "summary": "..." }]',
+    '  "entities": [{ "entityRef": "e_1", "type": "character|location|event", "name": "...", "summary": "..." }]',
     "}",
     "",
     `TARGET-абзацы: [${targetsLiteral}]`,
@@ -554,47 +786,118 @@ function buildIncrementalMentionsPrompt(params: {
   const scopedParagraphs = formatIncrementalScopedParagraphs(params.content, params.targetIndices);
 
   return [
-    "Ты extraction-движок narrative-структуры.",
-    FICTION_CONTEXT_NOTE,
-    "Фаза 2 (incremental): выдели mentions/annotations/locationContainments по TARGET-абзацам.",
+    "Ты extraction-движок narrative-структуры для художественного текста.",
     "",
-    "Верни JSON строго по схеме:",
-    "{",
-    '  "mentions": [{ "entityRef": "...", "type": "character|location|event|time_marker", "name": "...", "paragraphIndex": 0, "mentionText": "..." }],',
-    '  "annotations": [{ "entityRef": "...", "paragraphIndex": 0, "type": "character|location|event|time_marker", "label": "Короткая пометка", "name": "..." }],',
-    '  "locationContainments": [{ "childRef": "...", "parentRef": "..." }]',
-    "}",
+    "Задача:",
+    "Фаза 2. Извлеки mentions и locationContainments только по уже известному фиксированному реестру сущностей.",
+    "Нельзя создавать новые canonical entities.",
+    "Нельзя придумывать новые entityRef.",
+    "Нужно максимально полно собрать все явные mentions, которые можно однозначно сопоставить сущностям из реестра.",
     "",
     `TARGET-абзацы: [${targetsLiteral}]`,
     "",
-    "Правила:",
-    "1) paragraphIndex в mentions/annotations должен быть только из TARGET-списка.",
-    "2) mentionText должен быть точной подстрокой TARGET-абзаца.",
-    "3) entityRef, type и name должны ТОЧНО соответствовать сущности из реестра.",
-    "4) Нельзя создавать новые canonical entities и новые entityRef.",
-    "5) Если упоминание найдено только в CONTEXT, его не включать.",
-    "6) label до 120 символов.",
-    "7) locationContainments добавляй только для childRef, явно упомянутых в TARGET-абзацах.",
+    "Верни JSON строго по схеме:",
+    "{",
+    '  "mentions": [',
+    "    {",
+    '      "entityRef": "...",',
+    '      "paragraphIndex": 0,',
+    '      "mentionText": "..."',
+    "    }",
+    "  ],",
+    '  "locationContainments": [',
+    "    {",
+    '      "childRef": "...",',
+    '      "parentRef": "..."',
+    "    }",
+    "  ]",
+    "}",
+    "",
+    "Обязательные правила формата:",
+    "1) entityRef должен ТОЧНО совпадать с entityRef из реестра.",
+    "2) mentionText должен быть точной подстрокой соответствующего параграфа, без нормализации и без перефразирования.",
+    "3) paragraphIndex должен существовать в тексте.",
+    "4) Не возвращай type и name в mentions: они берутся по entityRef из реестра на стороне системы.",
+    "5) Возвращай только валидный JSON-объект. Без markdown, без комментариев.",
+    "6) Верни компактный JSON (minified), без лишних пробелов и переносов.",
+    "",
+    "Правила для mentions:",
+    "6) Mention = конкретное текстовое вхождение, которое ссылается на сущность из реестра.",
+    "7) Возвращай ВСЕ явные вхождения mentions, которые можно однозначно сопоставить сущностям из реестра.",
+    "8) Если одно и то же mentionText встречается несколько раз в одном абзаце, добавь отдельный mention для каждого вхождения.",
+    "9) MentionText должен быть минимальной точной текстовой формой упоминания, а не расширенным фрагментом предложения.",
+    "10) Не объединяй несколько вхождений в один mention.",
+    "11) Если в абзаце есть несколько отдельных mention-ов одной сущности, верни несколько элементов.",
+    "12) Mention можно добавлять для:",
+    "   - полного имени,",
+    "   - короткой формы имени,",
+    "   - фамилии,",
+    "   - титула,",
+    "   - устойчивого обозначения,",
+    "   - явно отсылающего описательного референса,",
+    "   но только если его можно однозначно сопоставить сущности из реестра.",
+    "13) Не добавляй mention, если соответствие сущности из реестра неоднозначно.",
+    "14) Не создавай mention только на основе слабой догадки или world knowledge.",
+    "15) Не извлекай mention для местоимений, если у тебя нет очень надежного и локально однозначного соответствия сущности из реестра.",
+    "16) Если местоимения в твоем текущем пайплайне часто шумят, лучше пропустить местоимение, чем привязать его неверно.",
+    "",
+    "Правила для linking:",
+    "17) Сначала ищи совпадения по реестру сущностей.",
+    "18) Если в тексте встречается сокращенная, титульная или альтернативная форма, привязывай ее к сущности из реестра только если из локального контекста ясно, что это именно она.",
+    "19) Не создавай отдельные mentions для сущности, которой нет в реестре.",
+    "20) Если текст явно указывает на персонажа, но в реестре его нет, пропусти это mention.",
+    "21) Не сливай разные сущности реестра только потому, что у них похожие имена или общая фамилия.",
+    "",
+    "Правила для locationContainments:",
+    "22) Добавляй locationContainments только если текст явно указывает, что одна location находится внутри другой location.",
+    "23) childRef и parentRef должны обе ссылаться на location из реестра.",
+    "24) Не выводи containment по общему знанию мира.",
+    "25) Если отношение вложенности не сказано явно или почти явно в тексте, не добавляй его.",
+    "",
+    "Анти-шум правила:",
+    "26) Не возвращай абстрактные references, которые не являются точным текстовым mention.",
+    "27) Не возвращай mentionText, которого нет в буквальном виде в соответствующем абзаце.",
+    "28) Не расширяй mentionText лишними словами ради \"удобства\".",
+    "29) Не сокращай mentionText так, чтобы терялась фактическая точная форма упоминания.",
+    "30) Если сомневаешься между двумя сущностями из реестра - пропусти mention.",
+    "31) Если соответствие однозначно и mention явно есть в тексте - лучше включить его, чем пропустить.",
+    "",
+    "Рекомендуемый порядок работы:",
+    "32) Пройди абзацы по одному, сверху вниз.",
+    "33) Внутри каждого абзаца проверь все сущности реестра и все их возможные явные текстовые формы.",
+    "34) Для каждого найденного вхождения добавь отдельный mention.",
+    "35) Затем отдельно проверь, есть ли явные locationContainments.",
+    "",
+    "Дополнительные правила incremental:",
+    "36) paragraphIndex в ответе должен быть только из TARGET-абзацев.",
+    "37) Если mention найден только в CONTEXT-абзаце, не добавляй его в ответ.",
+    "38) locationContainments добавляй только если childRef явно упомянут в TARGET-абзацах.",
     "",
     "Реестр сущностей:",
     buildEntityRegistryLiteral(params.entityRegistry),
     "",
-    "Текст (TARGET + CONTEXT) по параграфам:",
+    "Текст документа по параграфам:",
     scopedParagraphs,
   ].join("\n");
 }
 
 async function callExtractor<T>(options: CallExtractorOptions<T>): Promise<T> {
-  const { prompt, schema, traceSink, traceContext } = options;
-  const client = createTimewebClient();
+  const { prompt, schema, systemPrompt, traceSink, traceContext } = options;
+  const useKiaProvider = workerConfig.extraction.provider === "kia";
+  const client = useKiaProvider ? createKiaClient() : createTimewebClient();
   const modelCandidates = Array.from(
     new Set(
-      [workerConfig.timeweb.extractModel, workerConfig.timeweb.extractFallbackModel]
+      [
+        useKiaProvider ? workerConfig.kia.extractModel : workerConfig.timeweb.extractModel,
+        useKiaProvider ? workerConfig.kia.extractFallbackModel : workerConfig.timeweb.extractFallbackModel,
+      ]
         .map((value) => value.trim())
         .filter((value) => value.length > 0)
     )
   );
-  const maxAttempts = Math.max(1, workerConfig.timeweb.extractAttempts);
+  const maxAttempts = Math.max(1, useKiaProvider ? workerConfig.kia.extractAttempts : workerConfig.timeweb.extractAttempts);
+  const maxTokens = useKiaProvider ? workerConfig.kia.extractMaxTokens : workerConfig.timeweb.extractMaxTokens;
+  const proxySource = useKiaProvider ? workerConfig.kia.proxySource : workerConfig.timeweb.proxySource;
   let lastError: Error | null = null;
 
   for (const model of modelCandidates) {
@@ -603,18 +906,20 @@ async function callExtractor<T>(options: CallExtractorOptions<T>): Promise<T> {
       let jsonCandidate = "";
       let normalized: unknown = null;
       let parseError: string | null = null;
+      let finishReason: string | null = null;
+      let requestStartedAt: Date | null = null;
+      let requestCompletedAt: Date | null = null;
+      let durationMs: number | null = null;
 
       try {
+        requestStartedAt = new Date();
         const response = await client.chat.completions.create(
           {
             model,
             messages: [
               {
                 role: "system",
-                content:
-                  "You are a strict JSON extractor for narrative structure in fiction texts. " +
-                  "Input may include violent or crime-related literary content as part of a story. " +
-                  "Do not give instructions or advice; only return the required JSON object.",
+                content: (systemPrompt || "").trim() || DEFAULT_EXTRACTOR_SYSTEM_PROMPT,
               },
               {
                 role: "user",
@@ -625,22 +930,28 @@ async function callExtractor<T>(options: CallExtractorOptions<T>): Promise<T> {
               },
             ],
             temperature: 0.1,
-            max_tokens: workerConfig.timeweb.extractMaxTokens,
+            max_tokens: maxTokens,
             response_format: {
               type: "json_object",
             },
           },
           {
             headers: {
-              "x-proxy-source": workerConfig.timeweb.proxySource,
+              "x-proxy-source": proxySource,
             },
           }
         );
+        const completion = parseProviderChatCompletionResponse(response);
 
-        raw = String(response.choices?.[0]?.message?.content || "").trim();
+        requestCompletedAt = new Date();
+        durationMs = Math.max(0, requestCompletedAt.getTime() - requestStartedAt.getTime());
+        const finishReasonRaw = completion.choices?.[0]?.finish_reason;
+        finishReason =
+          typeof finishReasonRaw === "string" && finishReasonRaw.trim().length > 0 ? finishReasonRaw.trim() : null;
+
+        raw = String(completion.choices?.[0]?.message?.content || "").trim();
         if (!raw) {
-          const finishReason = String(response.choices?.[0]?.finish_reason || "unknown");
-          throw new Error(`Extraction empty response (finish_reason=${finishReason})`);
+          throw new Error(`Extraction empty response (finish_reason=${finishReason || "unknown"})`);
         }
 
         jsonCandidate = extractJsonCandidate(raw);
@@ -649,7 +960,9 @@ async function callExtractor<T>(options: CallExtractorOptions<T>): Promise<T> {
         try {
           parsed = JSON.parse(jsonCandidate);
         } catch (error) {
-          throw new Error(`Extraction JSON parse error: ${(error as Error).message}`);
+          throw new Error(
+            `Extraction JSON parse error (finish_reason=${finishReason || "unknown"}): ${(error as Error).message}`
+          );
         }
 
         normalized = normalizeModelPayload(parsed);
@@ -663,11 +976,16 @@ async function callExtractor<T>(options: CallExtractorOptions<T>): Promise<T> {
               batchIndex: Number.isInteger(traceContext.batchIndex) ? (traceContext.batchIndex as number) : null,
               targetParagraphIndices: traceContext.targetParagraphIndices || [],
               model,
+              attempt,
+              finishReason,
               prompt,
               rawResponse: raw,
               jsonCandidate,
               normalizedPayload: normalized,
               parseError: null,
+              requestStartedAt,
+              requestCompletedAt,
+              durationMs,
             });
           } catch {
             // Diagnostics storage must never break analysis flow.
@@ -676,6 +994,10 @@ async function callExtractor<T>(options: CallExtractorOptions<T>): Promise<T> {
 
         return validated;
       } catch (error) {
+        if (!requestCompletedAt) {
+          requestCompletedAt = new Date();
+          durationMs = requestStartedAt ? Math.max(0, requestCompletedAt.getTime() - requestStartedAt.getTime()) : null;
+        }
         parseError = error instanceof Error ? error.message : String(error);
         lastError = error instanceof Error ? error : new Error(String(error));
 
@@ -687,11 +1009,16 @@ async function callExtractor<T>(options: CallExtractorOptions<T>): Promise<T> {
               batchIndex: Number.isInteger(traceContext.batchIndex) ? (traceContext.batchIndex as number) : null,
               targetParagraphIndices: traceContext.targetParagraphIndices || [],
               model,
+              attempt,
+              finishReason,
               prompt,
               rawResponse: raw,
               jsonCandidate,
               normalizedPayload: normalized,
               parseError,
+              requestStartedAt,
+              requestCompletedAt,
+              durationMs,
             });
           } catch {
             // Diagnostics storage must never break analysis flow.
@@ -829,72 +1156,217 @@ function normalizeExtraction(result: ExtractionResult, options: NormalizeExtract
   });
 }
 
-function chunk<T>(items: T[], size: number): T[][] {
-  const chunks: T[][] = [];
-
-  for (let i = 0; i < items.length; i += size) {
-    chunks.push(items.slice(i, i + size));
-  }
-
-  return chunks;
+interface MentionsBatchBudget {
+  batchMaxChars: number;
+  batchMaxParagraphs: number;
+  singleCallMaxChars: number;
+  singleCallMaxParagraphs: number;
 }
 
-async function runMentionsInBatches(params: {
-  content: string;
-  paragraphCount: number;
-  entityRegistry: EntityRegistryEntry[];
-  traceSink?: ExtractionTraceSink;
-}): Promise<ExtractionMentionsResponse> {
-  const allIndices = Array.from({ length: params.paragraphCount }, (_, index) => index);
-  const batches = chunk(allIndices, DEFAULT_INCREMENTAL_BATCH_SIZE);
+const MENTIONS_SINGLE_CALL_BASE_MAX_CHARS = 22000;
+const MENTIONS_SINGLE_CALL_MIN_MAX_CHARS = 8000;
+const MENTIONS_SINGLE_CALL_BASE_MAX_PARAGRAPHS = 70;
+const MENTIONS_SINGLE_CALL_MIN_MAX_PARAGRAPHS = 24;
 
-  const aggregated: ExtractionMentionsResponse = {
-    mentions: [],
-    annotations: [],
-    locationContainments: [],
+const MENTIONS_BATCH_BASE_MAX_CHARS = 12000;
+const MENTIONS_BATCH_MIN_MAX_CHARS = 4000;
+const MENTIONS_BATCH_BASE_MAX_PARAGRAPHS = 28;
+const MENTIONS_BATCH_MIN_MAX_PARAGRAPHS = 10;
+
+const MENTIONS_REGISTRY_CHAR_PENALTY_PER_1K = 900;
+const MENTIONS_REGISTRY_PARAGRAPH_PENALTY_PER_1K = 1.5;
+
+function clampInt(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.round(value)));
+}
+
+function computeMentionsBatchBudget(entityRegistry: EntityRegistryEntry[]): MentionsBatchBudget {
+  const registryChars = buildEntityRegistryLiteral(entityRegistry).length;
+  const penaltyUnits = registryChars / 1000;
+
+  const batchMaxChars = clampInt(
+    MENTIONS_BATCH_BASE_MAX_CHARS - penaltyUnits * MENTIONS_REGISTRY_CHAR_PENALTY_PER_1K,
+    MENTIONS_BATCH_MIN_MAX_CHARS,
+    MENTIONS_BATCH_BASE_MAX_CHARS
+  );
+  const batchMaxParagraphs = clampInt(
+    MENTIONS_BATCH_BASE_MAX_PARAGRAPHS - penaltyUnits * MENTIONS_REGISTRY_PARAGRAPH_PENALTY_PER_1K,
+    MENTIONS_BATCH_MIN_MAX_PARAGRAPHS,
+    MENTIONS_BATCH_BASE_MAX_PARAGRAPHS
+  );
+
+  const singleCallMaxChars = clampInt(
+    MENTIONS_SINGLE_CALL_BASE_MAX_CHARS - penaltyUnits * MENTIONS_REGISTRY_CHAR_PENALTY_PER_1K * 1.2,
+    MENTIONS_SINGLE_CALL_MIN_MAX_CHARS,
+    MENTIONS_SINGLE_CALL_BASE_MAX_CHARS
+  );
+  const singleCallMaxParagraphs = clampInt(
+    MENTIONS_SINGLE_CALL_BASE_MAX_PARAGRAPHS - penaltyUnits * MENTIONS_REGISTRY_PARAGRAPH_PENALTY_PER_1K * 2,
+    MENTIONS_SINGLE_CALL_MIN_MAX_PARAGRAPHS,
+    MENTIONS_SINGLE_CALL_BASE_MAX_PARAGRAPHS
+  );
+
+  return {
+    batchMaxChars,
+    batchMaxParagraphs,
+    singleCallMaxChars,
+    singleCallMaxParagraphs,
   };
+}
 
-  for (const [batchIndex, targetIndices] of batches.entries()) {
-    const partial = await callExtractor<ExtractionMentionsResponse>({
-      prompt: buildIncrementalMentionsPrompt({
-        content: params.content,
-        targetIndices,
-        entityRegistry: params.entityRegistry,
-      }),
-      schema: ExtractionMentionsResponseSchema,
-      traceSink: params.traceSink,
-      traceContext: {
-        phase: "mentions",
-        extractionMode: "incremental",
-        batchIndex,
-        targetParagraphIndices: targetIndices,
-      },
-    });
+function isLengthRelatedExtractionError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || "");
+  if (!message) return false;
 
-    const normalizedPartial = normalizeExtraction(
-      {
-        entities: [],
-        mentions: partial.mentions,
-        annotations: partial.annotations,
-        locationContainments: partial.locationContainments,
-      },
-      {
-        maxParagraph: Math.max(0, params.paragraphCount - 1),
-        allowedParagraphIndices: new Set(targetIndices),
-      }
-    );
+  return (
+    message.includes("finish_reason=length") ||
+    message.includes("Unterminated string in JSON") ||
+    message.includes("Unexpected end of JSON input")
+  );
+}
 
-    aggregated.mentions.push(...normalizedPartial.mentions);
-    aggregated.annotations.push(...normalizedPartial.annotations);
-    aggregated.locationContainments.push(...normalizedPartial.locationContainments);
+function shouldTrySingleMentionsCall(content: string, paragraphCount: number, budget: MentionsBatchBudget): boolean {
+  return content.length <= budget.singleCallMaxChars && paragraphCount <= budget.singleCallMaxParagraphs;
+}
+
+function buildMentionTargetBatches(content: string, budget: MentionsBatchBudget): number[][] {
+  const paragraphs = splitParagraphs(content);
+  if (!paragraphs.length) return [];
+
+  const batches: number[][] = [];
+  let currentBatch: number[] = [];
+  let currentChars = 0;
+
+  for (const paragraph of paragraphs) {
+    const nextChars = currentChars + paragraph.text.length;
+    const wouldExceedChars = nextChars > budget.batchMaxChars;
+    const wouldExceedCount = currentBatch.length >= budget.batchMaxParagraphs;
+
+    if (currentBatch.length > 0 && (wouldExceedChars || wouldExceedCount)) {
+      batches.push(currentBatch);
+      currentBatch = [];
+      currentChars = 0;
+    }
+
+    currentBatch.push(paragraph.index);
+    currentChars += paragraph.text.length;
   }
 
-  return aggregated;
+  if (currentBatch.length > 0) {
+    batches.push(currentBatch);
+  }
+
+  return batches;
+}
+
+async function extractMentionsInAdaptiveBatches(params: {
+  content: string;
+  entityRegistry: EntityRegistryEntry[];
+  batchBudget: MentionsBatchBudget;
+  traceSink?: ExtractionTraceSink;
+  maxParagraph: number;
+  onBatch?: (payload: {
+    batchIndex: number;
+    targetParagraphIndices: number[];
+    mentions: ExtractionResult["mentions"];
+    locationContainments: ExtractionResult["locationContainments"];
+  }) => Promise<void> | void;
+}): Promise<Pick<ExtractionResult, "mentions" | "locationContainments">> {
+  const initialBatches = buildMentionTargetBatches(params.content, params.batchBudget);
+  const queue = [...initialBatches];
+  const mergedMentions: ExtractionResult["mentions"] = [];
+  const mergedContainments: ExtractionResult["locationContainments"] = [];
+  let emittedBatchIndex = 0;
+
+  while (queue.length > 0) {
+    const targetIndices = queue.shift() as number[];
+    const targetSet = new Set(targetIndices);
+
+    try {
+      const batchResponse = await callExtractor<ExtractionMentionsResponse>({
+        systemPrompt: HIGH_RECALL_MENTIONS_SYSTEM_PROMPT,
+        prompt: buildIncrementalMentionsPrompt({
+          content: params.content,
+          targetIndices,
+          entityRegistry: params.entityRegistry,
+        }),
+        schema: ExtractionMentionsResponseSchema,
+        traceSink: params.traceSink,
+        traceContext: {
+          phase: "mentions",
+          extractionMode: "full",
+          batchIndex: emittedBatchIndex,
+          targetParagraphIndices: targetIndices,
+        },
+      });
+
+      const normalizedBatch = normalizeExtraction(
+        {
+          entities: [],
+          mentions: hydrateMentionsWithRegistry(batchResponse.mentions, params.entityRegistry),
+          annotations: [],
+          locationContainments: batchResponse.locationContainments,
+        },
+        {
+          maxParagraph: params.maxParagraph,
+          allowedParagraphIndices: targetSet,
+          requireMentionBackedEntities: true,
+        }
+      );
+
+      mergedMentions.push(...normalizedBatch.mentions);
+      mergedContainments.push(...normalizedBatch.locationContainments);
+
+      if (params.onBatch) {
+        await params.onBatch({
+          batchIndex: emittedBatchIndex,
+          targetParagraphIndices: targetIndices,
+          mentions: normalizedBatch.mentions,
+          locationContainments: normalizedBatch.locationContainments,
+        });
+      }
+
+      emittedBatchIndex += 1;
+    } catch (error) {
+      if (isLengthRelatedExtractionError(error) && targetIndices.length > 1) {
+        const middle = Math.ceil(targetIndices.length / 2);
+        const firstHalf = targetIndices.slice(0, middle);
+        const secondHalf = targetIndices.slice(middle);
+
+        // Process left-to-right; split only when needed.
+        queue.unshift(secondHalf);
+        queue.unshift(firstHalf);
+        continue;
+      }
+
+      throw error;
+    }
+  }
+
+  const normalizedMerged = normalizeExtraction(
+    {
+      entities: [],
+      mentions: mergedMentions,
+      annotations: [],
+      locationContainments: mergedContainments,
+    },
+    {
+      maxParagraph: params.maxParagraph,
+      allowedParagraphIndices: new Set(splitParagraphs(params.content).map((paragraph) => paragraph.index)),
+      requireMentionBackedEntities: true,
+    }
+  );
+
+  return {
+    mentions: normalizedMerged.mentions,
+    locationContainments: normalizedMerged.locationContainments,
+  };
 }
 
 export async function runExtraction(rawContent: string, options: RunExtractionOptions = {}): Promise<ExtractionResult> {
   const content = canonicalizeDocumentContent(rawContent);
   const paragraphs = splitParagraphs(content);
+  const knownEntities = options.knownEntities || [];
 
   if (!paragraphs.length) {
     return {
@@ -906,7 +1378,11 @@ export async function runExtraction(rawContent: string, options: RunExtractionOp
   }
 
   const entitiesResponse = await callExtractor<ExtractionEntitiesResponse>({
-    prompt: buildFullEntitiesPrompt(content),
+    systemPrompt: HIGH_RECALL_ENTITIES_SYSTEM_PROMPT,
+    prompt: buildFullEntitiesPrompt({
+      content,
+      knownEntities,
+    }),
     schema: ExtractionEntitiesResponseSchema,
     traceSink: options.traceSink,
     traceContext: {
@@ -922,21 +1398,21 @@ export async function runExtraction(rawContent: string, options: RunExtractionOp
     locationContainments: [],
   }).entities;
 
-  const entityRegistry = toRegistryFromExtractionEntities(passOneEntities);
-  let mentionsResponse: ExtractionMentionsResponse;
+  const entityRegistry = dedupeEntityRegistry([
+    ...toRegistryFromKnownEntities(knownEntities),
+    ...toRegistryFromExtractionEntities(passOneEntities),
+  ]);
+  const mentionsBatchBudget = computeMentionsBatchBudget(entityRegistry);
+  const fullTargetParagraphIndices = paragraphs.map((paragraph) => paragraph.index);
+  let mentions: ExtractionResult["mentions"] = [];
+  let locationContainments: ExtractionResult["locationContainments"] = [];
 
-  const shouldUseBatchMentions = paragraphs.length >= FULL_MENTIONS_BATCH_FALLBACK_MIN_PARAGRAPHS;
+  const trySingleCall = shouldTrySingleMentionsCall(content, paragraphs.length, mentionsBatchBudget);
 
-  if (shouldUseBatchMentions) {
-    mentionsResponse = await runMentionsInBatches({
-      content,
-      paragraphCount: paragraphs.length,
-      entityRegistry,
-      traceSink: options.traceSink,
-    });
-  } else {
+  if (trySingleCall) {
     try {
-      mentionsResponse = await callExtractor<ExtractionMentionsResponse>({
+      const mentionsResponse = await callExtractor<ExtractionMentionsResponse>({
+        systemPrompt: HIGH_RECALL_MENTIONS_SYSTEM_PROMPT,
         prompt: buildFullMentionsPrompt(content, entityRegistry),
         schema: ExtractionMentionsResponseSchema,
         traceSink: options.traceSink,
@@ -945,26 +1421,69 @@ export async function runExtraction(rawContent: string, options: RunExtractionOp
           extractionMode: "full",
         },
       });
+
+      const normalizedSingle = normalizeExtraction(
+        {
+          entities: [],
+          mentions: hydrateMentionsWithRegistry(mentionsResponse.mentions, entityRegistry),
+          annotations: [],
+          locationContainments: mentionsResponse.locationContainments,
+        },
+        {
+          maxParagraph: paragraphs.length - 1,
+          allowedParagraphIndices: new Set(fullTargetParagraphIndices),
+          requireMentionBackedEntities: true,
+        }
+      );
+
+      mentions = normalizedSingle.mentions;
+      locationContainments = normalizedSingle.locationContainments;
+
+      if (options.onFullMentionsBatch) {
+        await options.onFullMentionsBatch({
+          batchIndex: 0,
+          targetParagraphIndices: fullTargetParagraphIndices,
+          mentions,
+          locationContainments,
+        });
+      }
     } catch (error) {
-      if (!isExtractionJsonParseError(error) || paragraphs.length < 2) {
+      if (!isLengthRelatedExtractionError(error)) {
         throw error;
       }
 
-      mentionsResponse = await runMentionsInBatches({
+      const batched = await extractMentionsInAdaptiveBatches({
         content,
-        paragraphCount: paragraphs.length,
         entityRegistry,
+        batchBudget: mentionsBatchBudget,
         traceSink: options.traceSink,
+        maxParagraph: paragraphs.length - 1,
+        onBatch: options.onFullMentionsBatch,
       });
+
+      mentions = batched.mentions;
+      locationContainments = batched.locationContainments;
     }
+  } else {
+    const batched = await extractMentionsInAdaptiveBatches({
+      content,
+      entityRegistry,
+      batchBudget: mentionsBatchBudget,
+      traceSink: options.traceSink,
+      maxParagraph: paragraphs.length - 1,
+      onBatch: options.onFullMentionsBatch,
+    });
+
+    mentions = batched.mentions;
+    locationContainments = batched.locationContainments;
   }
 
   return normalizeExtraction(
     {
       entities: passOneEntities,
-      mentions: mentionsResponse.mentions,
-      annotations: mentionsResponse.annotations,
-      locationContainments: mentionsResponse.locationContainments,
+      mentions,
+      annotations: [],
+      locationContainments,
     },
     { maxParagraph: paragraphs.length - 1 }
   );
@@ -999,79 +1518,62 @@ export async function runExtractionIncremental(
     };
   }
 
-  const batchSize = Math.max(1, input.batchSize || DEFAULT_INCREMENTAL_BATCH_SIZE);
-  const batches = chunk(changedParagraphIndices, batchSize);
-  const collected: ExtractionResult = {
-    entities: [],
+  const targetIndices = changedParagraphIndices;
+  const passOne = await callExtractor<ExtractionEntitiesResponse>({
+    systemPrompt: HIGH_RECALL_ENTITIES_SYSTEM_PROMPT,
+    prompt: buildIncrementalEntitiesPrompt({
+      content,
+      targetIndices,
+      knownEntities: input.knownEntities,
+    }),
+    schema: ExtractionEntitiesResponseSchema,
+    traceSink: options.traceSink,
+    traceContext: {
+      phase: "entities",
+      extractionMode: "incremental",
+      targetParagraphIndices: targetIndices,
+    },
+  });
+
+  const passOneEntities = dedupeExtraction({
+    entities: passOne.entities,
     mentions: [],
     annotations: [],
     locationContainments: [],
-  };
+  }).entities;
 
-  for (const [batchIndex, batch] of batches.entries()) {
-    const passOne = await callExtractor<ExtractionEntitiesResponse>({
-      prompt: buildIncrementalEntitiesPrompt({
-        content,
-        targetIndices: batch,
-        knownEntities: input.knownEntities,
-      }),
-      schema: ExtractionEntitiesResponseSchema,
-      traceSink: options.traceSink,
-      traceContext: {
-        phase: "entities",
-        extractionMode: "incremental",
-        batchIndex,
-        targetParagraphIndices: batch,
-      },
-    });
+  const mentionRegistry = dedupeEntityRegistry([
+    ...toRegistryFromKnownEntities(input.knownEntities),
+    ...toRegistryFromExtractionEntities(passOneEntities),
+  ]);
 
-    const passOneEntities = dedupeExtraction({
-      entities: passOne.entities,
-      mentions: [],
+  const passTwo = await callExtractor<ExtractionMentionsResponse>({
+    systemPrompt: HIGH_RECALL_MENTIONS_SYSTEM_PROMPT,
+    prompt: buildIncrementalMentionsPrompt({
+      content,
+      targetIndices,
+      entityRegistry: mentionRegistry,
+    }),
+    schema: ExtractionMentionsResponseSchema,
+    traceSink: options.traceSink,
+    traceContext: {
+      phase: "mentions",
+      extractionMode: "incremental",
+      targetParagraphIndices: targetIndices,
+    },
+  });
+
+  return normalizeExtraction(
+    {
+      entities: passOneEntities,
+      mentions: hydrateMentionsWithRegistry(passTwo.mentions, mentionRegistry),
       annotations: [],
-      locationContainments: [],
-    }).entities;
-
-    const mentionRegistry = dedupeEntityRegistry([
-      ...toRegistryFromKnownEntities(input.knownEntities),
-      ...toRegistryFromExtractionEntities(passOneEntities),
-    ]);
-
-    const passTwo = await callExtractor<ExtractionMentionsResponse>({
-      prompt: buildIncrementalMentionsPrompt({
-        content,
-        targetIndices: batch,
-        entityRegistry: mentionRegistry,
-      }),
-      schema: ExtractionMentionsResponseSchema,
-      traceSink: options.traceSink,
-      traceContext: {
-        phase: "mentions",
-        extractionMode: "incremental",
-        batchIndex,
-        targetParagraphIndices: batch,
-      },
-    });
-
-    const normalized = normalizeExtraction(
-      {
-        entities: passOneEntities,
-        mentions: passTwo.mentions,
-        annotations: passTwo.annotations,
-        locationContainments: passTwo.locationContainments,
-      },
-      {
-        maxParagraph: paragraphs.length - 1,
-        allowedParagraphIndices: new Set(batch),
-        requireMentionBackedEntities: true,
-      }
-    );
-
-    collected.entities.push(...normalized.entities);
-    collected.mentions.push(...normalized.mentions);
-    collected.annotations.push(...normalized.annotations);
-    collected.locationContainments.push(...normalized.locationContainments);
-  }
-
-  return dedupeExtraction(collected);
+      locationContainments: passTwo.locationContainments,
+    },
+    {
+      maxParagraph: paragraphs.length - 1,
+      allowedParagraphIndices: new Set(targetIndices),
+      requireMentionBackedEntities: true,
+    }
+  );
 }

@@ -26,6 +26,13 @@ export class ChapterNotFoundError extends Error {
   }
 }
 
+export class LastChapterDeletionError extends Error {
+  constructor(projectId: string) {
+    super(`Cannot delete last chapter in project ${projectId}`);
+    this.name = "LastChapterDeletionError";
+  }
+}
+
 type ChapterRecord = {
   id: string;
   projectId: string;
@@ -34,6 +41,8 @@ type ChapterRecord = {
   createdAt: Date;
   updatedAt: Date;
 };
+
+type ChapterMoveDirection = "up" | "down";
 
 type ProjectRecord = {
   id: string;
@@ -103,6 +112,31 @@ async function resolveProjectChapter(
   }
 
   return chapter;
+}
+
+async function normalizeChapterOrder(projectId: string, tx: any = prisma) {
+  const chapters = await tx.chapter.findMany({
+    where: { projectId },
+    orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+  });
+
+  await Promise.all(
+    chapters.map((chapter: ChapterRecord, index: number) => {
+      if (chapter.orderIndex === index) {
+        return Promise.resolve();
+      }
+
+      return tx.chapter.update({
+        where: { id: chapter.id },
+        data: { orderIndex: index },
+      });
+    })
+  );
+
+  return tx.chapter.findMany({
+    where: { projectId },
+    orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+  });
 }
 
 async function getDocumentOrCreate(projectId: string, chapterId?: string | null): Promise<DocumentWithRelations> {
@@ -303,6 +337,117 @@ export async function createProjectChapter(projectId: string, input?: { title?: 
     });
 
     return chapter;
+  });
+}
+
+export async function updateProjectChapter(
+  projectId: string,
+  chapterId: string,
+  input: { title?: string | null; move?: ChapterMoveDirection | null }
+): Promise<ChapterRecord> {
+  await ensureProjectExists(projectId);
+
+  const requestedTitle = input.title == null ? null : String(input.title).trim();
+  const moveDirection = input.move || null;
+
+  return prisma.$transaction(async (tx: any) => {
+    await resolveProjectChapter(projectId, chapterId, tx);
+
+    if (requestedTitle !== null) {
+      await tx.chapter.update({
+        where: { id: chapterId },
+        data: {
+          title: requestedTitle || DEFAULT_CHAPTER_TITLE,
+        },
+      });
+    }
+
+    if (moveDirection) {
+      const chapters = await tx.chapter.findMany({
+        where: { projectId },
+        orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+      });
+      const fromIndex = chapters.findIndex((chapter: ChapterRecord) => chapter.id === chapterId);
+      if (fromIndex >= 0) {
+        const toIndex = moveDirection === "up" ? fromIndex - 1 : fromIndex + 1;
+        if (toIndex >= 0 && toIndex < chapters.length) {
+          const reordered = [...chapters];
+          const [current] = reordered.splice(fromIndex, 1);
+          reordered.splice(toIndex, 0, current);
+
+          await Promise.all(
+            reordered.map((chapter: ChapterRecord, index: number) =>
+              tx.chapter.update({
+                where: { id: chapter.id },
+                data: { orderIndex: index },
+              })
+            )
+          );
+        }
+      }
+    }
+
+    await normalizeChapterOrder(projectId, tx);
+
+    await tx.project.update({
+      where: { id: projectId },
+      data: {
+        updatedAt: new Date(),
+      },
+    });
+
+    return tx.chapter.findUniqueOrThrow({
+      where: { id: chapterId },
+    });
+  });
+}
+
+export async function deleteProjectChapter(projectId: string, chapterId: string): Promise<{
+  deletedChapterId: string;
+  fallbackChapterId: string;
+}> {
+  await ensureProjectExists(projectId);
+
+  return prisma.$transaction(async (tx: any) => {
+    const chapters = await tx.chapter.findMany({
+      where: { projectId },
+      orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+    });
+
+    const index = chapters.findIndex((chapter: ChapterRecord) => chapter.id === chapterId);
+    if (index === -1) {
+      throw new ChapterNotFoundError(projectId, chapterId);
+    }
+
+    if (chapters.length <= 1) {
+      throw new LastChapterDeletionError(projectId);
+    }
+
+    const fallbackChapter =
+      chapters[index + 1] ||
+      chapters[index - 1] ||
+      null;
+    if (!fallbackChapter) {
+      throw new LastChapterDeletionError(projectId);
+    }
+
+    await tx.chapter.delete({
+      where: { id: chapterId },
+    });
+
+    await normalizeChapterOrder(projectId, tx);
+
+    await tx.project.update({
+      where: { id: projectId },
+      data: {
+        updatedAt: new Date(),
+      },
+    });
+
+    return {
+      deletedChapterId: chapterId,
+      fallbackChapterId: fallbackChapter.id,
+    };
   });
 }
 

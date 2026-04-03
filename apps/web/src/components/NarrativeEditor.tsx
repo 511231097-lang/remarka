@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BubbleMenu, EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import type { DocumentPayload } from "@remarka/contracts";
@@ -14,11 +14,22 @@ interface NarrativeEditorProps {
   activeMentionId: string | null;
   scrollToMentionRequest?: { mentionId: string; token: number } | null;
   debugTag?: string;
+  onMentionOpenEntity?: (payload: { mentionId: string; entityId: string }) => void;
   onChange: (richContent: unknown, meta: { userInitiated: boolean }) => void;
 }
 
 function clampPosition(position: number, max: number): number {
   return Math.max(0, Math.min(position, max));
+}
+
+type MentionItem = DocumentPayload["mentions"][number];
+
+interface MentionTooltipState {
+  mentionId: string;
+  entityId: string;
+  entityName: string;
+  left: number;
+  top: number;
 }
 
 function ToolbarButton({
@@ -52,11 +63,16 @@ export function NarrativeEditor({
   activeMentionId,
   scrollToMentionRequest = null,
   debugTag,
+  onMentionOpenEntity,
   onChange,
 }: NarrativeEditorProps) {
   const syncingRef = useRef(false);
   const lastScrolledMentionRef = useRef<string | null>(null);
   const debugSeqRef = useRef(0);
+  const hideTooltipTimerRef = useRef<number | null>(null);
+  const isTooltipHoveredRef = useRef(false);
+  const mentionsRef = useRef<DocumentPayload["mentions"]>(mentions);
+  const [mentionTooltip, setMentionTooltip] = useState<MentionTooltipState | null>(null);
 
   const debugLog = useCallback(
     (event: string, payload?: Record<string, unknown>) => {
@@ -71,6 +87,47 @@ export function NarrativeEditor({
     () => JSON.stringify(richContent || EMPTY_RICH_TEXT_DOCUMENT),
     [richContent]
   );
+  const mentionsById = useMemo(() => {
+    const map = new Map<string, MentionItem>();
+    mentions.forEach((mention) => map.set(mention.id, mention));
+    return map;
+  }, [mentions]);
+  const mentionsSignature = useMemo(
+    () =>
+      mentions
+        .map((mention) =>
+          [
+            mention.id,
+            mention.entityId,
+            mention.paragraphIndex,
+            mention.startOffset,
+            mention.endOffset,
+            mention.sourceText,
+            mention.entity.type,
+          ].join(":")
+        )
+        .join("|"),
+    [mentions]
+  );
+
+  useEffect(() => {
+    mentionsRef.current = mentions;
+  }, [mentions]);
+
+  const clearHideTooltipTimer = useCallback(() => {
+    if (hideTooltipTimerRef.current !== null) {
+      window.clearTimeout(hideTooltipTimerRef.current);
+      hideTooltipTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleTooltipHide = useCallback(() => {
+    clearHideTooltipTimer();
+    hideTooltipTimerRef.current = window.setTimeout(() => {
+      if (isTooltipHoveredRef.current) return;
+      setMentionTooltip(null);
+    }, 140);
+  }, [clearHideTooltipTimer]);
 
   const editor = useEditor({
     extensions: [
@@ -79,11 +136,7 @@ export function NarrativeEditor({
           levels: [1, 2, 3],
         },
       }),
-      EntityMentionDecorations.configure({
-        mentions,
-        activeEntityId,
-        activeMentionId,
-      }),
+      EntityMentionDecorations,
     ],
     content: richContent || EMPTY_RICH_TEXT_DOCUMENT,
     immediatelyRender: false,
@@ -109,12 +162,12 @@ export function NarrativeEditor({
         userInitiated,
       });
     },
-  });
+  }, []);
 
   useEffect(() => {
     if (!editor) return;
     editor.commands.setMentionDecorations({
-      mentions,
+      mentions: mentionsRef.current,
       activeEntityId,
       activeMentionId,
     });
@@ -123,7 +176,7 @@ export function NarrativeEditor({
       activeEntityId,
       activeMentionId,
     });
-  }, [editor, mentions, activeEntityId, activeMentionId, debugLog]);
+  }, [editor, mentionsSignature, activeEntityId, activeMentionId, debugLog]);
 
   useEffect(() => {
     if (!editor) return;
@@ -131,6 +184,15 @@ export function NarrativeEditor({
     const currentSerialized = JSON.stringify(editor.getJSON());
     if (currentSerialized === serializedExternal) {
       debugLog("sync:skip_equal", {
+        currentLength: editor.getText().length,
+      });
+      return;
+    }
+
+    // While user is actively typing, keep editor state authoritative and
+    // avoid external setContent rewrites that can shift decoration anchors.
+    if (editor.isFocused) {
+      debugLog("sync:skip_focused", {
         currentLength: editor.getText().length,
       });
       return;
@@ -214,6 +276,91 @@ export function NarrativeEditor({
     };
   }, [editor, scrollToMentionRequest, debugLog]);
 
+  useEffect(() => {
+    if (!editor) return;
+
+    const editorDom = editor.view.dom as HTMLElement;
+    const scrollHost = editorDom.closest(".editor-content-host") as HTMLElement | null;
+
+    const getMentionElement = (target: EventTarget | null): HTMLElement | null => {
+      if (!(target instanceof HTMLElement)) return null;
+      return target.closest("[data-mention-id][data-entity-id]") as HTMLElement | null;
+    };
+
+    const showMentionTooltip = (mentionElement: HTMLElement) => {
+      const mentionId = mentionElement.dataset.mentionId?.trim() || "";
+      if (!mentionId) return;
+      const mention = mentionsById.get(mentionId);
+      if (!mention) return;
+
+      const rect = mentionElement.getBoundingClientRect();
+      const left = Math.min(Math.max(rect.left + rect.width / 2, 16), window.innerWidth - 16);
+      const top = Math.min(rect.bottom + 8, window.innerHeight - 12);
+
+      setMentionTooltip({
+        mentionId: mention.id,
+        entityId: mention.entityId,
+        entityName: mention.entity.name,
+        left,
+        top,
+      });
+    };
+
+    const handleMouseOver = (event: MouseEvent) => {
+      const mentionElement = getMentionElement(event.target);
+      if (!mentionElement) return;
+      clearHideTooltipTimer();
+      showMentionTooltip(mentionElement);
+    };
+
+    const handleMouseMove = (event: MouseEvent) => {
+      const mentionElement = getMentionElement(event.target);
+      if (!mentionElement) return;
+      showMentionTooltip(mentionElement);
+    };
+
+    const handleMouseOut = (event: MouseEvent) => {
+      const mentionElement = getMentionElement(event.target);
+      if (!mentionElement) return;
+
+      const related = event.relatedTarget;
+      if (related instanceof HTMLElement && related.closest(".mention-hover-tooltip")) {
+        return;
+      }
+
+      scheduleTooltipHide();
+    };
+
+    const handleScroll = () => {
+      setMentionTooltip(null);
+    };
+
+    editorDom.addEventListener("mouseover", handleMouseOver);
+    editorDom.addEventListener("mousemove", handleMouseMove);
+    editorDom.addEventListener("mouseout", handleMouseOut);
+    scrollHost?.addEventListener("scroll", handleScroll, { passive: true });
+
+    return () => {
+      editorDom.removeEventListener("mouseover", handleMouseOver);
+      editorDom.removeEventListener("mousemove", handleMouseMove);
+      editorDom.removeEventListener("mouseout", handleMouseOut);
+      scrollHost?.removeEventListener("scroll", handleScroll);
+    };
+  }, [editor, mentionsById, clearHideTooltipTimer, scheduleTooltipHide]);
+
+  useEffect(() => {
+    if (!mentionTooltip) return;
+    if (mentionsById.has(mentionTooltip.mentionId)) return;
+    setMentionTooltip(null);
+  }, [mentionTooltip, mentionsById]);
+
+  useEffect(
+    () => () => {
+      clearHideTooltipTimer();
+    },
+    [clearHideTooltipTimer]
+  );
+
   return (
     <div className="editor-surface">
       {editor ? (
@@ -255,6 +402,37 @@ export function NarrativeEditor({
             onClick={() => editor.chain().focus().toggleHeading({ level: 3 }).run()}
           />
         </BubbleMenu>
+      ) : null}
+
+      {mentionTooltip ? (
+        <div
+          className="mention-hover-tooltip"
+          style={{ left: mentionTooltip.left, top: mentionTooltip.top }}
+          onMouseEnter={() => {
+            isTooltipHoveredRef.current = true;
+            clearHideTooltipTimer();
+          }}
+          onMouseLeave={() => {
+            isTooltipHoveredRef.current = false;
+            scheduleTooltipHide();
+          }}
+        >
+          <div className="mention-hover-caption">{mentionTooltip.entityName}</div>
+          <button
+            className="mention-hover-link"
+            type="button"
+            onMouseDown={(event) => event.preventDefault()}
+            onClick={() => {
+              onMentionOpenEntity?.({
+                mentionId: mentionTooltip.mentionId,
+                entityId: mentionTooltip.entityId,
+              });
+              setMentionTooltip(null);
+            }}
+          >
+            Подробнее
+          </button>
+        </div>
       ) : null}
 
       <EditorContent editor={editor} className="editor-content-host" />

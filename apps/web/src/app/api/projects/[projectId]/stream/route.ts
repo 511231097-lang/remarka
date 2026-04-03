@@ -97,7 +97,7 @@ export async function GET(request: Request, context: RouteContext) {
 
           const fingerprint = `${payload.chapterId || "-"}:${payload.analysisStatus}:${payload.contentVersion}:${
             payload.lastAnalyzedVersion ?? -1
-          }`;
+          }:${payload.updatedAt || "-"}`;
 
           if (fingerprint !== lastFingerprint) {
             lastFingerprint = fingerprint;

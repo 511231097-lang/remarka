@@ -15,7 +15,6 @@ const UPSERT_PRIORITY: Record<EntityType, number> = {
   location: 0,
   character: 1,
   event: 2,
-  time_marker: 3,
 };
 
 export function toCandidateKey(type: EntityType, name: string): string {

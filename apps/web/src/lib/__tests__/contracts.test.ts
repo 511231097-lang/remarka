@@ -32,11 +32,11 @@ describe("contracts utilities", () => {
         mentionText: "Eren",
       },
       {
-        entityRef: "e_time_1",
-        type: "time_marker",
-        name: "Three days later",
+        entityRef: "e_event_1",
+        type: "event",
+        name: "departure",
         paragraphIndex: 1,
-        mentionText: "Three days later",
+        mentionText: "left",
       },
     ]);
 
@@ -51,15 +51,51 @@ describe("contracts utilities", () => {
         name: "Eren",
       },
       {
-        entityRef: "e_time_1",
+        entityRef: "e_event_1",
         paragraphIndex: 1,
-        startOffset: 15,
-        endOffset: 31,
-        sourceText: "Three days later",
-        type: "time_marker",
-        name: "Three days later",
+        startOffset: 37,
+        endOffset: 41,
+        sourceText: "left",
+        type: "event",
+        name: "departure",
       },
     ]);
+  });
+
+  it("prefers whole-word matches before partial substring matches", () => {
+    const content = "Кажется, ты задела почку, я опускаю взгляд.";
+    const resolved = resolveMentionOffsets(content, [
+      {
+        entityRef: "e_char_1",
+        type: "character",
+        name: "Главная героиня",
+        paragraphIndex: 0,
+        mentionText: "Я",
+      },
+    ]);
+
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].startOffset).toBe(content.indexOf("я опускаю"));
+    expect(resolved[0].endOffset).toBe(content.indexOf("я опускаю") + 1);
+    expect(resolved[0].sourceText).toBe("Я");
+  });
+
+  it("falls back to partial substring matching when whole-word search misses", () => {
+    const content = "Круг ведьмами замкнулся.";
+    const resolved = resolveMentionOffsets(content, [
+      {
+        entityRef: "e_char_1",
+        type: "character",
+        name: "Ведьмы",
+        paragraphIndex: 0,
+        mentionText: "ведьм",
+      },
+    ]);
+
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0].startOffset).toBe(content.indexOf("ведьмами"));
+    expect(resolved[0].endOffset).toBe(content.indexOf("ведьмами") + "ведьм".length);
+    expect(resolved[0].sourceText).toBe("ведьм");
   });
 
   it("validates extraction schema with location containments", () => {

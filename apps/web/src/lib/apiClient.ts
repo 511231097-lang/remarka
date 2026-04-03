@@ -61,6 +61,8 @@ export interface SidebarProjectItem {
   updatedAt: string;
 }
 
+export type ChapterMoveDirection = "up" | "down";
+
 async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit): Promise<T> {
   const response = await fetch(input, {
     cache: "no-store",
@@ -73,7 +75,26 @@ async function requestJson<T>(input: RequestInfo | URL, init?: RequestInit): Pro
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `Request failed: ${response.status}`);
+    if (text) {
+      let payload: { message?: string; error?: string } | null = null;
+      try {
+        payload = JSON.parse(text) as { message?: string; error?: string };
+      } catch {
+        payload = null;
+      }
+
+      if (payload?.message) {
+        throw new Error(payload.message);
+      }
+
+      if (payload?.error) {
+        throw new Error(payload.error);
+      }
+
+      throw new Error(text);
+    }
+
+    throw new Error(`Request failed: ${response.status}`);
   }
 
   return (await response.json()) as T;
@@ -141,6 +162,30 @@ export async function createProjectChapterRequest(projectId: string, input?: { t
     body: JSON.stringify(input || {}),
   });
   return result.chapter;
+}
+
+export async function updateProjectChapterRequest(
+  projectId: string,
+  chapterId: string,
+  input: { title?: string | null; move?: ChapterMoveDirection | null }
+) {
+  const result = await requestJson<{ chapter: SidebarChapterItem }>(
+    `/api/projects/${projectId}/chapters/${chapterId}`,
+    {
+      method: "PATCH",
+      body: JSON.stringify(input || {}),
+    }
+  );
+  return result.chapter;
+}
+
+export async function deleteProjectChapterRequest(projectId: string, chapterId: string) {
+  return requestJson<{ deletedChapterId: string; fallbackChapterId: string }>(
+    `/api/projects/${projectId}/chapters/${chapterId}`,
+    {
+      method: "DELETE",
+    }
+  );
 }
 
 export function subscribeProjectStatus(

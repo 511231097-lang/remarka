@@ -35,16 +35,6 @@ interface MentionSnapshot {
   };
 }
 
-interface AnnotationSnapshot {
-  paragraphIndex: number;
-  type: EntityType;
-  label: string;
-  entity: {
-    id: string;
-    name: string;
-  } | null;
-}
-
 interface ResolvedEntityLink {
   id: string;
   type: EntityType;
@@ -73,7 +63,6 @@ function mergeIncrementalExtraction(params: {
   unchangedMap: Array<{ newIndex: number; oldIndex: number }>;
   changedExtraction: ExtractionResult;
   existingMentions: MentionSnapshot[];
-  existingAnnotations: AnnotationSnapshot[];
 }): ExtractionResult {
   const newByOld = new Map<number, number>();
   for (const entry of params.unchangedMap) {
@@ -95,25 +84,10 @@ function mergeIncrementalExtraction(params: {
     })
     .filter((mention): mention is NonNullable<typeof mention> => Boolean(mention));
 
-  const reusedAnnotations = params.existingAnnotations
-    .map((annotation) => {
-      const newIndex = newByOld.get(annotation.paragraphIndex);
-      if (newIndex === undefined) return null;
-
-      return {
-        ...(annotation.entity?.id ? { entityRef: toKnownEntityRef(annotation.entity.id) } : {}),
-        paragraphIndex: newIndex,
-        type: annotation.type,
-        label: annotation.label,
-        ...(annotation.entity?.name ? { name: annotation.entity.name } : {}),
-      };
-    })
-    .filter((annotation): annotation is NonNullable<typeof annotation> => Boolean(annotation));
-
   return {
     entities: [...params.changedExtraction.entities],
     mentions: [...reusedMentions, ...params.changedExtraction.mentions],
-    annotations: [...reusedAnnotations, ...params.changedExtraction.annotations],
+    annotations: [],
     locationContainments: [...params.changedExtraction.locationContainments],
   };
 }
@@ -127,6 +101,39 @@ async function markJobStale(jobId: string) {
       error: null,
     },
   });
+}
+
+interface StageMetricInput {
+  stage: string;
+  startedAt: Date;
+  completedAt: Date;
+  metadata?: Record<string, unknown>;
+}
+
+async function persistStageMetric(jobId: string, metric: StageMetricInput) {
+  const durationMs = Math.max(0, metric.completedAt.getTime() - metric.startedAt.getTime());
+
+  try {
+    await prisma.analysisJobStageMetric.create({
+      data: {
+        analysisJobId: jobId,
+        stage: metric.stage,
+        startedAt: metric.startedAt,
+        completedAt: metric.completedAt,
+        durationMs,
+        metadata: metric.metadata === undefined ? null : (metric.metadata as any),
+      },
+    });
+  } catch (error) {
+    logger.warn(
+      {
+        err: error,
+        jobId,
+        stage: metric.stage,
+      },
+      "Failed to persist stage metric"
+    );
+  }
 }
 
 function isContentFilterExtractionError(error: unknown): boolean {
@@ -161,6 +168,8 @@ async function persistModelCallTrace(jobId: string, trace: ExtractionModelCallTr
         batchIndex: trace.batchIndex,
         targetParagraphIndices: trace.targetParagraphIndices,
         model: trace.model,
+        attempt: trace.attempt,
+        finishReason: trace.finishReason,
         prompt: trace.prompt,
         rawResponse: trace.rawResponse,
         jsonCandidate: trace.jsonCandidate || null,
@@ -169,6 +178,9 @@ async function persistModelCallTrace(jobId: string, trace: ExtractionModelCallTr
             ? null
             : (trace.normalizedPayload as any),
         parseError: trace.parseError,
+        requestStartedAt: trace.requestStartedAt,
+        requestCompletedAt: trace.requestCompletedAt,
+        durationMs: trace.durationMs,
       },
     });
   } catch (error) {
@@ -183,6 +195,225 @@ async function persistModelCallTrace(jobId: string, trace: ExtractionModelCallTr
       "Failed to persist model call trace"
     );
   }
+}
+
+function getKnownEntityIdFromRef(entityRef: string): string | null {
+  if (!entityRef.startsWith("known:")) return null;
+  const raw = entityRef.slice("known:".length).trim();
+  return raw.length > 0 ? raw : null;
+}
+
+async function persistFullMentionsBatchPreview(params: {
+  projectId: string;
+  documentId: string;
+  contentVersion: number;
+  targetParagraphIndices: number[];
+  mentions: ExtractionResult["mentions"];
+  initializedRef: { value: boolean };
+  resolvedByRef: Map<string, ResolvedEntityLink>;
+  resolvedByTypeAndName: Map<string, ResolvedEntityLink>;
+}) {
+  const targetParagraphIndices = Array.from(new Set(params.targetParagraphIndices))
+    .filter((index) => Number.isInteger(index) && index >= 0)
+    .sort((a, b) => a - b);
+  if (!targetParagraphIndices.length) {
+    return;
+  }
+
+  const targetSet = new Set(targetParagraphIndices);
+  const scopedMentions = params.mentions.filter((mention) => targetSet.has(mention.paragraphIndex));
+
+  await prisma.$transaction(async (tx: any) => {
+    const freshDocument = await tx.document.findUnique({
+      where: { id: params.documentId },
+      select: {
+        id: true,
+        content: true,
+        contentVersion: true,
+      },
+    });
+
+    if (!freshDocument) {
+      return;
+    }
+
+    if (freshDocument.contentVersion !== params.contentVersion) {
+      return;
+    }
+
+    const resolveEntityByTypeAndName = async (type: EntityType, name: string): Promise<ResolvedEntityLink | null> => {
+      const normalizedName = normalizeEntityName(name);
+      if (!normalizedName) return null;
+
+      const typeNameKey = `${type}::${normalizedName}`;
+      const cached = params.resolvedByTypeAndName.get(typeNameKey);
+      if (cached) return cached;
+
+      const existing = await tx.entity.findFirst({
+        where: {
+          projectId: params.projectId,
+          type,
+          normalizedName,
+        },
+        select: {
+          id: true,
+          type: true,
+          name: true,
+        },
+        orderBy: [{ createdAt: "asc" }, { id: "asc" }],
+      });
+
+      const resolved = existing
+        ? {
+            id: existing.id,
+            type: existing.type,
+            name: existing.name,
+          }
+        : await tx.entity.create({
+            data: {
+              projectId: params.projectId,
+              type,
+              name,
+              normalizedName,
+              summary: "",
+            },
+            select: {
+              id: true,
+              type: true,
+              name: true,
+            },
+          });
+
+      const link: ResolvedEntityLink = {
+        id: resolved.id,
+        type: resolved.type,
+        name: resolved.name,
+      };
+
+      params.resolvedByTypeAndName.set(typeNameKey, link);
+      return link;
+    };
+
+    const resolveEntityByRef = async (
+      entityRef: string,
+      fallbackType: EntityType,
+      fallbackName: string
+    ): Promise<ResolvedEntityLink | null> => {
+      const cached = params.resolvedByRef.get(entityRef);
+      if (cached) return cached;
+
+      const knownEntityId = getKnownEntityIdFromRef(entityRef);
+      if (knownEntityId) {
+        const known = await tx.entity.findFirst({
+          where: {
+            id: knownEntityId,
+            projectId: params.projectId,
+          },
+          select: {
+            id: true,
+            type: true,
+            name: true,
+          },
+        });
+
+        if (!known) {
+          return null;
+        }
+
+        const knownLink: ResolvedEntityLink = {
+          id: known.id,
+          type: known.type,
+          name: known.name,
+        };
+
+        params.resolvedByRef.set(entityRef, knownLink);
+        const knownKey = `${known.type}::${normalizeEntityName(known.name)}`;
+        if (!params.resolvedByTypeAndName.has(knownKey)) {
+          params.resolvedByTypeAndName.set(knownKey, knownLink);
+        }
+        return knownLink;
+      }
+
+      const resolved = await resolveEntityByTypeAndName(fallbackType, fallbackName);
+      if (resolved) {
+        params.resolvedByRef.set(entityRef, resolved);
+      }
+      return resolved;
+    };
+
+    if (!params.initializedRef.value) {
+      await tx.mention.deleteMany({
+        where: {
+          documentId: params.documentId,
+        },
+      });
+
+      await tx.annotation.deleteMany({
+        where: {
+          documentId: params.documentId,
+        },
+      });
+
+      params.initializedRef.value = true;
+    }
+
+    const resolvedMentionOffsets = resolveMentionOffsets(freshDocument.content, scopedMentions);
+    const mentionRows: Array<{
+      entityId: string;
+      documentId: string;
+      startOffset: number;
+      endOffset: number;
+      paragraphIndex: number;
+      sourceText: string;
+    }> = [];
+
+    for (const mention of resolvedMentionOffsets) {
+      const resolvedEntity = await resolveEntityByRef(mention.entityRef, mention.type, mention.name);
+      if (!resolvedEntity) continue;
+
+      mentionRows.push({
+        entityId: resolvedEntity.id,
+        documentId: params.documentId,
+        startOffset: mention.startOffset,
+        endOffset: mention.endOffset,
+        paragraphIndex: mention.paragraphIndex,
+        sourceText: mention.sourceText,
+      });
+    }
+
+    await tx.mention.deleteMany({
+      where: {
+        documentId: params.documentId,
+        paragraphIndex: {
+          in: targetParagraphIndices,
+        },
+      },
+    });
+
+    if (mentionRows.length) {
+      await tx.mention.createMany({
+        data: mentionRows,
+      });
+    }
+
+    await tx.annotation.deleteMany({
+      where: {
+        documentId: params.documentId,
+        paragraphIndex: {
+          in: targetParagraphIndices,
+        },
+      },
+    });
+
+    await tx.document.update({
+      where: {
+        id: params.documentId,
+      },
+      data: {
+        analysisStatus: "running",
+      },
+    });
+  });
 }
 
 export async function processDocumentExtract(payload: DocumentExtractPayload) {
@@ -200,15 +431,29 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
     return;
   }
 
+  const processingStartedAt = new Date();
+  let processingOutcome: "completed" | "failed" | "stale" = "failed";
+
   await prisma.analysisJob.update({
     where: { id: payload.jobId },
     data: {
       status: "running",
-      startedAt: new Date(),
+      startedAt: processingStartedAt,
       error: null,
     },
   });
 
+  await persistStageMetric(payload.jobId, {
+    stage: "queue_wait",
+    startedAt: job.createdAt,
+    completedAt: processingStartedAt,
+    metadata: {
+      queuedAt: job.createdAt.toISOString(),
+      startedAt: processingStartedAt.toISOString(),
+    },
+  });
+
+  const loadDocumentStartedAt = new Date();
   const document = await prisma.document.findUnique({
     where: { id: payload.documentId },
     select: {
@@ -217,6 +462,16 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
       content: true,
       contentVersion: true,
       lastAnalyzedContent: true,
+    },
+  });
+  const loadDocumentCompletedAt = new Date();
+
+  await persistStageMetric(payload.jobId, {
+    stage: "load_document",
+    startedAt: loadDocumentStartedAt,
+    completedAt: loadDocumentCompletedAt,
+    metadata: {
+      found: Boolean(document),
     },
   });
 
@@ -229,11 +484,29 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
         completedAt: new Date(),
       },
     });
+    processingOutcome = "failed";
+    await persistStageMetric(payload.jobId, {
+      stage: "processing_total",
+      startedAt: processingStartedAt,
+      completedAt: new Date(),
+      metadata: {
+        outcome: processingOutcome,
+      },
+    });
     return;
   }
 
   if (document.contentVersion !== payload.contentVersion) {
     await markJobStale(payload.jobId);
+    processingOutcome = "stale";
+    await persistStageMetric(payload.jobId, {
+      stage: "processing_total",
+      startedAt: processingStartedAt,
+      completedAt: new Date(),
+      metadata: {
+        outcome: processingOutcome,
+      },
+    });
     return;
   }
 
@@ -248,64 +521,107 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
   });
 
   try {
+    const diffStartedAt = new Date();
     const diff = buildParagraphDiff(document.lastAnalyzedContent, document.content);
+    const diffCompletedAt = new Date();
+
+    await persistStageMetric(payload.jobId, {
+      stage: "paragraph_diff",
+      startedAt: diffStartedAt,
+      completedAt: diffCompletedAt,
+      metadata: {
+        mode: diff.mode,
+        algorithm: diff.algorithm,
+        reason: diff.reason,
+        confidence: Number(diff.confidence.toFixed(4)),
+        oldParagraphCount: diff.oldParagraphCount,
+        newParagraphCount: diff.newParagraphCount,
+        changedParagraphs: diff.changedNewIndices.length,
+      },
+    });
+
     const traceSink: ExtractionTraceSink = (trace) => persistModelCallTrace(payload.jobId, trace);
+    let projectKnownEntities: KnownProjectEntity[] = [];
 
-    let changedExtraction = emptyExtraction();
-    let fullExtraction: ExtractionResult | null = null;
-    let skipExtractionWrite = false;
-
-    if (diff.mode === "incremental") {
-      if (diff.changedNewIndices.length > 0) {
-        const knownEntities = await prisma.entity.findMany({
-          where: {
-            projectId: payload.projectId,
-          },
-          select: {
-            id: true,
-            type: true,
-            name: true,
-            summary: true,
-            containedByLinks: {
-              take: 1,
-              select: {
-                parentEntity: {
-                  select: {
-                    id: true,
-                    type: true,
-                    name: true,
-                  },
+    const knownEntitiesStartedAt = new Date();
+    if (diff.mode === "full" || diff.changedNewIndices.length > 0) {
+      const knownEntities = await prisma.entity.findMany({
+        where: {
+          projectId: payload.projectId,
+        },
+        select: {
+          id: true,
+          type: true,
+          name: true,
+          summary: true,
+          containedByLinks: {
+            take: 1,
+            select: {
+              parentEntity: {
+                select: {
+                  id: true,
+                  type: true,
+                  name: true,
                 },
               },
             },
           },
-        });
+        },
+      });
 
-        const registry: KnownProjectEntity[] = knownEntities.map((entity: any) => {
-          const container = entity.containedByLinks[0]?.parentEntity;
+      projectKnownEntities = knownEntities.map((entity: any) => {
+        const container = entity.containedByLinks[0]?.parentEntity;
 
-          return {
-            entityRef: toKnownEntityRef(entity.id),
-            type: entity.type,
-            name: entity.name,
-            summary: entity.summary || "",
-            ...(container?.id
-              ? {
-                  container: {
-                    entityRef: toKnownEntityRef(container.id),
-                    name: container.name,
-                  },
-                }
-              : {}),
-          };
-        });
+        return {
+          entityRef: toKnownEntityRef(entity.id),
+          type: entity.type,
+          name: entity.name,
+          summary: entity.summary || "",
+          ...(container?.id
+            ? {
+                container: {
+                  entityRef: toKnownEntityRef(container.id),
+                  name: container.name,
+                },
+              }
+            : {}),
+        };
+      });
+    }
+    const knownEntitiesCompletedAt = new Date();
 
+    await persistStageMetric(payload.jobId, {
+      stage: "load_known_entities",
+      startedAt: knownEntitiesStartedAt,
+      completedAt: knownEntitiesCompletedAt,
+      metadata: {
+        requested: diff.mode === "full" || diff.changedNewIndices.length > 0,
+        knownEntityCount: projectKnownEntities.length,
+      },
+    });
+
+    let changedExtraction = emptyExtraction();
+    let fullExtraction: ExtractionResult | null = null;
+    let skipExtractionWrite = false;
+    let staleDuringTransaction = false;
+    let extractionFallback: "none" | "incremental_content_filter" | "full_to_incremental_content_filter" | "skip_write" =
+      "none";
+    const extractionStartedAt = new Date();
+    const fullParagraphCount = splitParagraphs(document.content).length;
+    const fullMentionsPreviewInitialized = { value: false };
+    const fullMentionsPreviewResolvedByRef = new Map<string, ResolvedEntityLink>();
+    const fullMentionsPreviewResolvedByTypeAndName = new Map<string, ResolvedEntityLink>();
+    const fullMentionsProcessedParagraphIndices = new Set<number>();
+    let fullMentionsPreviewPersistChain: Promise<void> = Promise.resolve();
+
+    if (diff.mode === "incremental") {
+      if (diff.changedNewIndices.length > 0) {
         try {
           changedExtraction = await runExtractionIncremental(
             {
               content: document.content,
               changedParagraphIndices: diff.changedNewIndices,
-              knownEntities: registry,
+              knownEntities: projectKnownEntities,
             },
             { traceSink }
           );
@@ -325,11 +641,63 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
           );
 
           changedExtraction = emptyExtraction();
+          extractionFallback = "incremental_content_filter";
         }
       }
     } else {
       try {
-        fullExtraction = await runExtraction(document.content, { traceSink });
+        fullExtraction = await runExtraction(document.content, {
+          traceSink,
+          knownEntities: projectKnownEntities,
+          onFullMentionsBatch: async (batchPayload) => {
+            const runPersist = async () => {
+              const batchPersistStartedAt = new Date();
+
+              try {
+                await persistFullMentionsBatchPreview({
+                  projectId: payload.projectId,
+                  documentId: payload.documentId,
+                  contentVersion: payload.contentVersion,
+                  targetParagraphIndices: batchPayload.targetParagraphIndices,
+                  mentions: batchPayload.mentions,
+                  initializedRef: fullMentionsPreviewInitialized,
+                  resolvedByRef: fullMentionsPreviewResolvedByRef,
+                  resolvedByTypeAndName: fullMentionsPreviewResolvedByTypeAndName,
+                });
+
+                for (const paragraphIndex of batchPayload.targetParagraphIndices) {
+                  fullMentionsProcessedParagraphIndices.add(paragraphIndex);
+                }
+              } catch (error) {
+                logger.warn(
+                  {
+                    err: error,
+                    jobId: payload.jobId,
+                    batchIndex: batchPayload.batchIndex,
+                    targetParagraphIndices: batchPayload.targetParagraphIndices,
+                  },
+                  "Failed to persist partial full-mentions preview batch"
+                );
+              } finally {
+                await persistStageMetric(payload.jobId, {
+                  stage: "partial_preview_persist",
+                  startedAt: batchPersistStartedAt,
+                  completedAt: new Date(),
+                  metadata: {
+                    mode: "full",
+                    batchIndex: batchPayload.batchIndex,
+                    targetParagraphs: batchPayload.targetParagraphIndices.length,
+                    processedParagraphs: fullMentionsProcessedParagraphIndices.size,
+                    totalParagraphs: fullParagraphCount,
+                  },
+                });
+              }
+            };
+
+            fullMentionsPreviewPersistChain = fullMentionsPreviewPersistChain.then(runPersist, runPersist);
+            await fullMentionsPreviewPersistChain;
+          },
+        });
       } catch (error) {
         if (!isContentFilterExtractionError(error)) {
           throw error;
@@ -345,13 +713,14 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
           },
           "Full extraction blocked by content filter, retrying with chunked incremental fallback"
         );
+        extractionFallback = "full_to_incremental_content_filter";
 
         try {
           fullExtraction = await runExtractionIncremental(
             {
               content: document.content,
               changedParagraphIndices: fullParagraphIndices,
-              knownEntities: [],
+              knownEntities: projectKnownEntities,
             },
             { traceSink }
           );
@@ -370,10 +739,28 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
           );
 
           skipExtractionWrite = true;
+          extractionFallback = "skip_write";
         }
       }
     }
 
+    const extractionCompletedAt = new Date();
+    await persistStageMetric(payload.jobId, {
+      stage: "extraction",
+      startedAt: extractionStartedAt,
+      completedAt: extractionCompletedAt,
+      metadata: {
+        requestedMode: diff.mode,
+        changedParagraphs: diff.changedNewIndices.length,
+        skipExtractionWrite,
+        fallback: extractionFallback,
+        partialPreviewParagraphs:
+          diff.mode === "full" ? fullMentionsProcessedParagraphIndices.size : diff.changedNewIndices.length,
+        totalParagraphs: diff.mode === "full" ? fullParagraphCount : diff.changedNewIndices.length,
+      },
+    });
+
+    const persistStartedAt = new Date();
     await prisma.$transaction(async (tx: any) => {
       const freshDocument = await tx.document.findUnique({
         where: { id: payload.documentId },
@@ -395,20 +782,6 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
             },
             orderBy: [{ paragraphIndex: "asc" }, { startOffset: "asc" }],
           },
-          annotations: {
-            select: {
-              paragraphIndex: true,
-              type: true,
-              label: true,
-              entity: {
-                select: {
-                  id: true,
-                  name: true,
-                },
-              },
-            },
-            orderBy: [{ paragraphIndex: "asc" }, { createdAt: "asc" }],
-          },
         },
       });
 
@@ -425,6 +798,8 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
             error: null,
           },
         });
+        staleDuringTransaction = true;
+        processingOutcome = "stale";
         return;
       }
 
@@ -464,7 +839,6 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
               unchangedMap: diff.unchangedMap,
               changedExtraction,
               existingMentions: freshDocument.mentions,
-              existingAnnotations: freshDocument.annotations,
             })
           : (fullExtraction as ExtractionResult);
 
@@ -832,24 +1206,6 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
         })
         .filter((mention): mention is NonNullable<typeof mention> => Boolean(mention));
 
-      const annotations = mergedExtraction.annotations
-        .map((annotation) => {
-          const entityByRefLink = annotation.entityRef ? entityByRef.get(annotation.entityRef) : null;
-          const entityByName = annotation.name
-            ? entityByCandidateKey.get(toCandidateKey(annotation.type, annotation.name))
-            : null;
-          const linkedEntity = entityByRefLink || entityByName;
-
-          return {
-            documentId: payload.documentId,
-            paragraphIndex: annotation.paragraphIndex,
-            entityId: linkedEntity?.id || null,
-            type: annotation.type,
-            label: annotation.label,
-          };
-        })
-        .filter((annotation) => annotation.label.trim().length > 0);
-
       await tx.mention.deleteMany({
         where: {
           documentId: payload.documentId,
@@ -867,12 +1223,6 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
           documentId: payload.documentId,
         },
       });
-
-      if (annotations.length) {
-        await tx.annotation.createMany({
-          data: annotations,
-        });
-      }
 
       await tx.entity.deleteMany({
         where: {
@@ -906,6 +1256,21 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
         },
       });
     });
+    const persistCompletedAt = new Date();
+
+    await persistStageMetric(payload.jobId, {
+      stage: "persist_results",
+      startedAt: persistStartedAt,
+      completedAt: persistCompletedAt,
+      metadata: {
+        skipExtractionWrite,
+        staleDuringTransaction,
+      },
+    });
+
+    if (staleDuringTransaction) {
+      return;
+    }
 
     logger.info(
       {
@@ -920,6 +1285,7 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
       },
       "Document extract completed"
     );
+    processingOutcome = "completed";
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown extraction error";
 
@@ -953,5 +1319,15 @@ export async function processDocumentExtract(payload: DocumentExtractPayload) {
       },
       "Document extract failed"
     );
+    processingOutcome = "failed";
+  } finally {
+    await persistStageMetric(payload.jobId, {
+      stage: "processing_total",
+      startedAt: processingStartedAt,
+      completedAt: new Date(),
+      metadata: {
+        outcome: processingOutcome,
+      },
+    });
   }
 }

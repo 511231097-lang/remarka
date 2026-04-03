@@ -4,7 +4,6 @@ export const ENTITY_TYPES = [
   "character",
   "location",
   "event",
-  "time_marker",
 ] as const;
 export type EntityType = (typeof ENTITY_TYPES)[number];
 
@@ -161,16 +160,45 @@ export function splitParagraphs(content: string): ParagraphSlice[] {
   });
 }
 
-function findNthOccurrence(haystack: string, needle: string, nth: number): number {
+function isWordBoundaryChar(value: string): boolean {
+  return /[\p{L}\p{N}\p{M}]/u.test(value);
+}
+
+function isWholeWordMatch(haystack: string, start: number, length: number): boolean {
+  const before = start > 0 ? haystack[start - 1] : "";
+  const after = start + length < haystack.length ? haystack[start + length] : "";
+  return (!before || !isWordBoundaryChar(before)) && (!after || !isWordBoundaryChar(after));
+}
+
+function findNthOccurrence(
+  haystack: string,
+  needle: string,
+  nth: number,
+  options: { wholeWord?: boolean } = {}
+): number {
   if (!needle) return -1;
+  const haystackLower = haystack.toLowerCase();
+  const needleLower = needle.toLowerCase();
   let cursor = 0;
-  let found = -1;
-  for (let count = 0; count <= nth; count += 1) {
-    found = haystack.toLowerCase().indexOf(needle.toLowerCase(), cursor);
+  let seen = 0;
+
+  while (cursor <= haystack.length) {
+    const found = haystackLower.indexOf(needleLower, cursor);
     if (found === -1) return -1;
-    cursor = found + needle.length;
+
+    cursor = found + Math.max(needle.length, 1);
+    if (options.wholeWord && !isWholeWordMatch(haystack, found, needle.length)) {
+      continue;
+    }
+
+    if (seen === nth) {
+      return found;
+    }
+
+    seen += 1;
   }
-  return found;
+
+  return -1;
 }
 
 export interface ResolvedMentionOffset {
@@ -197,8 +225,17 @@ export function resolveMentionOffsets(content: string, mentions: ExtractionMenti
     const key = `${mention.paragraphIndex}::${mention.mentionText.toLowerCase()}`;
     const seen = occurrenceCounter.get(key) ?? 0;
 
-    let localStart = findNthOccurrence(paragraph.text, mention.mentionText, seen);
+    let localStart = findNthOccurrence(paragraph.text, mention.mentionText, seen, { wholeWord: true });
     let sourceText = mention.mentionText;
+
+    if (localStart === -1) {
+      localStart = findNthOccurrence(paragraph.text, mention.mentionText, seen);
+    }
+
+    if (localStart === -1) {
+      localStart = findNthOccurrence(paragraph.text, mention.name, seen, { wholeWord: true });
+      sourceText = mention.name;
+    }
 
     if (localStart === -1) {
       localStart = findNthOccurrence(paragraph.text, mention.name, seen);

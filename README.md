@@ -29,10 +29,18 @@ cp apps/worker/.env.example apps/worker/.env
 3. Set required variables (minimum):
 
 - `DATABASE_URL`
+- `EXTRACT_LLM_PROVIDER` (`timeweb` or `kia`)
+
+If `EXTRACT_LLM_PROVIDER=timeweb`:
 - `TIMEWEB_API_TOKEN`
 - `TIMEWEB_PROXY_SOURCE`
 - `TIMEWEB_EXTRACT_ACCESS_ID`
 - `TIMEWEB_EXTRACT_MODEL`
+
+If `EXTRACT_LLM_PROVIDER=kia`:
+- `KIA_API_KEY`
+- `KIA_CHAT_BASE_URL` (default `https://api.kie.ai/gemini-3-flash/v1`)
+- `KIA_GEMINI_MODEL` (default `gemini-3-flash-openai`)
 
 4. Generate Prisma client and apply migrations:
 
@@ -61,7 +69,9 @@ Open [http://localhost:3000](http://localhost:3000).
 cp .env.docker.example .env.docker
 ```
 
-2. Fill `TIMEWEB_*` values in `.env.docker`.
+2. Fill provider values in `.env.docker`:
+   - `TIMEWEB_*` when `EXTRACT_LLM_PROVIDER=timeweb`
+   - `KIA_*` when `EXTRACT_LLM_PROVIDER=kia`
 
 3. Start all services:
 

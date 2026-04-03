@@ -12,7 +12,26 @@ interface MentionDecorationMeta {
   activeMentionId: string | null;
 }
 
-const mentionDecorationsKey = new PluginKey<MentionDecorationMeta>("entityMentionDecorations");
+interface MentionDecorationState extends MentionDecorationMeta {
+  decorations: DecorationSet;
+}
+
+const mentionDecorationsKey = new PluginKey<MentionDecorationState>("entityMentionDecorations");
+
+function buildDecorationSet(
+  doc: Parameters<typeof buildMentionDecorations>[0],
+  payload: MentionDecorationMeta
+): DecorationSet {
+  const decorations = buildMentionDecorations(
+    doc,
+    payload.mentions,
+    payload.activeEntityId,
+    payload.activeMentionId,
+    (from, to, attrs) => Decoration.inline(from, to, attrs)
+  );
+
+  return DecorationSet.create(doc, decorations);
+}
 
 declare module "@tiptap/core" {
   interface Commands<ReturnType> {
@@ -50,31 +69,51 @@ export const EntityMentionDecorations = Extension.create<{
   },
 
   addProseMirrorPlugins() {
-    const initialState: MentionDecorationMeta = {
+    const initialPayload: MentionDecorationMeta = {
       mentions: this.options.mentions,
       activeEntityId: this.options.activeEntityId,
       activeMentionId: this.options.activeMentionId,
     };
 
     return [
-      new Plugin<MentionDecorationMeta>({
+      new Plugin<MentionDecorationState>({
         key: mentionDecorationsKey,
         state: {
-          init: () => initialState,
-          apply: (tr, prev) => tr.getMeta(mentionDecorationsKey) || prev,
+          init: (_, state) => ({
+            ...initialPayload,
+            decorations: buildDecorationSet(state.doc, initialPayload),
+          }),
+          apply: (tr, prev, _oldState, newState) => {
+            const meta = tr.getMeta(mentionDecorationsKey) as MentionDecorationMeta | undefined;
+            if (meta) {
+              return {
+                ...meta,
+                decorations: buildDecorationSet(newState.doc, meta),
+              };
+            }
+
+            if (!tr.docChanged) {
+              return prev;
+            }
+
+            return {
+              ...prev,
+              decorations: prev.decorations.map(tr.mapping, tr.doc),
+            };
+          },
         },
         props: {
           decorations: (state) => {
-            const current = mentionDecorationsKey.getState(state) || initialState;
-            const decorations = buildMentionDecorations(
-              state.doc,
-              current.mentions,
-              current.activeEntityId,
-              current.activeMentionId,
-              (from, to, attrs) => Decoration.inline(from, to, attrs)
-            );
+            const current = mentionDecorationsKey.getState(state);
+            if (!current) return DecorationSet.empty;
 
-            return DecorationSet.create(state.doc, decorations);
+            // Safety fallback: if mapped decorations become empty unexpectedly,
+            // rebuild directly from mention offsets to keep highlights visible.
+            if (current.mentions.length > 0 && current.decorations.find().length === 0) {
+              return buildDecorationSet(state.doc, current);
+            }
+
+            return current.decorations;
           },
         },
       }),
