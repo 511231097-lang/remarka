@@ -105,6 +105,56 @@ export async function GET(_request: Request, context: RouteContext) {
           },
         },
       },
+      appearanceObservations: {
+        include: {
+          chapter: {
+            select: {
+              id: true,
+              title: true,
+              orderIndex: true,
+            },
+          },
+          act: {
+            select: {
+              id: true,
+              title: true,
+              orderIndex: true,
+            },
+          },
+          document: {
+            select: {
+              contentVersion: true,
+            },
+          },
+          evidence: {
+            include: {
+              mention: {
+                select: {
+                  id: true,
+                  paragraphIndex: true,
+                  startOffset: true,
+                  endOffset: true,
+                  sourceText: true,
+                  document: {
+                    select: {
+                      chapterId: true,
+                      chapter: {
+                        select: {
+                          id: true,
+                          title: true,
+                          orderIndex: true,
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+            orderBy: [{ evidenceOrder: "asc" }],
+          },
+        },
+        orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+      },
       containedByLinks: {
         select: {
           parentEntity: {
@@ -197,6 +247,18 @@ export async function GET(_request: Request, context: RouteContext) {
       if (chapterOrderA !== chapterOrderB) return chapterOrderA - chapterOrderB;
       return Number(a.act?.orderIndex ?? 0) - Number(b.act?.orderIndex ?? 0);
     });
+  const appearanceTimeline = [...entity.appearanceObservations]
+    .filter((item: any) => Number(item.contentVersion) === Number(item.document?.contentVersion))
+    .sort((a: any, b: any) => {
+      const chapterOrderA = Number(a.chapter?.orderIndex ?? 0);
+      const chapterOrderB = Number(b.chapter?.orderIndex ?? 0);
+      if (chapterOrderA !== chapterOrderB) return chapterOrderA - chapterOrderB;
+      const actOrderA = Number(a.act?.orderIndex ?? Number.MAX_SAFE_INTEGER);
+      const actOrderB = Number(b.act?.orderIndex ?? Number.MAX_SAFE_INTEGER);
+      if (actOrderA !== actOrderB) return actOrderA - actOrderB;
+      if (a.orderIndex !== b.orderIndex) return a.orderIndex - b.orderIndex;
+      return Number(new Date(a.createdAt).getTime()) - Number(new Date(b.createdAt).getTime());
+    });
 
   return Response.json({
     entity: {
@@ -246,6 +308,40 @@ export async function GET(_request: Request, context: RouteContext) {
               actOrderIndex: item.act.orderIndex,
               actTitle: item.act.title,
               mentionCount: item.mentionCount,
+            }))
+          : [],
+      appearanceObservations:
+        entity.type === "character"
+          ? appearanceTimeline.map((item: any) => ({
+              id: item.id,
+              characterId: item.characterId,
+              chapterId: item.chapter.id,
+              chapterTitle: item.chapter.title,
+              chapterOrderIndex: item.chapter.orderIndex,
+              actId: item.act?.id || null,
+              actTitle: item.act?.title || null,
+              actOrderIndex: item.act?.orderIndex ?? null,
+              orderIndex: item.orderIndex,
+              attributeKey: item.attributeKey,
+              attributeLabel: item.attributeLabel,
+              value: item.valueText,
+              summary: item.summary,
+              scope: item.scope,
+              confidence: item.confidence,
+              createdAt: item.createdAt,
+              updatedAt: item.updatedAt,
+              evidence: item.evidence.map((evidence: any) => ({
+                id: evidence.id,
+                mentionId: evidence.mentionId,
+                chapterId: evidence.mention?.document?.chapterId || null,
+                chapterTitle: evidence.mention?.document?.chapter?.title || null,
+                chapterOrderIndex: evidence.mention?.document?.chapter?.orderIndex ?? null,
+                paragraphIndex: evidence.paragraphIndex,
+                startOffset: evidence.startOffset,
+                endOffset: evidence.endOffset,
+                sourceText: evidence.sourceText,
+                snippet: evidence.snippet,
+              })),
             }))
           : [],
       aliases:

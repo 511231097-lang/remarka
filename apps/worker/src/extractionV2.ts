@@ -1,11 +1,14 @@
 import { z } from "zod";
 import {
   ActPassResultSchema,
+  AppearancePassResultSchema,
   AliasTypeSchema,
   EntityPassResultSchema,
   PatchWindowsResultSchema,
   normalizeEntityName,
   type ActPassResult,
+  type AppearancePassResult,
+  type AppearanceScope,
   type AliasType,
   type EntityPassResult,
   type EntityType,
@@ -58,6 +61,31 @@ export interface ActPassInput {
     canonicalName: string;
     mentionText: string;
   }>;
+}
+
+export interface AppearanceEvidenceCandidateInput {
+  evidenceId: string;
+  characterId: string;
+  canonicalName: string;
+  actOrderIndex: number | null;
+  actTitle: string | null;
+  paragraphIndex: number;
+  startOffset: number;
+  endOffset: number;
+  mentionText: string;
+  context: string;
+}
+
+export interface AppearancePassInput {
+  contentVersion: number;
+  acts: Array<{
+    orderIndex: number;
+    title: string;
+    summary: string;
+    paragraphStart: number;
+    paragraphEnd: number;
+  }>;
+  evidenceCandidates: AppearanceEvidenceCandidateInput[];
 }
 
 interface PatchCandidateInput {
@@ -208,6 +236,7 @@ export class ExtractionStructuredOutputError extends Error {
   phase:
     | "entity_pass"
     | "act_pass"
+    | "appearance_pass"
     | "mention_completion"
     | "character_merge_arbiter"
     | "character_book_pass"
@@ -225,6 +254,7 @@ export class ExtractionStructuredOutputError extends Error {
     phase:
       | "entity_pass"
       | "act_pass"
+      | "appearance_pass"
       | "mention_completion"
       | "character_merge_arbiter"
       | "character_book_pass"
@@ -429,6 +459,7 @@ async function callStrictJson<T>(params: {
   phase:
     | "entity_pass"
     | "act_pass"
+    | "appearance_pass"
     | "mention_completion"
     | "character_merge_arbiter"
     | "character_book_pass"
@@ -764,6 +795,51 @@ function normalizeActSummary(raw: unknown): string {
   return truncateText(collapseWhitespace(explicit), 1200);
 }
 
+function normalizeAppearanceScope(raw: unknown): AppearanceScope {
+  const value = String(raw || "")
+    .trim()
+    .toLowerCase();
+  if (!value) return "scene";
+  if (value === "stable") return "stable";
+  if (value === "temporary" || value === "temp") return "temporary";
+  if (value === "scene") return "scene";
+  if (value.includes("постоян") || value.includes("stable") || value.includes("always")) return "stable";
+  if (value.includes("времен") || value.includes("temporary") || value.includes("moment")) return "temporary";
+  return "scene";
+}
+
+function normalizeAppearanceAttributeKey(raw: unknown): string {
+  const normalized = String(raw || "")
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+  if (!normalized) return "appearance";
+  return truncateText(normalized, 64);
+}
+
+function normalizeAppearanceAttributeLabel(raw: unknown, fallbackKey: string): string {
+  const explicit = asString(raw);
+  if (explicit) return truncateText(collapseWhitespace(explicit), 120);
+
+  const key = fallbackKey.replace(/_/g, " ").trim();
+  if (key) return truncateText(key, 120);
+  return "Внешность";
+}
+
+function normalizeAppearanceValue(raw: unknown): string | null {
+  const explicit = asString(raw);
+  if (!explicit) return null;
+  const normalized = truncateText(collapseWhitespace(explicit), 280);
+  return normalized || null;
+}
+
+function normalizeAppearanceSummary(raw: unknown): string {
+  const explicit = asString(raw);
+  if (!explicit) return "";
+  return truncateText(collapseWhitespace(explicit), 280);
+}
+
 function buildFallbackActPass(input: ActPassInput): ActPassResult {
   if (!input.paragraphs.length) {
     return {
@@ -897,6 +973,190 @@ function normalizeActPassPayload(raw: unknown, input: ActPassInput): ActPassResu
       summary: normalizeActSummary(act.summary),
       paragraphStart: act.paragraphStart,
       paragraphEnd: act.paragraphEnd,
+    })),
+  };
+}
+
+function normalizeAppearancePassPayload(raw: unknown, input: AppearancePassInput): AppearancePassResult {
+  const rootRecord = asRecord(raw);
+  const rootArray = Array.isArray(raw) ? raw : null;
+  const root = rootRecord || {};
+
+  const candidateByEvidenceId = new Map(input.evidenceCandidates.map((item) => [item.evidenceId, item] as const));
+  const allowedCharacterIds = new Set(input.evidenceCandidates.map((item) => item.characterId));
+  const knownActOrderIndexes = new Set(input.acts.map((item) => item.orderIndex));
+
+  const sourceObservations: unknown[] = [];
+  const appendItems = (value: unknown) => {
+    if (!Array.isArray(value)) return;
+    sourceObservations.push(...value);
+  };
+
+  appendItems(root.observations);
+  appendItems(root.items);
+  appendItems(root.facts);
+  appendItems(root.appearance);
+  appendItems((root as Record<string, unknown>)["наблюдения"]);
+  appendItems(rootArray);
+
+  type ParsedObservation = {
+    characterId: string;
+    attributeKey: string;
+    attributeLabel: string;
+    value: string;
+    scope: AppearanceScope;
+    actOrderIndex: number | null;
+    summary: string;
+    confidence: number;
+    evidenceIds: string[];
+  };
+
+  const parsed: ParsedObservation[] = [];
+
+  for (const item of sourceObservations) {
+    const record = asRecord(item);
+    if (!record) continue;
+
+    const characterId =
+      asString(record.characterId) ||
+      asString(record.entityId) ||
+      asString(record.personId) ||
+      asString(record.subjectId);
+    if (!characterId || !allowedCharacterIds.has(characterId)) continue;
+
+    const attributeKey = normalizeAppearanceAttributeKey(
+      record.attributeKey ?? record.attribute ?? record.traitKey ?? record.field
+    );
+    const attributeLabel = normalizeAppearanceAttributeLabel(
+      record.attributeLabel ?? record.attribute ?? record.traitLabel ?? record.fieldLabel,
+      attributeKey
+    );
+    const value = normalizeAppearanceValue(record.value ?? record.traitValue ?? record.description ?? record.appearance);
+    if (!value) continue;
+
+    const evidenceRaw = record.evidenceIds ?? record.evidence ?? record.proofs ?? record.references;
+    const evidenceIds: string[] = [];
+    const evidenceSeen = new Set<string>();
+    if (Array.isArray(evidenceRaw)) {
+      for (const entry of evidenceRaw) {
+        const entryRecord = asRecord(entry);
+        const evidenceId = asString(entryRecord?.evidenceId ?? entryRecord?.mentionId ?? entryRecord?.id ?? entry);
+        if (!evidenceId) continue;
+        if (evidenceSeen.has(evidenceId)) continue;
+        const candidate = candidateByEvidenceId.get(evidenceId);
+        if (!candidate) continue;
+        if (candidate.characterId !== characterId) continue;
+        evidenceIds.push(evidenceId);
+        evidenceSeen.add(evidenceId);
+      }
+    } else {
+      const singleId = asString(evidenceRaw);
+      if (singleId) {
+        const candidate = candidateByEvidenceId.get(singleId);
+        if (candidate && candidate.characterId === characterId) {
+          evidenceIds.push(singleId);
+          evidenceSeen.add(singleId);
+        }
+      }
+    }
+
+    if (!evidenceIds.length) continue;
+
+    let actOrderIndex = asOptionalNumber(record.actOrderIndex ?? record.actIndex ?? record.act) ?? null;
+    if (actOrderIndex !== null) {
+      actOrderIndex = Math.floor(actOrderIndex);
+      if (!knownActOrderIndexes.has(actOrderIndex)) {
+        actOrderIndex = null;
+      }
+    }
+
+    if (actOrderIndex === null) {
+      const candidates = evidenceIds
+        .map((id) => candidateByEvidenceId.get(id))
+        .filter((entry): entry is AppearanceEvidenceCandidateInput => Boolean(entry));
+      const scoreByAct = new Map<number, number>();
+      for (const candidate of candidates) {
+        if (candidate.actOrderIndex === null || candidate.actOrderIndex < 0) continue;
+        scoreByAct.set(candidate.actOrderIndex, (scoreByAct.get(candidate.actOrderIndex) || 0) + 1);
+      }
+      const bestAct = [...scoreByAct.entries()].sort((left, right) => {
+        if (left[1] !== right[1]) return right[1] - left[1];
+        return left[0] - right[0];
+      })[0];
+      actOrderIndex = bestAct ? bestAct[0] : null;
+    }
+
+    parsed.push({
+      characterId,
+      attributeKey,
+      attributeLabel,
+      value,
+      scope: normalizeAppearanceScope(record.scope),
+      actOrderIndex,
+      summary: normalizeAppearanceSummary(record.summary ?? record.note),
+      confidence: clamp01(asOptionalNumber(record.confidence) ?? 0.7),
+      evidenceIds: evidenceIds.slice(0, 8),
+    });
+  }
+
+  const deduped = new Map<string, ParsedObservation>();
+  for (const item of parsed) {
+    const key = `${item.characterId}:${item.attributeKey}:${item.value.toLowerCase()}:${item.actOrderIndex ?? "none"}`;
+    const existing = deduped.get(key);
+    if (!existing) {
+      deduped.set(key, item);
+      continue;
+    }
+
+    if (item.confidence > existing.confidence) {
+      existing.confidence = item.confidence;
+    }
+    if (!existing.summary && item.summary) {
+      existing.summary = item.summary;
+    }
+    if (existing.scope === "scene" && item.scope !== "scene") {
+      existing.scope = item.scope;
+    }
+    const mergedEvidenceIds = [...existing.evidenceIds, ...item.evidenceIds];
+    const seenEvidence = new Set<string>();
+    existing.evidenceIds = mergedEvidenceIds.filter((id) => {
+      if (seenEvidence.has(id)) return false;
+      seenEvidence.add(id);
+      return true;
+    });
+    existing.evidenceIds = existing.evidenceIds.slice(0, 8);
+  }
+
+  const parsedContentVersion = asOptionalNumber(root.contentVersion);
+  const contentVersion =
+    parsedContentVersion !== null && Number.isInteger(parsedContentVersion) && parsedContentVersion >= 0
+      ? parsedContentVersion
+      : input.contentVersion;
+
+  const observations = [...deduped.values()].sort((left, right) => {
+    if (left.characterId !== right.characterId) return left.characterId.localeCompare(right.characterId);
+    const leftAct = left.actOrderIndex ?? Number.MAX_SAFE_INTEGER;
+    const rightAct = right.actOrderIndex ?? Number.MAX_SAFE_INTEGER;
+    if (leftAct !== rightAct) return leftAct - rightAct;
+    if (left.attributeLabel !== right.attributeLabel) {
+      return left.attributeLabel.localeCompare(right.attributeLabel, "ru", { sensitivity: "base" });
+    }
+    return left.value.localeCompare(right.value, "ru", { sensitivity: "base" });
+  });
+
+  return {
+    contentVersion,
+    observations: observations.slice(0, 1500).map((item, index) => ({
+      orderIndex: index,
+      characterId: item.characterId,
+      attributeKey: item.attributeKey,
+      attributeLabel: item.attributeLabel,
+      value: item.value,
+      scope: item.scope,
+      actOrderIndex: item.actOrderIndex,
+      summary: item.summary,
+      confidence: clamp01(item.confidence),
+      evidenceIds: item.evidenceIds.slice(0, 8),
     })),
   };
 }
@@ -1724,6 +1984,67 @@ export async function runActPass(
   const normalized = normalizeActPassPayload(raw.result, input);
   return {
     result: ActPassResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runAppearancePass(
+  input: AppearancePassInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<AppearancePassResult>> {
+  const acts = input.acts.slice(0, 160).map((act) => ({
+    orderIndex: act.orderIndex,
+    title: truncateText(collapseWhitespace(act.title), 240),
+    summary: truncateText(collapseWhitespace(act.summary), 320),
+    paragraphStart: act.paragraphStart,
+    paragraphEnd: act.paragraphEnd,
+  }));
+  const evidenceCandidates = input.evidenceCandidates.slice(0, 2200).map((candidate) => ({
+    evidenceId: candidate.evidenceId,
+    characterId: candidate.characterId,
+    canonicalName: candidate.canonicalName,
+    actOrderIndex: candidate.actOrderIndex,
+    actTitle: candidate.actTitle,
+    paragraphIndex: candidate.paragraphIndex,
+    startOffset: candidate.startOffset,
+    endOffset: candidate.endOffset,
+    mentionText: truncateText(collapseWhitespace(candidate.mentionText), 96),
+    context: truncateText(collapseWhitespace(candidate.context), 320),
+  }));
+
+  const prompt = [
+    "You are extracting appearance observations for fiction characters.",
+    "Observation means explicit visual details: clothing, face, hair, body, visible condition, distinctive marks.",
+    "",
+    "STRICT RULES:",
+    "1) Return strict JSON object with keys: contentVersion, observations.",
+    "2) observation must include: characterId, attributeKey, attributeLabel, value, scope, actOrderIndex, confidence, evidenceIds.",
+    "3) characterId must be from provided evidenceCandidates.",
+    "4) evidenceIds must reference provided evidenceCandidates only.",
+    "5) Do NOT invent any evidence ID.",
+    "6) Use only explicit visual facts from context.",
+    "7) Do NOT include personality or motives.",
+    "8) scope must be one of: stable | temporary | scene.",
+    "9) attributeLabel and value must be in Russian.",
+    "10) If evidence is weak, skip observation.",
+    "11) Keep value concise and factual.",
+    "",
+    `contentVersion: ${input.contentVersion}`,
+    `acts: ${JSON.stringify(acts)}`,
+    `evidenceCandidates: ${JSON.stringify(evidenceCandidates)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "appearance_pass",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeAppearancePassPayload(raw.result, input);
+  return {
+    result: AppearancePassResultSchema.parse(normalized),
     meta: raw.meta,
     debug: raw.debug,
   };

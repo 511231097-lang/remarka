@@ -23,10 +23,12 @@ import { getArtifactBlobStore, persistRunArtifact, type RunArtifactRecord } from
 import {
   ExtractionStructuredOutputError,
   runActPass,
+  runAppearancePass,
   runCharacterBookPassCanonicalization,
   runCharacterProfileSynthesis,
   runEntityPass,
   runPatchCompletion,
+  type StrictJsonCallDebug,
   type StrictJsonCallMeta,
 } from "../extractionV2";
 import { logger } from "../logger";
@@ -107,12 +109,14 @@ interface RunLlmUsageSummary {
   };
   entityPass?: RunLlmUsagePhase;
   actPass?: RunLlmUsagePhase;
+  appearancePass?: RunLlmUsagePhase;
   mentionCompletion?: RunLlmUsagePhase;
 }
 
 interface RunArtifactsSummary {
   entityPass: RunArtifactRecord[];
   actPass: RunArtifactRecord[];
+  appearancePass: RunArtifactRecord[];
   mentionCompletion: RunArtifactRecord[];
 }
 
@@ -162,12 +166,13 @@ function createRunArtifactsSummary(): RunArtifactsSummary {
   return {
     entityPass: [],
     actPass: [],
+    appearancePass: [],
     mentionCompletion: [],
   };
 }
 
 function summarizeRunArtifacts(artifacts: RunArtifactsSummary) {
-  const all = [...artifacts.entityPass, ...artifacts.actPass, ...artifacts.mentionCompletion];
+  const all = [...artifacts.entityPass, ...artifacts.actPass, ...artifacts.appearancePass, ...artifacts.mentionCompletion];
   const totalSizeBytes = all.reduce((sum, item) => sum + item.sizeBytes, 0);
   const providers = all.reduce<Record<string, number>>((bucket, item) => {
     const key = item.provider || "unknown";
@@ -187,6 +192,10 @@ function summarizeRunArtifacts(artifacts: RunArtifactsSummary) {
       actPass: {
         count: artifacts.actPass.length,
         totalSizeBytes: artifacts.actPass.reduce((sum, item) => sum + item.sizeBytes, 0),
+      },
+      appearancePass: {
+        count: artifacts.appearancePass.length,
+        totalSizeBytes: artifacts.appearancePass.reduce((sum, item) => sum + item.sizeBytes, 0),
       },
       mentionCompletion: {
         count: artifacts.mentionCompletion.length,
@@ -217,7 +226,7 @@ function toRunLlmUsagePhase(meta: StrictJsonCallMeta): RunLlmUsagePhase {
 
 function registerPhaseUsage(
   usageSummary: RunLlmUsageSummary,
-  phase: "entityPass" | "actPass" | "mentionCompletion",
+  phase: "entityPass" | "actPass" | "appearancePass" | "mentionCompletion",
   meta: StrictJsonCallMeta
 ) {
   const phaseUsage = toRunLlmUsagePhase(meta);
@@ -228,7 +237,7 @@ function registerPhaseUsage(
 }
 
 function hasAnyPhaseUsage(usageSummary: RunLlmUsageSummary): boolean {
-  return Boolean(usageSummary.entityPass || usageSummary.actPass || usageSummary.mentionCompletion);
+  return Boolean(usageSummary.entityPass || usageSummary.actPass || usageSummary.appearancePass || usageSummary.mentionCompletion);
 }
 
 function buildExtractionFailureDebug(error: unknown): Record<string, unknown> | null {
@@ -1217,6 +1226,116 @@ async function loadCharacterSignalsForActPass(runId: string): Promise<
   }));
 }
 
+interface AppearanceEvidenceCandidate {
+  evidenceId: string;
+  mentionId: string;
+  characterId: string;
+  canonicalName: string;
+  actId: string | null;
+  actOrderIndex: number | null;
+  actTitle: string | null;
+  paragraphIndex: number;
+  startOffset: number;
+  endOffset: number;
+  mentionText: string;
+  context: string;
+}
+
+const APPEARANCE_PASS_SIGNAL_CAP = 1400;
+const APPEARANCE_PASS_BASE_SIGNALS_PER_CHARACTER = 6;
+
+function capAppearanceEvidenceCandidates(items: AppearanceEvidenceCandidate[]): AppearanceEvidenceCandidate[] {
+  if (items.length <= APPEARANCE_PASS_SIGNAL_CAP) {
+    return items;
+  }
+
+  const selected: AppearanceEvidenceCandidate[] = [];
+  const selectedById = new Set<string>();
+  const baseCountByCharacter = new Map<string, number>();
+
+  for (const item of items) {
+    if (selected.length >= APPEARANCE_PASS_SIGNAL_CAP) break;
+    const currentCount = baseCountByCharacter.get(item.characterId) || 0;
+    if (currentCount >= APPEARANCE_PASS_BASE_SIGNALS_PER_CHARACTER) continue;
+    selected.push(item);
+    selectedById.add(item.evidenceId);
+    baseCountByCharacter.set(item.characterId, currentCount + 1);
+  }
+
+  if (selected.length >= APPEARANCE_PASS_SIGNAL_CAP) return selected;
+
+  for (const item of items) {
+    if (selected.length >= APPEARANCE_PASS_SIGNAL_CAP) break;
+    if (selectedById.has(item.evidenceId)) continue;
+    selected.push(item);
+    selectedById.add(item.evidenceId);
+  }
+
+  return selected;
+}
+
+async function loadAppearanceEvidenceCandidates(params: {
+  runId: string;
+  content: string;
+}): Promise<AppearanceEvidenceCandidate[]> {
+  const rows = await prisma.mention.findMany({
+    where: {
+      runId: params.runId,
+      entity: {
+        type: "character",
+        mergedIntoEntityId: null,
+      },
+    },
+    include: {
+      entity: {
+        select: {
+          id: true,
+          canonicalName: true,
+        },
+      },
+      act: {
+        select: {
+          id: true,
+          orderIndex: true,
+          title: true,
+        },
+      },
+    },
+    orderBy: [{ paragraphIndex: "asc" }, { startOffset: "asc" }],
+    take: 8000,
+  });
+
+  const mapped = rows.map((row) => ({
+    evidenceId: row.id,
+    mentionId: row.id,
+    characterId: row.entity.id,
+    canonicalName: row.entity.canonicalName,
+    actId: row.act?.id || null,
+    actOrderIndex: row.act ? Number(row.act.orderIndex) : null,
+    actTitle: row.act?.title || null,
+    paragraphIndex: row.paragraphIndex,
+    startOffset: row.startOffset,
+    endOffset: row.endOffset,
+    mentionText: row.sourceText,
+    context: extractContextByOffsets(params.content, row.startOffset, row.endOffset, 120) || row.sourceText,
+  }));
+
+  return capAppearanceEvidenceCandidates(mapped);
+}
+
+function resolveDominantActId(candidates: AppearanceEvidenceCandidate[]): string | null {
+  const counts = new Map<string, number>();
+  for (const candidate of candidates) {
+    if (!candidate.actId) continue;
+    counts.set(candidate.actId, (counts.get(candidate.actId) || 0) + 1);
+  }
+  const top = [...counts.entries()].sort((left, right) => {
+    if (left[1] !== right[1]) return right[1] - left[1];
+    return left[0].localeCompare(right[0]);
+  })[0];
+  return top ? top[0] : null;
+}
+
 async function replaceActsForRun(params: {
   tx: Tx;
   runId: string;
@@ -1291,6 +1410,105 @@ async function replaceActsForRun(params: {
         actId: act.id,
       },
     });
+  }
+}
+
+async function replaceAppearanceObservationsForRun(params: {
+  tx: Tx;
+  runId: string;
+  projectId: string;
+  chapterId: string;
+  documentId: string;
+  contentVersion: number;
+  observations: Array<{
+    orderIndex: number;
+    characterId: string;
+    attributeKey: string;
+    attributeLabel: string;
+    value: string;
+    scope: "stable" | "temporary" | "scene";
+    actOrderIndex?: number | null;
+    summary: string;
+    confidence: number;
+    evidenceIds: string[];
+  }>;
+  evidenceCandidates: AppearanceEvidenceCandidate[];
+}) {
+  await params.tx.characterAppearanceObservation.deleteMany({
+    where: {
+      documentId: params.documentId,
+      contentVersion: params.contentVersion,
+    },
+  });
+
+  if (!params.observations.length) return;
+
+  const actRows = await params.tx.act.findMany({
+    where: {
+      documentId: params.documentId,
+      contentVersion: params.contentVersion,
+    },
+    select: {
+      id: true,
+      orderIndex: true,
+    },
+  });
+  const actIdByOrderIndex = new Map<number, string>(actRows.map((item) => [item.orderIndex, item.id] as const));
+  const evidenceById = new Map(params.evidenceCandidates.map((item) => [item.evidenceId, item] as const));
+
+  for (const observation of params.observations) {
+    const evidenceCandidates = observation.evidenceIds
+      .map((id) => evidenceById.get(id))
+      .filter((item): item is AppearanceEvidenceCandidate => Boolean(item))
+      .filter((item) => item.characterId === observation.characterId);
+
+    if (!evidenceCandidates.length) continue;
+
+    const actId =
+      (typeof observation.actOrderIndex === "number" ? actIdByOrderIndex.get(observation.actOrderIndex) : null) ||
+      resolveDominantActId(evidenceCandidates);
+
+    const created = await params.tx.characterAppearanceObservation.create({
+      data: {
+        id: randomUUID(),
+        projectId: params.projectId,
+        chapterId: params.chapterId,
+        documentId: params.documentId,
+        contentVersion: params.contentVersion,
+        runId: params.runId,
+        characterId: observation.characterId,
+        actId: actId || null,
+        orderIndex: Math.max(0, Math.floor(observation.orderIndex)),
+        attributeKey: clampText(compactWhitespace(observation.attributeKey || "appearance"), 64),
+        attributeLabel: clampText(compactWhitespace(observation.attributeLabel || "Внешность"), 120),
+        valueText: clampText(compactWhitespace(observation.value || ""), 280),
+        summary: clampText(compactWhitespace(observation.summary || ""), 280),
+        scope: observation.scope,
+        confidence: clamp01(Number(observation.confidence ?? 0.7)),
+      },
+      select: {
+        id: true,
+      },
+    });
+
+    const evidenceRows = evidenceCandidates.map((candidate, index) => ({
+      id: randomUUID(),
+      observationId: created.id,
+      mentionId: candidate.mentionId,
+      evidenceOrder: index,
+      paragraphIndex: candidate.paragraphIndex,
+      startOffset: candidate.startOffset,
+      endOffset: candidate.endOffset,
+      sourceText: candidate.mentionText,
+      snippet: clampText(compactWhitespace(candidate.context), 360),
+    }));
+
+    if (evidenceRows.length > 0) {
+      await params.tx.characterAppearanceEvidence.createMany({
+        data: evidenceRows,
+        skipDuplicates: true,
+      });
+    }
   }
 }
 
@@ -2698,7 +2916,13 @@ async function computeAndFinalizeRun(params: {
   if (params.llmUsage && hasAnyPhaseUsage(params.llmUsage)) {
     qualityFlags.llmUsage = params.llmUsage;
   }
-  if (params.artifacts && (params.artifacts.entityPass.length > 0 || params.artifacts.mentionCompletion.length > 0)) {
+  if (
+    params.artifacts &&
+    (params.artifacts.entityPass.length > 0 ||
+      params.artifacts.actPass.length > 0 ||
+      params.artifacts.appearancePass.length > 0 ||
+      params.artifacts.mentionCompletion.length > 0)
+  ) {
     qualityFlags.artifacts = params.artifacts;
   }
 
@@ -2752,7 +2976,13 @@ async function markRunFailed(params: {
   if (params.extractionFailure && Object.keys(params.extractionFailure).length > 0) {
     qualityFlags.extractionFailure = params.extractionFailure;
   }
-  if (params.artifacts && (params.artifacts.entityPass.length > 0 || params.artifacts.mentionCompletion.length > 0)) {
+  if (
+    params.artifacts &&
+    (params.artifacts.entityPass.length > 0 ||
+      params.artifacts.actPass.length > 0 ||
+      params.artifacts.appearancePass.length > 0 ||
+      params.artifacts.mentionCompletion.length > 0)
+  ) {
     qualityFlags.artifacts = params.artifacts;
   }
   if (Object.keys(qualityFlags).length > 0) {
@@ -3372,6 +3602,8 @@ export async function processDocumentExtract(payload: ProcessRunPayload) {
       return;
     }
 
+    await updateRunPhase(run.id, "act_pass");
+
     const characterSignalsForActPass = await loadCharacterSignalsForActPass(run.id);
     const actPassCall = await runActPass(
       {
@@ -3464,6 +3696,167 @@ export async function processDocumentExtract(payload: ProcessRunPayload) {
           : null,
       },
       "Act-pass completed"
+    );
+
+    if (!(await isRunCurrent(run.id))) {
+      await markRunSuperseded(run.id);
+      return;
+    }
+
+    await updateRunPhase(run.id, "appearance_pass");
+
+    const appearanceEvidenceCandidates = await loadAppearanceEvidenceCandidates({
+      runId: run.id,
+      content: document.content,
+    });
+
+    let appearanceResult: {
+      contentVersion: number;
+      observations: Array<{
+        orderIndex: number;
+        characterId: string;
+        attributeKey: string;
+        attributeLabel: string;
+        value: string;
+        scope: "stable" | "temporary" | "scene";
+        actOrderIndex?: number | null;
+        summary: string;
+        confidence: number;
+        evidenceIds: string[];
+      }>;
+    } = {
+      contentVersion: run.contentVersion,
+      observations: [],
+    };
+    let appearanceMeta: StrictJsonCallMeta | null = null;
+    let appearanceDebug: StrictJsonCallDebug | null = null;
+
+    if (appearanceEvidenceCandidates.length > 0) {
+      const appearancePassCall = await runAppearancePass(
+        {
+          contentVersion: run.contentVersion,
+          acts: actPassCall.result.acts,
+          evidenceCandidates: appearanceEvidenceCandidates.map((item) => ({
+            evidenceId: item.evidenceId,
+            characterId: item.characterId,
+            canonicalName: item.canonicalName,
+            actOrderIndex: item.actOrderIndex,
+            actTitle: item.actTitle,
+            paragraphIndex: item.paragraphIndex,
+            startOffset: item.startOffset,
+            endOffset: item.endOffset,
+            mentionText: item.mentionText,
+            context: item.context,
+          })),
+        },
+        {
+          timewebModelId: requestedImportModelId,
+        }
+      );
+      registerPhaseUsage(llmUsage, "appearancePass", appearancePassCall.meta);
+
+      if (appearancePassCall.result.contentVersion !== run.contentVersion) {
+        throw new Error(
+          `Appearance-pass contentVersion mismatch: expected ${run.contentVersion}, got ${appearancePassCall.result.contentVersion}`
+        );
+      }
+
+      appearanceResult = appearancePassCall.result;
+      appearanceMeta = appearancePassCall.meta;
+      appearanceDebug = appearancePassCall.debug;
+    } else {
+      logger.info(
+        {
+          runId: run.id,
+          projectId: run.projectId,
+          chapterId: run.chapterId,
+          contentVersion: run.contentVersion,
+        },
+        "Skip appearance-pass: no character evidence candidates"
+      );
+    }
+
+    const appearanceArtifact = await persistRunArtifact({
+      projectId: run.projectId,
+      runId: run.id,
+      phase: "appearance_pass",
+      label: `appearance-pass-${appearanceResult.observations.length}-observations`,
+      payload: {
+        phase: "appearance_pass",
+        runId: run.id,
+        projectId: run.projectId,
+        chapterId: run.chapterId,
+        contentVersion: run.contentVersion,
+        input: {
+          actsCount: actPassCall.result.acts.length,
+          evidenceCandidateCount: appearanceEvidenceCandidates.length,
+          evidenceCandidates: appearanceEvidenceCandidates.map((item) => ({
+            evidenceId: item.evidenceId,
+            characterId: item.characterId,
+            canonicalName: item.canonicalName,
+            actOrderIndex: item.actOrderIndex,
+            actTitle: item.actTitle,
+            paragraphIndex: item.paragraphIndex,
+            startOffset: item.startOffset,
+            endOffset: item.endOffset,
+            mentionText: item.mentionText,
+            context: clampText(compactWhitespace(item.context), 360),
+          })),
+        },
+        output: {
+          result: appearanceResult,
+          meta: appearanceMeta,
+          debug: appearanceDebug,
+        },
+        recordedAt: new Date().toISOString(),
+      },
+    });
+    if (appearanceArtifact) {
+      runArtifacts.appearancePass.push(appearanceArtifact);
+    }
+
+    await prisma.$transaction(async (tx: Tx) => {
+      await replaceAppearanceObservationsForRun({
+        tx,
+        runId: run.id,
+        projectId: run.projectId,
+        chapterId: run.chapterId,
+        documentId: run.documentId,
+        contentVersion: run.contentVersion,
+        observations: appearanceResult.observations,
+        evidenceCandidates: appearanceEvidenceCandidates,
+      });
+    });
+
+    logger.info(
+      {
+        runId: run.id,
+        projectId: run.projectId,
+        chapterId: run.chapterId,
+        contentVersion: run.contentVersion,
+        acts: actPassCall.result.acts.length,
+        evidenceCandidateCount: appearanceEvidenceCandidates.length,
+        observations: appearanceResult.observations.length,
+        provider: appearanceMeta?.provider || null,
+        model: appearanceMeta?.model || null,
+        attempt: appearanceMeta?.attempt ?? null,
+        finishReason: appearanceMeta?.finishReason ?? null,
+        startedAt: appearanceMeta?.startedAt || null,
+        completedAt: appearanceMeta?.completedAt || null,
+        latencyMs: appearanceMeta?.latencyMs ?? null,
+        promptTokens: appearanceMeta?.usage?.promptTokens ?? null,
+        completionTokens: appearanceMeta?.usage?.completionTokens ?? null,
+        totalTokens: appearanceMeta?.usage?.totalTokens ?? null,
+        artifact: appearanceArtifact
+          ? {
+              provider: appearanceArtifact.provider,
+              storageKey: appearanceArtifact.storageKey,
+              sizeBytes: appearanceArtifact.sizeBytes,
+              sha256: appearanceArtifact.sha256,
+            }
+          : null,
+      },
+      "Appearance-pass completed"
     );
 
     if (!(await isRunCurrent(run.id))) {
@@ -3581,6 +3974,7 @@ export async function processDocumentExtract(payload: ProcessRunPayload) {
         llmByPhase: {
           entityPass: llmUsage.entityPass || null,
           actPass: llmUsage.actPass || null,
+          appearancePass: llmUsage.appearancePass || null,
           mentionCompletion: llmUsage.mentionCompletion || null,
         },
         artifacts: summarizeRunArtifacts(runArtifacts),

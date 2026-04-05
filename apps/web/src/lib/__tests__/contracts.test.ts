@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ActPassResultSchema,
+  AppearancePassResultSchema,
   classifyMentionTypeFromAlias,
   ExtractionResultSchema,
   isPronounConfidenceAccepted,
@@ -198,6 +199,30 @@ describe("contracts utilities", () => {
 
     expect(parsed.acts).toHaveLength(2);
     expect(parsed.acts[0]?.title).toContain("Разговор");
+  });
+
+  it("validates appearance-pass schema with evidence links", () => {
+    const parsed = AppearancePassResultSchema.parse({
+      contentVersion: 2,
+      observations: [
+        {
+          orderIndex: 0,
+          characterId: "char_1",
+          attributeKey: "clothing",
+          attributeLabel: "Одежда",
+          value: "Мятая школьная мантия",
+          scope: "scene",
+          actOrderIndex: 1,
+          summary: "Внешний вид подчеркивает усталость персонажа.",
+          confidence: 0.81,
+          evidenceIds: ["mention_1", "mention_2"],
+        },
+      ],
+    });
+
+    expect(parsed.observations).toHaveLength(1);
+    expect(parsed.observations[0]?.attributeKey).toBe("clothing");
+    expect(parsed.observations[0]?.evidenceIds).toEqual(["mention_1", "mention_2"]);
   });
 
   it("rejects legacy location enum values", () => {

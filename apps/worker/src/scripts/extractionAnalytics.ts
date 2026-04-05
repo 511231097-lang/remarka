@@ -16,6 +16,8 @@ type PhaseUsage = UsageSummary & {
 
 type RunUsage = {
   entityPass: PhaseUsage | null;
+  actPass: PhaseUsage | null;
+  appearancePass: PhaseUsage | null;
   mentionCompletion: PhaseUsage | null;
   total: UsageSummary | null;
   hasUsage: boolean;
@@ -255,16 +257,30 @@ function extractRunUsage(qualityFlags: Prisma.JsonValue | null, patchDecisionUsa
   const llmUsage = asRecord(qualityFlagsRecord?.llmUsage);
 
   const entityPass = parsePhaseUsage(llmUsage?.entityPass ?? llmUsage?.entity_pass);
+  const actPass = parsePhaseUsage(llmUsage?.actPass ?? llmUsage?.act_pass);
+  const appearancePass = parsePhaseUsage(llmUsage?.appearancePass ?? llmUsage?.appearance_pass);
   const mentionCompletion = parsePhaseUsage(
     llmUsage?.mentionCompletion ?? llmUsage?.mention_completion ?? llmUsage?.patchCompletion
   );
 
   let total = parseUsage(llmUsage?.total);
-  if (!total && (entityPass || mentionCompletion)) {
+  if (!total && (entityPass || actPass || appearancePass || mentionCompletion)) {
     total = {
-      promptTokens: (entityPass?.promptTokens ?? 0) + (mentionCompletion?.promptTokens ?? 0),
-      completionTokens: (entityPass?.completionTokens ?? 0) + (mentionCompletion?.completionTokens ?? 0),
-      totalTokens: (entityPass?.totalTokens ?? 0) + (mentionCompletion?.totalTokens ?? 0),
+      promptTokens:
+        (entityPass?.promptTokens ?? 0) +
+        (actPass?.promptTokens ?? 0) +
+        (appearancePass?.promptTokens ?? 0) +
+        (mentionCompletion?.promptTokens ?? 0),
+      completionTokens:
+        (entityPass?.completionTokens ?? 0) +
+        (actPass?.completionTokens ?? 0) +
+        (appearancePass?.completionTokens ?? 0) +
+        (mentionCompletion?.completionTokens ?? 0),
+      totalTokens:
+        (entityPass?.totalTokens ?? 0) +
+        (actPass?.totalTokens ?? 0) +
+        (appearancePass?.totalTokens ?? 0) +
+        (mentionCompletion?.totalTokens ?? 0),
     };
   }
 
@@ -279,6 +295,8 @@ function extractRunUsage(qualityFlags: Prisma.JsonValue | null, patchDecisionUsa
 
   return {
     entityPass,
+    actPass,
+    appearancePass,
     mentionCompletion,
     total,
     hasUsage: Boolean(total),

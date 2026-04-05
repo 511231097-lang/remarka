@@ -14,6 +14,8 @@ export const ANALYSIS_RUN_PHASES = [
   "entity_pass",
   "sweep",
   "mention_completion",
+  "act_pass",
+  "appearance_pass",
   "apply",
   "completed",
   "failed",
@@ -41,6 +43,10 @@ export const MentionTypeSchema = z.enum(MENTION_TYPES);
 export const ALIAS_TYPES = ["name", "nickname", "title", "descriptor"] as const;
 export type AliasType = (typeof ALIAS_TYPES)[number];
 export const AliasTypeSchema = z.enum(ALIAS_TYPES);
+
+export const APPEARANCE_SCOPES = ["stable", "temporary", "scene"] as const;
+export type AppearanceScope = (typeof APPEARANCE_SCOPES)[number];
+export const AppearanceScopeSchema = z.enum(APPEARANCE_SCOPES);
 
 export const RichTextDocumentSchema = z
   .object({
@@ -376,6 +382,32 @@ export const ActPassResultSchema = z
   .strict();
 
 export type ActPassResult = z.infer<typeof ActPassResultSchema>;
+
+export const AppearanceObservationSchema = z
+  .object({
+    orderIndex: z.number().int().nonnegative(),
+    characterId: z.string().min(1),
+    attributeKey: z.string().trim().min(1).max(64),
+    attributeLabel: z.string().trim().min(1).max(120),
+    value: z.string().trim().min(1).max(280),
+    scope: AppearanceScopeSchema.default("scene"),
+    actOrderIndex: z.number().int().nonnegative().nullable().optional(),
+    summary: z.string().max(280).default(""),
+    confidence: z.number().min(0).max(1).default(0.7),
+    evidenceIds: z.array(z.string().min(1)).min(1).max(8),
+  })
+  .strict();
+
+export type AppearanceObservation = z.infer<typeof AppearanceObservationSchema>;
+
+export const AppearancePassResultSchema = z
+  .object({
+    contentVersion: z.number().int().nonnegative(),
+    observations: z.array(AppearanceObservationSchema),
+  })
+  .strict();
+
+export type AppearancePassResult = z.infer<typeof AppearancePassResultSchema>;
 
 export const EntityPassAliasSchema = z
   .object({

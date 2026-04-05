@@ -81,6 +81,37 @@ export interface ProjectEntityDetails {
     actTitle: string;
     mentionCount: number;
   }>;
+  appearanceObservations?: Array<{
+    id: string;
+    characterId: string;
+    chapterId: string;
+    chapterTitle: string;
+    chapterOrderIndex: number;
+    actId: string | null;
+    actTitle: string | null;
+    actOrderIndex: number | null;
+    orderIndex: number;
+    attributeKey: string;
+    attributeLabel: string;
+    value: string;
+    summary: string;
+    scope: "stable" | "temporary" | "scene";
+    confidence: number;
+    createdAt: string;
+    updatedAt: string;
+    evidence: Array<{
+      id: string;
+      mentionId: string;
+      chapterId: string | null;
+      chapterTitle: string | null;
+      chapterOrderIndex: number | null;
+      paragraphIndex: number;
+      startOffset: number;
+      endOffset: number;
+      sourceText: string;
+      snippet: string;
+    }>;
+  }>;
   createdAt: string;
   updatedAt: string;
   containers: Array<{

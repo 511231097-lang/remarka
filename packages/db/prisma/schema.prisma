@@ -27,6 +27,8 @@ enum AnalysisRunPhase {
   entity_pass
   sweep
   mention_completion
+  act_pass
+  appearance_pass
   apply
   completed
   failed
@@ -65,6 +67,12 @@ enum AliasType {
   descriptor
 }
 
+enum AppearanceScope {
+  stable
+  temporary
+  scene
+}
+
 enum BookFormat {
   fb2
   fb2_zip
@@ -98,6 +106,7 @@ model Project {
   documents            Document[]
   acts                 Act[]
   entities             Entity[]
+  appearanceObservations CharacterAppearanceObservation[]
   analysisRuns         AnalysisRun[]
   locationContainments LocationContainment[]
   projectImports       ProjectImport[]
@@ -155,6 +164,7 @@ model Chapter {
   firstAppearanceEntities Entity[]               @relation("EntityFirstAppearanceChapter")
   lastAppearanceEntities  Entity[]               @relation("EntityLastAppearanceChapter")
   characterStats          CharacterChapterStat[]
+  appearanceObservations  CharacterAppearanceObservation[]
 
   @@index([projectId, orderIndex])
 }
@@ -176,6 +186,7 @@ model Document {
   analysisRuns      AnalysisRun[]
   acts              Act[]
   mentions          Mention[]
+  appearanceObservations CharacterAppearanceObservation[]
   mentionCandidates MentionCandidate[]
 
   @@index([projectId])
@@ -215,6 +226,7 @@ model AnalysisRun {
   currentForDocument Document[]         @relation("DocumentCurrentRun")
   createdEntities    Entity[]           @relation("CreatedEntities")
   createdActs        Act[]              @relation("CreatedActs")
+  createdAppearanceObservations CharacterAppearanceObservation[] @relation("CreatedCharacterAppearanceObservations")
   mentionCandidates  MentionCandidate[]
   mentions           Mention[]
   patchDecisions     PatchDecision[]
@@ -254,6 +266,7 @@ model Entity {
   mentions               Mention[]
   chapterStats           CharacterChapterStat[]
   actStats               CharacterActStat[]
+  appearanceObservations CharacterAppearanceObservation[]
   hintedCandidates       MentionCandidate[]
   containerLinks         LocationContainment[]  @relation("LocationContainmentChild")
   containedByLinks       LocationContainment[]  @relation("LocationContainmentParent")
@@ -287,6 +300,7 @@ model Act {
   createdByRun AnalysisRun? @relation("CreatedActs", fields: [createdByRunId], references: [id], onDelete: SetNull)
   mentions     Mention[]
   characterStats CharacterActStat[]
+  appearanceObservations CharacterAppearanceObservation[]
 
   @@unique([documentId, contentVersion, orderIndex])
   @@index([projectId, chapterId, orderIndex])
@@ -365,6 +379,7 @@ model Mention {
   entity    Entity            @relation(fields: [entityId], references: [id], onDelete: Cascade)
   act       Act?              @relation(fields: [actId], references: [id], onDelete: SetNull)
   candidate MentionCandidate? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
+  appearanceEvidence CharacterAppearanceEvidence[]
 
   @@index([documentId, paragraphIndex])
   @@index([documentId, entityId])
@@ -404,6 +419,59 @@ model CharacterActStat {
 
   @@unique([characterId, actId])
   @@index([actId])
+}
+
+model CharacterAppearanceObservation {
+  id             String          @id @default(cuid())
+  projectId      String
+  chapterId      String
+  documentId     String
+  contentVersion Int
+  runId          String?
+  characterId    String
+  actId          String?
+  orderIndex     Int
+  attributeKey   String
+  attributeLabel String
+  valueText      String
+  summary        String          @default("")
+  scope          AppearanceScope @default(scene)
+  confidence     Float           @default(0.6)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  project   Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chapter   Chapter      @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  document  Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  run       AnalysisRun? @relation("CreatedCharacterAppearanceObservations", fields: [runId], references: [id], onDelete: SetNull)
+  character Entity       @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  act       Act?         @relation(fields: [actId], references: [id], onDelete: SetNull)
+  evidence  CharacterAppearanceEvidence[]
+
+  @@index([projectId, characterId, chapterId, orderIndex])
+  @@index([documentId, contentVersion, orderIndex])
+  @@index([characterId, actId])
+  @@index([runId])
+}
+
+model CharacterAppearanceEvidence {
+  id            String   @id @default(cuid())
+  observationId String
+  mentionId     String
+  evidenceOrder Int      @default(0)
+  paragraphIndex Int
+  startOffset   Int
+  endOffset     Int
+  sourceText    String
+  snippet       String
+  createdAt     DateTime @default(now())
+
+  observation CharacterAppearanceObservation @relation(fields: [observationId], references: [id], onDelete: Cascade)
+  mention     Mention                      @relation(fields: [mentionId], references: [id], onDelete: Cascade)
+
+  @@unique([observationId, mentionId])
+  @@index([observationId, evidenceOrder])
+  @@index([mentionId])
 }
 
 model PatchDecision {

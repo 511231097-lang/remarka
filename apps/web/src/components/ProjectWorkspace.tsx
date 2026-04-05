@@ -87,6 +87,12 @@ function formatImportStageRu(stage: ProjectImportPayload["stage"] | null | undef
   }
 }
 
+function formatAppearanceScopeRu(scope: "stable" | "temporary" | "scene"): string {
+  if (scope === "stable") return "Стабильная черта";
+  if (scope === "temporary") return "Временная деталь";
+  return "Сценическая деталь";
+}
+
 export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps) {
   const router = useRouter();
   const pathname = usePathname();
@@ -607,6 +613,52 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
 
     return groups;
   }, [entityDetails]);
+  const appearanceTimeline = useMemo(() => {
+    if (entityDetails?.type !== "character") return [];
+    return [...(entityDetails.appearanceObservations || [])].sort((left, right) => {
+      if (left.chapterOrderIndex !== right.chapterOrderIndex) return left.chapterOrderIndex - right.chapterOrderIndex;
+      const leftAct = left.actOrderIndex ?? Number.MAX_SAFE_INTEGER;
+      const rightAct = right.actOrderIndex ?? Number.MAX_SAFE_INTEGER;
+      if (leftAct !== rightAct) return leftAct - rightAct;
+      if (left.orderIndex !== right.orderIndex) return left.orderIndex - right.orderIndex;
+      return left.attributeLabel.localeCompare(right.attributeLabel, "ru", { sensitivity: "base" });
+    });
+  }, [entityDetails]);
+  const appearanceLatestByAttribute = useMemo(() => {
+    if (!appearanceTimeline.length) return [];
+    const byAttribute = new Map<string, (typeof appearanceTimeline)[number]>();
+    for (const item of appearanceTimeline) {
+      byAttribute.set(item.attributeKey, item);
+    }
+    return [...byAttribute.values()].sort((left, right) =>
+      left.attributeLabel.localeCompare(right.attributeLabel, "ru", { sensitivity: "base" })
+    );
+  }, [appearanceTimeline]);
+  const appearanceChanges = useMemo(() => {
+    if (!appearanceTimeline.length) return [];
+    const groups = new Map<string, { attributeLabel: string; entries: typeof appearanceTimeline }>();
+    for (const item of appearanceTimeline) {
+      const group = groups.get(item.attributeKey) || {
+        attributeLabel: item.attributeLabel,
+        entries: [],
+      };
+      group.entries.push(item);
+      groups.set(item.attributeKey, group);
+    }
+
+    return [...groups.entries()]
+      .map(([attributeKey, group]) => {
+        const distinctValues = new Set(group.entries.map((entry) => entry.value.toLowerCase()));
+        return {
+          attributeKey,
+          attributeLabel: group.attributeLabel,
+          entries: group.entries,
+          distinctValues: distinctValues.size,
+        };
+      })
+      .filter((item) => item.distinctValues > 1)
+      .sort((left, right) => left.attributeLabel.localeCompare(right.attributeLabel, "ru", { sensitivity: "base" }));
+  }, [appearanceTimeline]);
   const handleEditorMentionOpenEntity = useCallback(
     ({ mentionId, entityId }: { mentionId: string; entityId: string }) => {
       const params = new URLSearchParams(searchParams.toString());
@@ -1047,6 +1099,117 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
                     {entityDetails.acts?.map((act) => (
                       <div key={act.actId} className="muted">
                         {act.chapterTitle} · Акт {act.actOrderIndex + 1} ({act.actTitle}): {act.mentionCount}
+                      </div>
+                    ))}
+                  </section>
+                ) : null}
+
+                {entityDetails.type === "character" ? (
+                  <section>
+                    <h4 className="entity-section-title">Внешность (актуально)</h4>
+                    {!appearanceLatestByAttribute.length ? (
+                      <p className="muted">Пока нет зафиксированных деталей внешности</p>
+                    ) : null}
+                    {appearanceLatestByAttribute.map((item) => (
+                      <div key={`appearance-latest-${item.id}`} className="mention-item">
+                        <div>
+                          <strong>{item.attributeLabel}:</strong> {item.value}
+                        </div>
+                        <div className="muted">
+                          {formatAppearanceScopeRu(item.scope)}
+                          {item.chapterTitle ? ` • ${item.chapterTitle}` : ""}
+                          {item.actOrderIndex !== null ? ` • Акт ${item.actOrderIndex + 1}` : ""}
+                        </div>
+                        {item.summary ? <div className="muted">{item.summary}</div> : null}
+                        {item.evidence.length ? (
+                          <div className="muted">
+                            Пруфы:{" "}
+                            {item.evidence.slice(0, 2).map((evidence) => (
+                              <button
+                                key={evidence.id}
+                                type="button"
+                                className={`entity-link-btn ${activeMentionId === evidence.mentionId ? "active" : ""}`}
+                                onClick={() =>
+                                  handleMentionClick({
+                                    id: evidence.mentionId,
+                                    chapterId: evidence.chapterId,
+                                  })
+                                }
+                                title={evidence.sourceText}
+                              >
+                                {`§${evidence.paragraphIndex + 1}`}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
+                      </div>
+                    ))}
+                  </section>
+                ) : null}
+
+                {entityDetails.type === "character" ? (
+                  <section>
+                    <h4 className="entity-section-title">Изменения внешности</h4>
+                    {!appearanceChanges.length ? <p className="muted">Явных изменений не найдено</p> : null}
+                    {appearanceChanges.map((group) => (
+                      <div key={`appearance-change-${group.attributeKey}`} className="mention-item">
+                        <div>
+                          <strong>{group.attributeLabel}</strong>
+                        </div>
+                        {group.entries.map((entry) => (
+                          <div key={entry.id} className="muted">
+                            {entry.chapterTitle}
+                            {entry.actOrderIndex !== null ? ` · Акт ${entry.actOrderIndex + 1}` : ""}
+                            {`: ${entry.value}`}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </section>
+                ) : null}
+
+                {entityDetails.type === "character" ? (
+                  <section>
+                    <h4 className="entity-section-title">Таймлайн внешности</h4>
+                    {!appearanceTimeline.length ? <p className="muted">Нет наблюдений</p> : null}
+                    {appearanceTimeline.map((item) => (
+                      <div key={`appearance-timeline-${item.id}`} className="mention-item">
+                        <div>
+                          {item.chapterTitle}
+                          {item.actOrderIndex !== null ? ` · Акт ${item.actOrderIndex + 1}` : ""}
+                        </div>
+                        <div>
+                          <strong>{item.attributeLabel}:</strong> {item.value}
+                        </div>
+                        <div className="muted">
+                          {formatAppearanceScopeRu(item.scope)}
+                          {typeof item.confidence === "number" ? ` • conf ${item.confidence.toFixed(2)}` : ""}
+                        </div>
+                        {item.summary ? <div className="muted">{item.summary}</div> : null}
+                        {item.evidence.length ? (
+                          <div className="muted">
+                            {item.evidence.map((evidence) => (
+                              <button
+                                key={evidence.id}
+                                className={`mention-item mention-item-button ${activeMentionId === evidence.mentionId ? "active" : ""}`}
+                                type="button"
+                                onClick={() =>
+                                  handleMentionClick({
+                                    id: evidence.mentionId,
+                                    chapterId: evidence.chapterId,
+                                  })
+                                }
+                                title={evidence.sourceText}
+                              >
+                                <div>{evidence.snippet || evidence.sourceText}</div>
+                                <div className="muted">
+                                  {evidence.chapterTitle ? `${evidence.chapterTitle} • ` : ""}
+                                  абзац {evidence.paragraphIndex + 1}
+                                </div>
+                              </button>
+                            ))}
+                          </div>
+                        ) : null}
                       </div>
                     ))}
                   </section>
