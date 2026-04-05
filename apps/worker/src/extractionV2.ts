@@ -1,9 +1,11 @@
 import { z } from "zod";
 import {
+  ActPassResultSchema,
   AliasTypeSchema,
   EntityPassResultSchema,
   PatchWindowsResultSchema,
   normalizeEntityName,
+  type ActPassResult,
   type AliasType,
   type EntityPassResult,
   type EntityType,
@@ -41,6 +43,21 @@ interface EntityPassInput {
   contentVersion: number;
   prepass: PrepassResult;
   knownEntities: KnownEntityForPrompt[];
+}
+
+export interface ActPassInput {
+  contentVersion: number;
+  paragraphs: Array<{
+    index: number;
+    text: string;
+    startOffset: number;
+  }>;
+  characterSignals: Array<{
+    paragraphIndex: number;
+    characterId: string;
+    canonicalName: string;
+    mentionText: string;
+  }>;
 }
 
 interface PatchCandidateInput {
@@ -190,6 +207,7 @@ interface StrictJsonCallResult<T> {
 export class ExtractionStructuredOutputError extends Error {
   phase:
     | "entity_pass"
+    | "act_pass"
     | "mention_completion"
     | "character_merge_arbiter"
     | "character_book_pass"
@@ -206,6 +224,7 @@ export class ExtractionStructuredOutputError extends Error {
     message: string;
     phase:
       | "entity_pass"
+      | "act_pass"
       | "mention_completion"
       | "character_merge_arbiter"
       | "character_book_pass"
@@ -409,6 +428,7 @@ async function callStrictJson<T>(params: {
   schema: z.ZodType<T, z.ZodTypeDef, unknown>;
   phase:
     | "entity_pass"
+    | "act_pass"
     | "mention_completion"
     | "character_merge_arbiter"
     | "character_book_pass"
@@ -729,6 +749,156 @@ function normalizeEntityType(rawType: unknown, fallback: EntityType): EntityType
     return "event";
   }
   return fallback;
+}
+
+function normalizeActTitle(raw: unknown, orderIndex: number): string {
+  const explicit = asString(raw);
+  if (!explicit) return `Акт ${orderIndex + 1}`;
+  const normalized = truncateText(collapseWhitespace(explicit), 240);
+  return normalized || `Акт ${orderIndex + 1}`;
+}
+
+function normalizeActSummary(raw: unknown): string {
+  const explicit = asString(raw);
+  if (!explicit) return "";
+  return truncateText(collapseWhitespace(explicit), 1200);
+}
+
+function buildFallbackActPass(input: ActPassInput): ActPassResult {
+  if (!input.paragraphs.length) {
+    return {
+      contentVersion: input.contentVersion,
+      acts: [],
+    };
+  }
+
+  const firstParagraphIndex = input.paragraphs[0].index;
+  const lastParagraphIndex = input.paragraphs[input.paragraphs.length - 1].index;
+
+  return {
+    contentVersion: input.contentVersion,
+    acts: [
+      {
+        orderIndex: 0,
+        title: "Акт 1",
+        summary: "",
+        paragraphStart: firstParagraphIndex,
+        paragraphEnd: lastParagraphIndex,
+      },
+    ],
+  };
+}
+
+function normalizeActPassPayload(raw: unknown, input: ActPassInput): ActPassResult {
+  const rootRecord = asRecord(raw);
+  const rootArray = Array.isArray(raw) ? raw : null;
+  const root = rootRecord || {};
+
+  const sourceActs: unknown[] = [];
+  const appendItems = (value: unknown) => {
+    if (!Array.isArray(value)) return;
+    sourceActs.push(...value);
+  };
+
+  appendItems(root.acts);
+  appendItems(root.segments);
+  appendItems(root.items);
+  appendItems(root.scenes);
+  appendItems((root as Record<string, unknown>)["акты"]);
+  appendItems(rootArray);
+
+  if (!input.paragraphs.length) {
+    return {
+      contentVersion: input.contentVersion,
+      acts: [],
+    };
+  }
+
+  const firstParagraphIndex = input.paragraphs[0].index;
+  const lastParagraphIndex = input.paragraphs[input.paragraphs.length - 1].index;
+
+  const parsedActs: Array<{
+    title: string;
+    summary: string;
+    paragraphStart: number;
+    paragraphEnd: number;
+  }> = [];
+
+  for (let index = 0; index < sourceActs.length; index += 1) {
+    const item = asRecord(sourceActs[index]);
+    if (!item) continue;
+
+    const paragraphStartRaw =
+      asOptionalNumber(item.paragraphStart) ??
+      asOptionalNumber(item.startParagraph) ??
+      asOptionalNumber(item.start) ??
+      asOptionalNumber(item.fromParagraph) ??
+      asOptionalNumber(item.from);
+    const paragraphEndRaw =
+      asOptionalNumber(item.paragraphEnd) ??
+      asOptionalNumber(item.endParagraph) ??
+      asOptionalNumber(item.end) ??
+      asOptionalNumber(item.toParagraph) ??
+      asOptionalNumber(item.to);
+
+    if (paragraphStartRaw === null || paragraphEndRaw === null) continue;
+
+    const paragraphStart = Math.floor(paragraphStartRaw);
+    const paragraphEnd = Math.floor(paragraphEndRaw);
+    parsedActs.push({
+      title: normalizeActTitle(item.title ?? item.name ?? item.label, index),
+      summary: normalizeActSummary(item.summary ?? item.description ?? item.actionSummary ?? item.actions),
+      paragraphStart,
+      paragraphEnd,
+    });
+  }
+
+  if (!parsedActs.length) {
+    return buildFallbackActPass(input);
+  }
+
+  const sorted = [...parsedActs]
+    .filter((act) => Number.isInteger(act.paragraphStart) && Number.isInteger(act.paragraphEnd))
+    .sort((left, right) => {
+      if (left.paragraphStart !== right.paragraphStart) return left.paragraphStart - right.paragraphStart;
+      return left.paragraphEnd - right.paragraphEnd;
+    })
+    .slice(0, 96);
+
+  let expectedStart = firstParagraphIndex;
+  for (const act of sorted) {
+    if (act.paragraphStart !== expectedStart) {
+      return buildFallbackActPass(input);
+    }
+    if (act.paragraphEnd < act.paragraphStart) {
+      return buildFallbackActPass(input);
+    }
+    if (act.paragraphStart < firstParagraphIndex || act.paragraphEnd > lastParagraphIndex) {
+      return buildFallbackActPass(input);
+    }
+    expectedStart = act.paragraphEnd + 1;
+  }
+
+  if (expectedStart !== lastParagraphIndex + 1) {
+    return buildFallbackActPass(input);
+  }
+
+  const parsedContentVersion = asOptionalNumber(root.contentVersion);
+  const contentVersion =
+    parsedContentVersion !== null && Number.isInteger(parsedContentVersion) && parsedContentVersion >= 0
+      ? parsedContentVersion
+      : input.contentVersion;
+
+  return {
+    contentVersion,
+    acts: sorted.map((act, index) => ({
+      orderIndex: index,
+      title: normalizeActTitle(act.title, index),
+      summary: normalizeActSummary(act.summary),
+      paragraphStart: act.paragraphStart,
+      paragraphEnd: act.paragraphEnd,
+    })),
+  };
 }
 
 function inferAliasTypeFromText(alias: string): AliasType {
@@ -1498,6 +1668,62 @@ export async function runCharacterMergeArbiter(
   const normalized = normalizeCharacterMergeArbiterPayload(raw.result, input);
   return {
     result: CharacterMergeArbiterResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runActPass(
+  input: ActPassInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<ActPassResult>> {
+  const paragraphRange =
+    input.paragraphs.length > 0
+      ? `${input.paragraphs[0].index}..${input.paragraphs[input.paragraphs.length - 1].index}`
+      : "empty";
+  const paragraphs = input.paragraphs.map((paragraph) => ({
+    index: paragraph.index,
+    text: truncateText(collapseWhitespace(paragraph.text), 1200),
+  }));
+  const characterSignals = input.characterSignals.slice(0, 1600).map((signal) => ({
+    paragraphIndex: signal.paragraphIndex,
+    characterId: signal.characterId,
+    canonicalName: signal.canonicalName,
+    mentionText: signal.mentionText,
+  }));
+
+  const prompt = [
+    "You are segmenting a chapter of fiction into sequential acts (containers of actions).",
+    "Act means a coherent episode of action (not a formal heading).",
+    "",
+    "STRICT RULES:",
+    "1) Return only strict JSON object with keys: contentVersion, acts.",
+    "2) acts[] must be ordered and contiguous by paragraph ranges.",
+    "3) First act must start from the first paragraph index.",
+    "4) Last act must end at the last paragraph index.",
+    "5) No gaps and no overlaps between acts.",
+    "6) Each act must include: title, summary, paragraphStart, paragraphEnd.",
+    "7) Titles and summaries must be in Russian.",
+    "8) title should be concise action label (3-12 words).",
+    "9) summary should be 1-2 factual sentences about what happens.",
+    "10) Do not output characters/entities arrays; only act boundaries + title + summary.",
+    "",
+    `contentVersion: ${input.contentVersion}`,
+    `paragraphIndexRange: ${paragraphRange}`,
+    `paragraphs: ${JSON.stringify(paragraphs)}`,
+    `characterSignals: ${JSON.stringify(characterSignals)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "act_pass",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeActPassPayload(raw.result, input);
+  return {
+    result: ActPassResultSchema.parse(normalized),
     meta: raw.meta,
     debug: raw.debug,
   };

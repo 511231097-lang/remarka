@@ -96,6 +96,7 @@ model Project {
 
   chapters             Chapter[]
   documents            Document[]
+  acts                 Act[]
   entities             Entity[]
   analysisRuns         AnalysisRun[]
   locationContainments LocationContainment[]
@@ -149,6 +150,7 @@ model Chapter {
 
   project                 Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
   document                Document?
+  acts                    Act[]
   analysisRuns            AnalysisRun[]
   firstAppearanceEntities Entity[]               @relation("EntityFirstAppearanceChapter")
   lastAppearanceEntities  Entity[]               @relation("EntityLastAppearanceChapter")
@@ -172,6 +174,7 @@ model Document {
   chapter           Chapter            @relation(fields: [chapterId], references: [id], onDelete: Cascade)
   currentRun        AnalysisRun?       @relation("DocumentCurrentRun", fields: [currentRunId], references: [id], onDelete: SetNull)
   analysisRuns      AnalysisRun[]
+  acts              Act[]
   mentions          Mention[]
   mentionCandidates MentionCandidate[]
 
@@ -211,6 +214,7 @@ model AnalysisRun {
   supersededRuns     AnalysisRun[]      @relation("RunSupersede")
   currentForDocument Document[]         @relation("DocumentCurrentRun")
   createdEntities    Entity[]           @relation("CreatedEntities")
+  createdActs        Act[]              @relation("CreatedActs")
   mentionCandidates  MentionCandidate[]
   mentions           Mention[]
   patchDecisions     PatchDecision[]
@@ -249,6 +253,7 @@ model Entity {
   aliases                EntityAlias[]
   mentions               Mention[]
   chapterStats           CharacterChapterStat[]
+  actStats               CharacterActStat[]
   hintedCandidates       MentionCandidate[]
   containerLinks         LocationContainment[]  @relation("LocationContainmentChild")
   containedByLinks       LocationContainment[]  @relation("LocationContainmentParent")
@@ -259,6 +264,35 @@ model Entity {
   @@index([projectId, type, mentionCount])
   @@index([firstAppearanceChapterId])
   @@index([lastAppearanceChapterId])
+}
+
+model Act {
+  id             String   @id @default(cuid())
+  projectId      String
+  chapterId      String
+  documentId     String
+  contentVersion Int
+  orderIndex     Int
+  title          String
+  summary        String   @default("")
+  paragraphStart Int
+  paragraphEnd   Int
+  createdByRunId String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  chapter      Chapter      @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  createdByRun AnalysisRun? @relation("CreatedActs", fields: [createdByRunId], references: [id], onDelete: SetNull)
+  mentions     Mention[]
+  characterStats CharacterActStat[]
+
+  @@unique([documentId, contentVersion, orderIndex])
+  @@index([projectId, chapterId, orderIndex])
+  @@index([documentId, contentVersion, orderIndex])
+  @@index([chapterId, contentVersion, orderIndex])
+  @@index([createdByRunId])
 }
 
 model EntityAlias {
@@ -316,6 +350,7 @@ model Mention {
   contentVersion Int
   entityId       String
   candidateId    String?
+  actId          String?
   mentionType    MentionType @default(alias)
   paragraphIndex Int
   startOffset    Int
@@ -328,12 +363,15 @@ model Mention {
   run       AnalysisRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
   document  Document          @relation(fields: [documentId], references: [id], onDelete: Cascade)
   entity    Entity            @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  act       Act?              @relation(fields: [actId], references: [id], onDelete: SetNull)
   candidate MentionCandidate? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
 
   @@index([documentId, paragraphIndex])
   @@index([documentId, entityId])
   @@index([documentId, contentVersion, entityId])
   @@index([entityId, mentionType])
+  @@index([actId])
+  @@index([entityId, actId])
   @@index([runId])
   @@index([candidateId])
 }
@@ -351,6 +389,21 @@ model CharacterChapterStat {
 
   @@unique([characterId, chapterId])
   @@index([chapterId])
+}
+
+model CharacterActStat {
+  id           String   @id @default(cuid())
+  characterId  String
+  actId        String
+  mentionCount Int
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  character Entity @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  act       Act    @relation(fields: [actId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, actId])
+  @@index([actId])
 }
 
 model PatchDecision {

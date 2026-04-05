@@ -72,6 +72,15 @@ export interface ProjectEntityDetails {
     chapterOrderIndex: number;
     mentionCount: number;
   }>;
+  acts?: Array<{
+    actId: string;
+    chapterId: string;
+    chapterTitle: string;
+    chapterOrderIndex: number;
+    actOrderIndex: number;
+    actTitle: string;
+    mentionCount: number;
+  }>;
   createdAt: string;
   updatedAt: string;
   containers: Array<{
@@ -89,6 +98,9 @@ export interface ProjectEntityDetails {
     documentId: string;
     chapterId: string | null;
     chapterTitle?: string | null;
+    actId?: string | null;
+    actTitle?: string | null;
+    actOrderIndex?: number | null;
     mentionType?: "named" | "alias" | "descriptor" | "pronoun";
     paragraphIndex: number;
     startOffset: number;
@@ -123,6 +135,26 @@ export interface ProjectCharacterSearchResult {
     confidence: number;
     sourceText: string;
     snippet: string;
+  }>;
+}
+
+export interface ProjectActItem {
+  id: string;
+  projectId: string;
+  chapterId: string;
+  chapterTitle: string;
+  chapterOrderIndex: number;
+  documentId: string;
+  contentVersion: number;
+  orderIndex: number;
+  title: string;
+  summary: string;
+  paragraphStart: number;
+  paragraphEnd: number;
+  characters: Array<{
+    id: string;
+    name: string;
+    mentionCount: number;
   }>;
 }
 
@@ -348,6 +380,21 @@ export async function createProjectImportRequest(input: {
 export async function fetchProjectImportStatus(projectId: string): Promise<ProjectImportPayload | null> {
   const response = await requestJson<{ import: ProjectImportPayload | null }>(`/api/projects/${projectId}/import`);
   return response.import;
+}
+
+export async function fetchProjectActs(
+  projectId: string,
+  options: { chapterId?: string | null } = {}
+): Promise<ProjectActItem[]> {
+  const params = new URLSearchParams();
+  if (options.chapterId?.trim()) {
+    params.set("chapter", options.chapterId.trim());
+  }
+
+  const query = params.toString();
+  const endpoint = `/api/projects/${projectId}/acts${query ? `?${query}` : ""}`;
+  const result = await requestJson<{ acts: ProjectActItem[] }>(endpoint);
+  return result.acts;
 }
 
 export async function createProjectChapterRequest(projectId: string, input?: { title?: string | null }) {

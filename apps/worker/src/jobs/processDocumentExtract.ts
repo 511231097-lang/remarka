@@ -22,6 +22,7 @@ import { workerConfig } from "../config";
 import { getArtifactBlobStore, persistRunArtifact, type RunArtifactRecord } from "../artifactStore";
 import {
   ExtractionStructuredOutputError,
+  runActPass,
   runCharacterBookPassCanonicalization,
   runCharacterProfileSynthesis,
   runEntityPass,
@@ -105,11 +106,13 @@ interface RunLlmUsageSummary {
     totalTokens: number;
   };
   entityPass?: RunLlmUsagePhase;
+  actPass?: RunLlmUsagePhase;
   mentionCompletion?: RunLlmUsagePhase;
 }
 
 interface RunArtifactsSummary {
   entityPass: RunArtifactRecord[];
+  actPass: RunArtifactRecord[];
   mentionCompletion: RunArtifactRecord[];
 }
 
@@ -158,12 +161,13 @@ function createRunLlmUsageSummary(): RunLlmUsageSummary {
 function createRunArtifactsSummary(): RunArtifactsSummary {
   return {
     entityPass: [],
+    actPass: [],
     mentionCompletion: [],
   };
 }
 
 function summarizeRunArtifacts(artifacts: RunArtifactsSummary) {
-  const all = [...artifacts.entityPass, ...artifacts.mentionCompletion];
+  const all = [...artifacts.entityPass, ...artifacts.actPass, ...artifacts.mentionCompletion];
   const totalSizeBytes = all.reduce((sum, item) => sum + item.sizeBytes, 0);
   const providers = all.reduce<Record<string, number>>((bucket, item) => {
     const key = item.provider || "unknown";
@@ -179,6 +183,10 @@ function summarizeRunArtifacts(artifacts: RunArtifactsSummary) {
       entityPass: {
         count: artifacts.entityPass.length,
         totalSizeBytes: artifacts.entityPass.reduce((sum, item) => sum + item.sizeBytes, 0),
+      },
+      actPass: {
+        count: artifacts.actPass.length,
+        totalSizeBytes: artifacts.actPass.reduce((sum, item) => sum + item.sizeBytes, 0),
       },
       mentionCompletion: {
         count: artifacts.mentionCompletion.length,
@@ -209,7 +217,7 @@ function toRunLlmUsagePhase(meta: StrictJsonCallMeta): RunLlmUsagePhase {
 
 function registerPhaseUsage(
   usageSummary: RunLlmUsageSummary,
-  phase: "entityPass" | "mentionCompletion",
+  phase: "entityPass" | "actPass" | "mentionCompletion",
   meta: StrictJsonCallMeta
 ) {
   const phaseUsage = toRunLlmUsagePhase(meta);
@@ -220,7 +228,7 @@ function registerPhaseUsage(
 }
 
 function hasAnyPhaseUsage(usageSummary: RunLlmUsageSummary): boolean {
-  return Boolean(usageSummary.entityPass || usageSummary.mentionCompletion);
+  return Boolean(usageSummary.entityPass || usageSummary.actPass || usageSummary.mentionCompletion);
 }
 
 function buildExtractionFailureDebug(error: unknown): Record<string, unknown> | null {
@@ -1174,6 +1182,118 @@ function buildSweepCandidates(params: {
   return collapseDeterministicContainedMentions({ candidates, mentions });
 }
 
+async function loadCharacterSignalsForActPass(runId: string): Promise<
+  Array<{
+    paragraphIndex: number;
+    characterId: string;
+    canonicalName: string;
+    mentionText: string;
+  }>
+> {
+  const rows = await prisma.mention.findMany({
+    where: {
+      runId,
+      entity: {
+        type: "character",
+      },
+    },
+    include: {
+      entity: {
+        select: {
+          id: true,
+          canonicalName: true,
+        },
+      },
+    },
+    orderBy: [{ paragraphIndex: "asc" }, { startOffset: "asc" }],
+    take: 2500,
+  });
+
+  return rows.map((row) => ({
+    paragraphIndex: row.paragraphIndex,
+    characterId: row.entity.id,
+    canonicalName: row.entity.canonicalName,
+    mentionText: row.sourceText,
+  }));
+}
+
+async function replaceActsForRun(params: {
+  tx: Tx;
+  runId: string;
+  projectId: string;
+  chapterId: string;
+  documentId: string;
+  contentVersion: number;
+  acts: Array<{
+    orderIndex: number;
+    title: string;
+    summary: string;
+    paragraphStart: number;
+    paragraphEnd: number;
+  }>;
+}) {
+  await params.tx.act.deleteMany({
+    where: {
+      documentId: params.documentId,
+      contentVersion: params.contentVersion,
+    },
+  });
+
+  await params.tx.mention.updateMany({
+    where: {
+      runId: params.runId,
+    },
+    data: {
+      actId: null,
+    },
+  });
+
+  if (!params.acts.length) {
+    return;
+  }
+
+  const actRows = params.acts
+    .map((act, index) => ({
+      id: randomUUID(),
+      projectId: params.projectId,
+      chapterId: params.chapterId,
+      documentId: params.documentId,
+      contentVersion: params.contentVersion,
+      orderIndex: index,
+      title: String(act.title || "").trim() || `Акт ${index + 1}`,
+      summary: String(act.summary || "").trim().slice(0, 1200),
+      paragraphStart: Math.max(0, Math.floor(act.paragraphStart)),
+      paragraphEnd: Math.max(0, Math.floor(act.paragraphEnd)),
+      createdByRunId: params.runId,
+    }))
+    .filter((act) => act.paragraphEnd >= act.paragraphStart)
+    .sort((left, right) => {
+      if (left.paragraphStart !== right.paragraphStart) return left.paragraphStart - right.paragraphStart;
+      return left.paragraphEnd - right.paragraphEnd;
+    });
+
+  if (!actRows.length) return;
+
+  await params.tx.act.createMany({
+    data: actRows,
+  });
+
+  for (const act of actRows) {
+    await params.tx.mention.updateMany({
+      where: {
+        runId: params.runId,
+        paragraphIndex: {
+          gte: act.paragraphStart,
+          lte: act.paragraphEnd,
+        },
+      },
+      data: {
+        actId: act.id,
+      },
+    });
+  }
+}
+
 function isStrictSpanContainment(left: { startOffset: number; endOffset: number }, right: { startOffset: number; endOffset: number }): boolean {
   return (
     left.startOffset <= right.startOffset &&
@@ -1503,6 +1623,7 @@ async function recomputeCharacterAggregatesForProject(projectId: string) {
 
   const mentionRows = rows.filter((row) => row.document && row.contentVersion === row.document.contentVersion);
   const chapterStats = new Map<string, number>();
+  const actStats = new Map<string, number>();
   const aggregateByCharacter = new Map<
     string,
     {
@@ -1519,6 +1640,10 @@ async function recomputeCharacterAggregatesForProject(projectId: string) {
 
     const chapterKey = `${characterId}:${chapterId}`;
     chapterStats.set(chapterKey, (chapterStats.get(chapterKey) || 0) + 1);
+    if (row.actId) {
+      const actKey = `${characterId}:${row.actId}`;
+      actStats.set(actKey, (actStats.get(actKey) || 0) + 1);
+    }
 
     const aggregate =
       aggregateByCharacter.get(characterId) || {
@@ -1548,6 +1673,13 @@ async function recomputeCharacterAggregatesForProject(projectId: string) {
     if (activeCharacterIds.length > 0) {
       const ids = activeCharacterIds.map((item) => item.id);
       await tx.characterChapterStat.deleteMany({
+        where: {
+          characterId: {
+            in: ids,
+          },
+        },
+      });
+      await tx.characterActStat.deleteMany({
         where: {
           characterId: {
             in: ids,
@@ -1584,6 +1716,22 @@ async function recomputeCharacterAggregatesForProject(projectId: string) {
     if (chapterStatRows.length > 0) {
       await tx.characterChapterStat.createMany({
         data: chapterStatRows,
+      });
+    }
+
+    const actStatRows = Array.from(actStats.entries()).map(([key, mentionCount]) => {
+      const [characterId, actId] = key.split(":");
+      return {
+        id: randomUUID(),
+        characterId,
+        actId,
+        mentionCount,
+      };
+    });
+
+    if (actStatRows.length > 0) {
+      await tx.characterActStat.createMany({
+        data: actStatRows,
       });
     }
 
@@ -3224,6 +3372,105 @@ export async function processDocumentExtract(payload: ProcessRunPayload) {
       return;
     }
 
+    const characterSignalsForActPass = await loadCharacterSignalsForActPass(run.id);
+    const actPassCall = await runActPass(
+      {
+        contentVersion: run.contentVersion,
+        paragraphs: prepass.paragraphs,
+        characterSignals: characterSignalsForActPass,
+      },
+      {
+        timewebModelId: requestedImportModelId,
+      }
+    );
+    registerPhaseUsage(llmUsage, "actPass", actPassCall.meta);
+
+    if (actPassCall.result.contentVersion !== run.contentVersion) {
+      throw new Error(
+        `Act-pass contentVersion mismatch: expected ${run.contentVersion}, got ${actPassCall.result.contentVersion}`
+      );
+    }
+
+    const actArtifact = await persistRunArtifact({
+      projectId: run.projectId,
+      runId: run.id,
+      phase: "act_pass",
+      label: `act-pass-${actPassCall.result.acts.length}-acts`,
+      payload: {
+        phase: "act_pass",
+        runId: run.id,
+        projectId: run.projectId,
+        chapterId: run.chapterId,
+        contentVersion: run.contentVersion,
+        input: {
+          paragraphCount: prepass.paragraphs.length,
+          characterSignalCount: characterSignalsForActPass.length,
+          paragraphs: prepass.paragraphs.map((paragraph) => ({
+            index: paragraph.index,
+            text: clampText(compactWhitespace(paragraph.text), 1200),
+          })),
+          characterSignals: characterSignalsForActPass,
+        },
+        output: {
+          result: actPassCall.result,
+          meta: actPassCall.meta,
+          debug: actPassCall.debug,
+        },
+        recordedAt: new Date().toISOString(),
+      },
+    });
+    if (actArtifact) {
+      runArtifacts.actPass.push(actArtifact);
+    }
+
+    await prisma.$transaction(async (tx: Tx) => {
+      await replaceActsForRun({
+        tx,
+        runId: run.id,
+        projectId: run.projectId,
+        chapterId: run.chapterId,
+        documentId: run.documentId,
+        contentVersion: run.contentVersion,
+        acts: actPassCall.result.acts,
+      });
+    });
+
+    logger.info(
+      {
+        runId: run.id,
+        projectId: run.projectId,
+        chapterId: run.chapterId,
+        contentVersion: run.contentVersion,
+        acts: actPassCall.result.acts.length,
+        paragraphCount: prepass.paragraphs.length,
+        characterSignalCount: characterSignalsForActPass.length,
+        provider: actPassCall.meta.provider,
+        model: actPassCall.meta.model,
+        attempt: actPassCall.meta.attempt,
+        finishReason: actPassCall.meta.finishReason,
+        startedAt: actPassCall.meta.startedAt,
+        completedAt: actPassCall.meta.completedAt,
+        latencyMs: actPassCall.meta.latencyMs,
+        promptTokens: actPassCall.meta.usage?.promptTokens ?? null,
+        completionTokens: actPassCall.meta.usage?.completionTokens ?? null,
+        totalTokens: actPassCall.meta.usage?.totalTokens ?? null,
+        artifact: actArtifact
+          ? {
+              provider: actArtifact.provider,
+              storageKey: actArtifact.storageKey,
+              sizeBytes: actArtifact.sizeBytes,
+              sha256: actArtifact.sha256,
+            }
+          : null,
+      },
+      "Act-pass completed"
+    );
+
+    if (!(await isRunCurrent(run.id))) {
+      await markRunSuperseded(run.id);
+      return;
+    }
+
     const mentionCountAfterPatch = await prisma.mention.count({
       where: {
         runId: run.id,
@@ -3333,6 +3580,7 @@ export async function processDocumentExtract(payload: ProcessRunPayload) {
         llmTotalTokens: llmUsage.total.totalTokens,
         llmByPhase: {
           entityPass: llmUsage.entityPass || null,
+          actPass: llmUsage.actPass || null,
           mentionCompletion: llmUsage.mentionCompletion || null,
         },
         artifacts: summarizeRunArtifacts(runArtifacts),

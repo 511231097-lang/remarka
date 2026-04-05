@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  ActPassResultSchema,
   classifyMentionTypeFromAlias,
   ExtractionResultSchema,
   isPronounConfidenceAccepted,
@@ -172,6 +173,31 @@ describe("contracts utilities", () => {
     expect(parsed.mentions).toHaveLength(1);
     expect(parsed.annotations).toHaveLength(1);
     expect(parsed.locationContainments).toHaveLength(1);
+  });
+
+  it("validates act-pass schema with ordered ranges", () => {
+    const parsed = ActPassResultSchema.parse({
+      contentVersion: 3,
+      acts: [
+        {
+          orderIndex: 0,
+          title: "Разговор в купе",
+          summary: "Герои знакомятся и обсуждают дорогу.",
+          paragraphStart: 0,
+          paragraphEnd: 4,
+        },
+        {
+          orderIndex: 1,
+          title: "Появление нового персонажа",
+          summary: "К беседе подключается Гермиона и поездка продолжается.",
+          paragraphStart: 5,
+          paragraphEnd: 9,
+        },
+      ],
+    });
+
+    expect(parsed.acts).toHaveLength(2);
+    expect(parsed.acts[0]?.title).toContain("Разговор");
   });
 
   it("rejects legacy location enum values", () => {

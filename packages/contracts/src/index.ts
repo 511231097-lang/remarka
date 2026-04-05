@@ -356,6 +356,27 @@ export const PrepassResultSchema = z
 
 export type PrepassResult = z.infer<typeof PrepassResultSchema>;
 
+export const ActSegmentSchema = z
+  .object({
+    orderIndex: z.number().int().nonnegative(),
+    title: z.string().trim().min(1).max(240),
+    summary: z.string().max(1200).default(""),
+    paragraphStart: z.number().int().nonnegative(),
+    paragraphEnd: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export type ActSegment = z.infer<typeof ActSegmentSchema>;
+
+export const ActPassResultSchema = z
+  .object({
+    contentVersion: z.number().int().nonnegative(),
+    acts: z.array(ActSegmentSchema),
+  })
+  .strict();
+
+export type ActPassResult = z.infer<typeof ActPassResultSchema>;
+
 export const EntityPassAliasSchema = z
   .object({
     alias: z.string().min(1),

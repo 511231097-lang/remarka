@@ -9,7 +9,7 @@ import { workerConfig } from "./config";
 import { logger } from "./logger";
 
 export interface RunArtifactRecord {
-  phase: "entity_pass" | "mention_completion";
+  phase: "entity_pass" | "act_pass" | "mention_completion";
   label: string;
   provider: string;
   storageKey: string;
@@ -79,7 +79,7 @@ export function getArtifactBlobStore(): BlobStore | null {
 export async function persistRunArtifact(params: {
   projectId: string;
   runId: string;
-  phase: "entity_pass" | "mention_completion";
+  phase: "entity_pass" | "act_pass" | "mention_completion";
   label: string;
   payload: unknown;
 }): Promise<RunArtifactRecord | null> {

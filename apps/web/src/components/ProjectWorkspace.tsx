@@ -27,6 +27,7 @@ import { NarrativeEditor } from "@/components/NarrativeEditor";
 import {
   fetchProjectDocument,
   fetchProjectCharacterSearch,
+  fetchProjectActs,
   fetchProjectEntities,
   fetchProjectEntityDetails,
   fetchProjectImportStatus,
@@ -37,6 +38,7 @@ import {
   type ProjectEntityDetails,
   type ProjectEntityListItem,
   type ProjectCharacterSearchResult,
+  type ProjectActItem,
 } from "@/lib/apiClient";
 import { buildSearchWithEntity, getEntityIdFromSearch, getMentionIdFromSearch } from "@/lib/entityDrawerUrl";
 import {
@@ -100,6 +102,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
   const [entityFilter, setEntityFilter] = useState<EntityType>("character");
   const [entitySearchQuery, setEntitySearchQuery] = useState("");
   const [entities, setEntities] = useState<ProjectEntityListItem[]>([]);
+  const [projectActs, setProjectActs] = useState<ProjectActItem[]>([]);
   const [characterSearch, setCharacterSearch] = useState<ProjectCharacterSearchResult>({ characters: [], mentions: [] });
   const [entityDetails, setEntityDetails] = useState<ProjectEntityDetails | null>(null);
   const [isEntityDetailsLoading, setIsEntityDetailsLoading] = useState(false);
@@ -182,6 +185,11 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     setEntities(loaded);
   }, [projectId, entityFilter, entitySearchQuery]);
 
+  const loadActs = useCallback(async () => {
+    const loaded = await fetchProjectActs(projectId);
+    setProjectActs(loaded);
+  }, [projectId]);
+
   const loadImportStatus = useCallback(async () => {
     const status = await fetchProjectImportStatus(projectId);
     setLatestImport(status);
@@ -211,6 +219,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     setEntityFilter("character");
     setEntitySearchQuery("");
     setSaveStatus("idle");
+    setProjectActs([]);
     setCharacterSearch({ characters: [], mentions: [] });
     setEntityDetails(null);
     setIsEntityDetailsLoading(false);
@@ -239,13 +248,14 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     (async () => {
       try {
         debugLog("initialLoad:start");
-        const [loadedDocument, loadedEntities, loadedImport] = await Promise.all([
+        const [loadedDocument, loadedEntities, loadedImport, loadedActs] = await Promise.all([
           fetchProjectDocument(projectId, chapterId),
           fetchProjectEntities(projectId, {
             type: entityFilter,
             q: entitySearchQuery.trim() || undefined,
           }),
           fetchProjectImportStatus(projectId),
+          fetchProjectActs(projectId),
         ]);
         if (!active) return;
         debugLog("initialLoad:success", {
@@ -255,12 +265,14 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
           loadedPlainLength: loadedDocument.snapshot.content.length,
           loadedRichPlainLength: plainLength(loadedDocument.snapshot.richContent),
           entities: loadedEntities.length,
+          acts: loadedActs.length,
           importState: loadedImport?.state || null,
           importStage: loadedImport?.stage || null,
         });
         applyServerDocument(loadedDocument);
         setEntities(loadedEntities);
         setLatestImport(loadedImport);
+        setProjectActs(loadedActs);
       } catch (loadError) {
         if (!active) return;
         debugLog("initialLoad:error", {
@@ -337,8 +349,9 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
       router.refresh();
       void loadDocument();
       void loadEntities();
+      void loadActs();
     }
-  }, [latestImport, router, loadDocument, loadEntities]);
+  }, [latestImport, router, loadDocument, loadEntities, loadActs]);
 
   useEffect(() => {
     if (!document) return;
@@ -485,6 +498,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
           void loadDocument();
         }
         void loadEntities();
+        void loadActs();
       },
       onFailed: (payload) => {
         if (payload.chapterId !== chapterId) return;
@@ -501,7 +515,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
       },
       onError: (message) => setError(message),
     });
-  }, [projectId, chapterId, loadDocument, loadEntities]);
+  }, [projectId, chapterId, loadDocument, loadEntities, loadActs]);
 
   useEffect(() => {
     if (!activeEntityId) {
@@ -541,10 +555,58 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
       })),
     [entities, entityFilter]
   );
+  const chapterActs = useMemo(
+    () =>
+      projectActs
+        .filter((act) => act.chapterId === chapterId)
+        .sort((left, right) => left.orderIndex - right.orderIndex),
+    [projectActs, chapterId]
+  );
+  const orderedBookActs = useMemo(
+    () =>
+      [...projectActs].sort((left, right) => {
+        if (left.chapterOrderIndex !== right.chapterOrderIndex) return left.chapterOrderIndex - right.chapterOrderIndex;
+        return left.orderIndex - right.orderIndex;
+      }),
+    [projectActs]
+  );
   const showCharacterSearchResults = entityFilter === "character" && entitySearchQuery.trim().length > 0;
 
   const activeEntityName =
     entityDetails?.name || entities.find((entity) => entity.id === activeEntityId)?.name || null;
+  const entityMentionsByAct = useMemo(() => {
+    if (!entityDetails?.mentions?.length) return [];
+
+    const groups: Array<{
+      key: string;
+      label: string;
+      mentions: typeof entityDetails.mentions;
+    }> = [];
+    const groupByKey = new Map<string, (typeof groups)[number]>();
+
+    for (const mention of entityDetails.mentions) {
+      const key = mention.actId ? `act:${mention.actId}` : `chapter:${mention.chapterId || "none"}:no-act`;
+      const label = mention.actTitle
+        ? `Акт ${Number(mention.actOrderIndex ?? 0) + 1}: ${mention.actTitle}`
+        : mention.chapterTitle
+          ? `${mention.chapterTitle} · без акта`
+          : "Без акта";
+
+      let group = groupByKey.get(key);
+      if (!group) {
+        group = {
+          key,
+          label,
+          mentions: [],
+        };
+        groupByKey.set(key, group);
+        groups.push(group);
+      }
+      group.mentions.push(mention);
+    }
+
+    return groups;
+  }, [entityDetails]);
   const handleEditorMentionOpenEntity = useCallback(
     ({ mentionId, entityId }: { mentionId: string; entityId: string }) => {
       const params = new URLSearchParams(searchParams.toString());
@@ -584,6 +646,18 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
       setIsInspectorOpen(true);
     },
     [activeEntityId, chapterId, pathname, router, searchParams]
+  );
+  const handleActClick = useCallback(
+    (act: ProjectActItem) => {
+      const params = new URLSearchParams(searchParams.toString());
+      params.set("chapter", act.chapterId);
+      params.delete("mention");
+      const query = params.toString();
+      const nextUrl = query ? `${pathname}?${query}` : pathname;
+      router.push(nextUrl, { scroll: false });
+      setIsInspectorOpen(true);
+    },
+    [pathname, router, searchParams]
   );
   const saveChipLabel =
     saveStatus === "saving" ? "Сохранение..." : saveStatus === "saved" ? "Сохранено" : "Ошибка сохранения";
@@ -756,6 +830,55 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
           <>
             <div className="inspector-scroll">
               <section className="entity-group">
+                <h3>Акты главы</h3>
+                {!chapterActs.length ? <p className="muted">Появятся после завершения анализа главы</p> : null}
+                {chapterActs.map((act) => (
+                  <button
+                    key={act.id}
+                    className="entity-row-btn"
+                    type="button"
+                    onClick={() => handleActClick(act)}
+                  >
+                    <div>
+                      <div className="entity-name">{`Акт ${act.orderIndex + 1}. ${act.title}`}</div>
+                      <div className="entity-summary">{act.summary || "Краткое описание формируется автоматически"}</div>
+                      <div className="muted">
+                        Абзацы: {act.paragraphStart + 1} - {act.paragraphEnd + 1}
+                      </div>
+                    </div>
+                    <div className="entity-meta">
+                      <div className="entity-type-chip">Персонажи</div>
+                      <div className="muted">
+                        {act.characters.length
+                          ? act.characters
+                              .slice(0, 4)
+                              .map((character) => `${character.name} (${character.mentionCount})`)
+                              .join(", ")
+                          : "Нет"}
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </section>
+
+              {orderedBookActs.length > chapterActs.length ? (
+                <section className="entity-group">
+                  <h3>Порядок актов книги</h3>
+                  {orderedBookActs.map((act) => (
+                    <button
+                      key={`book-${act.id}`}
+                      className="mention-item mention-item-button"
+                      type="button"
+                      onClick={() => handleActClick(act)}
+                    >
+                      <div>{`${act.chapterTitle} · Акт ${act.orderIndex + 1}: ${act.title}`}</div>
+                      <div className="muted">{act.summary || "Без описания"}</div>
+                    </button>
+                  ))}
+                </section>
+              ) : null}
+
+              <section className="entity-group">
                 <div className="entity-filter-tabs">
                   {ENTITY_TYPE_OPTIONS.map((option) => (
                     <button
@@ -917,6 +1040,18 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
                   </section>
                 ) : null}
 
+                {entityDetails.type === "character" ? (
+                  <section>
+                    <h4 className="entity-section-title">Присутствие по актам</h4>
+                    {!entityDetails.acts?.length ? <p className="muted">Нет</p> : null}
+                    {entityDetails.acts?.map((act) => (
+                      <div key={act.actId} className="muted">
+                        {act.chapterTitle} · Акт {act.actOrderIndex + 1} ({act.actTitle}): {act.mentionCount}
+                      </div>
+                    ))}
+                  </section>
+                ) : null}
+
                 <section>
                   <h4 className="entity-section-title">
                     <IconHierarchy2 size={15} stroke={1.8} />
@@ -958,22 +1093,27 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
                     <IconQuote size={15} stroke={1.8} />
                     Упоминания
                   </h4>
-                  {!entityDetails.mentions.length ? <p className="muted">Нет упоминаний</p> : null}
-                  {entityDetails.mentions.map((mention) => (
-                    <button
-                      key={mention.id}
-                      className={`mention-item mention-item-button ${activeMentionId === mention.id ? "active" : ""}`}
-                      type="button"
-                      onClick={() => handleMentionClick(mention)}
-                      title={mention.sourceText}
-                    >
-                      <div>{mention.snippet || mention.sourceText}</div>
-                      <div className="muted">
-                        {mention.mentionType || "alias"}
-                        {typeof mention.confidence === "number" ? ` • conf ${mention.confidence.toFixed(2)}` : ""}
-                        {mention.chapterTitle ? ` • ${mention.chapterTitle}` : ""}
-                      </div>
-                    </button>
+                  {!entityMentionsByAct.length ? <p className="muted">Нет упоминаний</p> : null}
+                  {entityMentionsByAct.map((group) => (
+                    <div key={group.key}>
+                      <div className="muted">{group.label}</div>
+                      {group.mentions.map((mention) => (
+                        <button
+                          key={mention.id}
+                          className={`mention-item mention-item-button ${activeMentionId === mention.id ? "active" : ""}`}
+                          type="button"
+                          onClick={() => handleMentionClick(mention)}
+                          title={mention.sourceText}
+                        >
+                          <div>{mention.snippet || mention.sourceText}</div>
+                          <div className="muted">
+                            {mention.mentionType || "alias"}
+                            {typeof mention.confidence === "number" ? ` • conf ${mention.confidence.toFixed(2)}` : ""}
+                            {mention.chapterTitle ? ` • ${mention.chapterTitle}` : ""}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
                   ))}
                 </section>
               </article>

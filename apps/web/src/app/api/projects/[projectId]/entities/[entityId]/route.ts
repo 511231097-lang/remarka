@@ -87,6 +87,24 @@ export async function GET(_request: Request, context: RouteContext) {
           },
         },
       },
+      actStats: {
+        include: {
+          act: {
+            select: {
+              id: true,
+              title: true,
+              orderIndex: true,
+              chapter: {
+                select: {
+                  id: true,
+                  title: true,
+                  orderIndex: true,
+                },
+              },
+            },
+          },
+        },
+      },
       containedByLinks: {
         select: {
           parentEntity: {
@@ -111,6 +129,13 @@ export async function GET(_request: Request, context: RouteContext) {
       },
       mentions: {
         include: {
+          act: {
+            select: {
+              id: true,
+              title: true,
+              orderIndex: true,
+            },
+          },
           document: {
             select: {
               chapterId: true,
@@ -150,6 +175,9 @@ export async function GET(_request: Request, context: RouteContext) {
     const chapterOrderA = Number(a.document?.chapter?.orderIndex ?? 0);
     const chapterOrderB = Number(b.document?.chapter?.orderIndex ?? 0);
     if (chapterOrderA !== chapterOrderB) return chapterOrderA - chapterOrderB;
+    const actOrderA = Number(a.act?.orderIndex ?? Number.MAX_SAFE_INTEGER);
+    const actOrderB = Number(b.act?.orderIndex ?? Number.MAX_SAFE_INTEGER);
+    if (actOrderA !== actOrderB) return actOrderA - actOrderB;
     if (a.paragraphIndex !== b.paragraphIndex) return a.paragraphIndex - b.paragraphIndex;
     return a.startOffset - b.startOffset;
   });
@@ -161,6 +189,14 @@ export async function GET(_request: Request, context: RouteContext) {
   const chapterPresence = [...entity.chapterStats]
     .filter((item: any) => item.chapter)
     .sort((a: any, b: any) => Number(a.chapter?.orderIndex ?? 0) - Number(b.chapter?.orderIndex ?? 0));
+  const actPresence = [...entity.actStats]
+    .filter((item: any) => item.act?.chapter)
+    .sort((a: any, b: any) => {
+      const chapterOrderA = Number(a.act?.chapter?.orderIndex ?? 0);
+      const chapterOrderB = Number(b.act?.chapter?.orderIndex ?? 0);
+      if (chapterOrderA !== chapterOrderB) return chapterOrderA - chapterOrderB;
+      return Number(a.act?.orderIndex ?? 0) - Number(b.act?.orderIndex ?? 0);
+    });
 
   return Response.json({
     entity: {
@@ -200,6 +236,18 @@ export async function GET(_request: Request, context: RouteContext) {
               mentionCount: item.mentionCount,
             }))
           : [],
+      acts:
+        entity.type === "character"
+          ? actPresence.map((item: any) => ({
+              actId: item.act.id,
+              chapterId: item.act.chapter.id,
+              chapterTitle: item.act.chapter.title,
+              chapterOrderIndex: item.act.chapter.orderIndex,
+              actOrderIndex: item.act.orderIndex,
+              actTitle: item.act.title,
+              mentionCount: item.mentionCount,
+            }))
+          : [],
       aliases:
         entity.type === "character"
           ? entity.aliases
@@ -229,6 +277,9 @@ export async function GET(_request: Request, context: RouteContext) {
         documentId: mention.documentId,
         chapterId: mention.document?.chapterId || null,
         chapterTitle: mention.document?.chapter?.title || null,
+        actId: mention.act?.id || null,
+        actTitle: mention.act?.title || null,
+        actOrderIndex: mention.act?.orderIndex ?? null,
         mentionType: mention.mentionType,
         paragraphIndex: mention.paragraphIndex,
         startOffset: mention.startOffset,
