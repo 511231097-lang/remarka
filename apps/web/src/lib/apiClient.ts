@@ -13,6 +13,14 @@ export interface SidebarChapterItem {
   projectId: string;
   title: string;
   orderIndex: number;
+  latestRun?: {
+    id: string;
+    state: AnalysisRunPayload["state"];
+    phase: AnalysisRunPayload["phase"];
+    error: string | null;
+    createdAt: string;
+    updatedAt: string;
+  } | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -34,8 +42,36 @@ export interface ProjectEntityDetails {
   projectId: string;
   type: EntityType;
   name: string;
+  canonicalName?: string;
   containerEntityId: string | null;
   summary: string;
+  shortDescription?: string;
+  mentionCount?: number;
+  firstAppearance?: {
+    chapterId: string;
+    chapterTitle: string;
+    chapterOrderIndex: number;
+    offset: number | null;
+  } | null;
+  lastAppearance?: {
+    chapterId: string;
+    chapterTitle: string;
+    chapterOrderIndex: number;
+    offset: number | null;
+  } | null;
+  aliases?: Array<{
+    id: string;
+    value: string;
+    normalizedValue: string;
+    aliasType: "name" | "nickname" | "title" | "descriptor";
+    confidence: number;
+  }>;
+  chapters?: Array<{
+    chapterId: string;
+    chapterTitle: string;
+    chapterOrderIndex: number;
+    mentionCount: number;
+  }>;
   createdAt: string;
   updatedAt: string;
   containers: Array<{
@@ -52,9 +88,39 @@ export interface ProjectEntityDetails {
     id: string;
     documentId: string;
     chapterId: string | null;
+    chapterTitle?: string | null;
+    mentionType?: "named" | "alias" | "descriptor" | "pronoun";
     paragraphIndex: number;
     startOffset: number;
     endOffset: number;
+    sourceText: string;
+    confidence?: number;
+    snippet: string;
+  }>;
+}
+
+export interface ProjectCharacterSearchResult {
+  characters: Array<{
+    id: string;
+    canonicalName: string;
+    shortDescription: string;
+    mentionCount: number;
+    aliases: Array<{
+      id: string;
+      value: string;
+      aliasType: "name" | "nickname" | "title" | "descriptor";
+    }>;
+  }>;
+  mentions: Array<{
+    id: string;
+    entityId: string;
+    canonicalName: string;
+    chapterId: string | null;
+    chapterTitle: string | null;
+    mentionType: "named" | "alias" | "descriptor" | "pronoun";
+    startOffset: number;
+    endOffset: number;
+    confidence: number;
     sourceText: string;
     snippet: string;
   }>;
@@ -122,6 +188,11 @@ export async function fetchProjectDocument(projectId: string, chapterId?: string
   return requestJson<ProjectDocumentState>(`/api/projects/${projectId}/document${buildChapterQuery(chapterId)}`);
 }
 
+export async function fetchSidebarProjects(): Promise<SidebarProjectItem[]> {
+  const result = await requestJson<{ projects: SidebarProjectItem[] }>(`/api/projects`);
+  return result.projects;
+}
+
 export async function saveProjectDocument(
   projectId: string,
   chapterId: string,
@@ -185,12 +256,44 @@ export async function fetchProjectEntityDetails(projectId: string, entityId: str
   return result.entity;
 }
 
+export async function fetchProjectCharacterSearch(
+  projectId: string,
+  query: string,
+  options: { limit?: number } = {}
+): Promise<ProjectCharacterSearchResult> {
+  const q = String(query || "").trim();
+  if (!q) {
+    return {
+      characters: [],
+      mentions: [],
+    };
+  }
+
+  const params = new URLSearchParams();
+  params.set("q", q);
+  if (typeof options.limit === "number" && Number.isFinite(options.limit)) {
+    params.set("limit", String(Math.max(1, Math.min(100, Math.floor(options.limit)))));
+  }
+
+  return requestJson<ProjectCharacterSearchResult>(`/api/projects/${projectId}/characters/search?${params.toString()}`);
+}
+
 export async function createProjectRequest(input: { title: string; description?: string | null }) {
   const result = await requestJson<{ project: SidebarProjectItem & { firstChapterId: string | null } }>(`/api/projects`, {
     method: "POST",
     body: JSON.stringify(input),
   });
   return result.project;
+}
+
+export async function deleteProjectRequest(projectId: string) {
+  return requestJson<{
+    deletedProjectId: string;
+    fallbackProjectId: string | null;
+    fallbackChapterId: string | null;
+  }>(`/api/projects/${projectId}`, {
+    method: "DELETE",
+  });
 }
 
 export async function createProjectImportRequest(input: {

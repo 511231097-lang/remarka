@@ -4,7 +4,9 @@ import {
   buildPlainTextFromParsedChapter,
   buildRichContentFromParsedChapter,
   ensureParsedBookHasChapters,
+  normalizeImportAnalysisModelId,
   parseBook,
+  type ImportAnalysisModelId,
   type ParsedBook,
 } from "@remarka/contracts";
 import { workerConfig } from "../config";
@@ -39,6 +41,18 @@ function parseImportedProjectTitle(meta: Record<string, unknown>): { titleProvid
   const titleProvided = Boolean(meta.titleProvided);
   const requestedTitle = String(meta.requestedTitle || "").trim() || null;
   return { titleProvided, requestedTitle };
+}
+
+function parseRequestedImportModel(meta: Record<string, unknown>): ImportAnalysisModelId | null {
+  if (workerConfig.extraction.provider !== "timeweb") {
+    return null;
+  }
+
+  return (
+    normalizeImportAnalysisModelId(meta.selectedModelId) ||
+    normalizeImportAnalysisModelId(meta.requestedAnalysisModelId) ||
+    null
+  );
 }
 
 function toRichContent(chapter: ParsedBook["chapters"][number]): Prisma.InputJsonValue {
@@ -102,6 +116,7 @@ export async function processProjectImport(payload: ProcessProjectImportPayload)
 
     const parsedMeta = jsonObject(projectImport.metadataJson);
     const titleResolution = parseImportedProjectTitle(parsedMeta);
+    const requestedImportModelId = parseRequestedImportModel(parsedMeta);
     const parsedBookTitle = String(parsed.metadata.title || "").trim() || null;
     const resolvedProjectTitle = titleResolution.titleProvided ? titleResolution.requestedTitle : parsedBookTitle;
 
@@ -241,6 +256,16 @@ export async function processProjectImport(payload: ProcessProjectImportPayload)
             contentVersion: doc.contentVersion,
             state: "queued",
             phase: "queued",
+            ...(requestedImportModelId
+              ? {
+                  qualityFlags: {
+                    requestedExtractionModel: {
+                      provider: "timeweb",
+                      modelId: requestedImportModelId,
+                    },
+                  } as Prisma.InputJsonValue,
+                }
+              : {}),
           },
         });
 

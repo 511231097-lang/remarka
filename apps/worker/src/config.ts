@@ -34,6 +34,14 @@ function getBoolEnv(name: string, fallback: boolean): boolean {
   return fallback;
 }
 
+function getFloatEnv(name: string, fallback: number): number {
+  const raw = String(process.env[name] || "").trim();
+  if (!raw) return fallback;
+  const parsed = Number.parseFloat(raw);
+  if (!Number.isFinite(parsed)) return fallback;
+  return parsed;
+}
+
 const DEFAULT_KIA_EXTRACT_MODEL = "gemini-3-flash-openai";
 
 function resolveKiaModelRoute(model: string): string {
@@ -68,11 +76,20 @@ function normalizeKiaBaseUrl(raw: string, model: string): string {
   return `${value}/v1`;
 }
 
-const configuredExtractProviderRaw = String(process.env.EXTRACT_LLM_PROVIDER || process.env.LLM_PROVIDER || "timeweb")
+type ExtractProvider = "timeweb" | "kia" | "vertex";
+type ArtifactStorageProvider = "local" | "s3";
+
+const configuredExtractProviderRaw = String(process.env.EXTRACT_LLM_PROVIDER || process.env.LLM_PROVIDER || "vertex")
   .trim()
   .toLowerCase();
-const configuredExtractProvider = configuredExtractProviderRaw === "kia" ? "kia" : "timeweb";
-if (configuredExtractProviderRaw && !new Set(["timeweb", "kia"]).has(configuredExtractProviderRaw)) {
+const supportedExtractProviders = new Set(["timeweb", "kia", "vertex"]);
+const configuredExtractProvider: ExtractProvider =
+  configuredExtractProviderRaw === "kia"
+    ? "kia"
+    : configuredExtractProviderRaw === "vertex"
+      ? "vertex"
+      : "timeweb";
+if (configuredExtractProviderRaw && !supportedExtractProviders.has(configuredExtractProviderRaw)) {
   throw new Error(`Unsupported EXTRACT_LLM_PROVIDER: ${configuredExtractProviderRaw}`);
 }
 
@@ -84,8 +101,23 @@ const configuredKiaExtractModel = String(
 )
   .trim();
 const configuredKiaFallbackModel = String(process.env.KIA_EXTRACT_FALLBACK_MODEL || "").trim();
+const DEFAULT_VERTEX_EXTRACT_MODEL = "gemini-3.1-flash-lite-preview";
+const configuredVertexExtractModel = String(process.env.VERTEX_EXTRACT_MODEL || DEFAULT_VERTEX_EXTRACT_MODEL).trim();
+const configuredVertexFallbackModel = String(process.env.VERTEX_EXTRACT_FALLBACK_MODEL || "").trim();
 const isTimewebProvider = configuredExtractProvider === "timeweb";
 const isKiaProvider = configuredExtractProvider === "kia";
+const isVertexProvider = configuredExtractProvider === "vertex";
+const artifactsEnabled = getBoolEnv("ANALYSIS_ARTIFACTS_ENABLED", true);
+const configuredArtifactStorageProviderRaw = String(process.env.ARTIFACTS_STORAGE_PROVIDER || "local")
+  .trim()
+  .toLowerCase();
+if (configuredArtifactStorageProviderRaw && !["local", "s3"].includes(configuredArtifactStorageProviderRaw)) {
+  throw new Error(`Unsupported ARTIFACTS_STORAGE_PROVIDER: ${configuredArtifactStorageProviderRaw}`);
+}
+const configuredArtifactStorageProvider: ArtifactStorageProvider =
+  configuredArtifactStorageProviderRaw === "s3" ? "s3" : "local";
+const requireS3ArtifactConfig = artifactsEnabled && configuredArtifactStorageProvider === "s3";
+const defaultImportBlobDir = String(process.env.IMPORT_BLOB_DIR || "/tmp/remarka-imports").trim() || "/tmp/remarka-imports";
 
 export const workerConfig = {
   databaseUrl: getRequiredEnv("DATABASE_URL"),
@@ -93,13 +125,31 @@ export const workerConfig = {
     pollIntervalMs: getIntEnv("OUTBOX_POLL_INTERVAL_MS", 1200),
     batchSize: getIntEnv("OUTBOX_BATCH_SIZE", 16),
     maxAttempts: getIntEnv("OUTBOX_MAX_ATTEMPTS", 8),
+    eventConcurrency: getIntEnv("OUTBOX_EVENT_CONCURRENCY", 4),
   },
   imports: {
-    blobDir: String(process.env.IMPORT_BLOB_DIR || "/tmp/remarka-imports").trim() || "/tmp/remarka-imports",
+    blobDir: defaultImportBlobDir,
     maxZipUncompressedBytes: getIntEnv("IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES", 50 * 1024 * 1024),
   },
+  artifacts: {
+    enabled: artifactsEnabled,
+    storageProvider: configuredArtifactStorageProvider,
+    localDir:
+      String(process.env.ANALYSIS_ARTIFACTS_LOCAL_DIR || `${defaultImportBlobDir}/analysis-artifacts`).trim() ||
+      `${defaultImportBlobDir}/analysis-artifacts`,
+    s3: {
+      bucket: getRequiredEnvIf("ARTIFACTS_S3_BUCKET", requireS3ArtifactConfig),
+      region: String(process.env.ARTIFACTS_S3_REGION || "us-east-1").trim() || "us-east-1",
+      endpoint: getOptionalEnv("ARTIFACTS_S3_ENDPOINT"),
+      keyPrefix: String(process.env.ARTIFACTS_S3_KEY_PREFIX || "remarka/analysis-artifacts").trim() || "remarka/analysis-artifacts",
+      forcePathStyle: getBoolEnv("ARTIFACTS_S3_FORCE_PATH_STYLE", true),
+      accessKeyId: getRequiredEnvIf("ARTIFACTS_S3_ACCESS_KEY_ID", requireS3ArtifactConfig),
+      secretAccessKey: getRequiredEnvIf("ARTIFACTS_S3_SECRET_ACCESS_KEY", requireS3ArtifactConfig),
+      sessionToken: getOptionalEnv("ARTIFACTS_S3_SESSION_TOKEN"),
+    },
+  },
   pipeline: {
-    enableEventExtraction: getBoolEnv("ENABLE_EVENT_EXTRACTION", false),
+    enableEventExtraction: getBoolEnv("ENABLE_EVENT_EXTRACTION", true),
     analysisAutoRerunEnabled: getBoolEnv("ANALYSIS_AUTO_RERUN_ENABLED", true),
     analysisAutoRerunMaxAttempts: getIntEnv("ANALYSIS_AUTO_RERUN_MAX_ATTEMPTS", 1),
     analysisAutoRerunEmptyMinCandidates: getIntEnv("ANALYSIS_AUTO_RERUN_EMPTY_MIN_CANDIDATES", 120),
@@ -119,6 +169,13 @@ export const workerConfig = {
     entityPassKnownEntitiesCap: getIntEnv("ENTITY_PASS_KNOWN_ENTITIES_CAP", 400),
     entityPassKnownAliasesPerEntity: getIntEnv("ENTITY_PASS_KNOWN_ALIASES_PER_ENTITY", 8),
     entityPassSkipWhenNoCandidates: getBoolEnv("ENTITY_PASS_SKIP_WHEN_NO_CANDIDATES", true),
+    pronounConfidenceThreshold: getFloatEnv("PRONOUN_CONFIDENCE_THRESHOLD", 0.9),
+    bookPassMergeArbiterEnabled: getBoolEnv("BOOK_PASS_MERGE_ARBITER_ENABLED", true),
+    bookPassMergeArbiterMaxPairs: getIntEnv("BOOK_PASS_MERGE_ARBITER_MAX_PAIRS", 12),
+    bookPassMergeArbiterMinMentionCount: getIntEnv("BOOK_PASS_MERGE_ARBITER_MIN_MENTION_COUNT", 5),
+    bookPassMergeArbiterConfidenceThreshold: getFloatEnv("BOOK_PASS_MERGE_ARBITER_CONFIDENCE_THRESHOLD", 0.95),
+    bookPassMergeArbiterSurnameDistance: getIntEnv("BOOK_PASS_MERGE_ARBITER_SURNAME_DISTANCE", 1),
+    bookPassMergeArbiterEvidenceMentionsPerEntity: getIntEnv("BOOK_PASS_MERGE_ARBITER_EVIDENCE_MENTIONS_PER_ENTITY", 6),
   },
   preprocessor: {
     url: String(process.env.PREPROCESSOR_URL || "http://127.0.0.1:8010").replace(/\/+$/, ""),
@@ -155,5 +212,16 @@ export const workerConfig = {
     extractAttempts: getIntEnv("KIA_EXTRACT_ATTEMPTS", getIntEnv("TIMEWEB_EXTRACT_ATTEMPTS", 3)),
     timeoutMs: getIntEnv("KIA_TIMEOUT_MS", getIntEnv("TIMEWEB_TIMEOUT_MS", 120000)),
     maxRetries: getIntEnv("KIA_MAX_RETRIES", getIntEnv("TIMEWEB_MAX_RETRIES", 2)),
+  },
+  vertex: {
+    apiKey: getRequiredEnvIf("VERTEX_API_KEY", isVertexProvider),
+    proxySource: String(process.env.VERTEX_PROXY_SOURCE || process.env.TIMEWEB_PROXY_SOURCE || "remarka-worker-vertex").trim(),
+    baseUrl: String(process.env.VERTEX_BASE_URL || "https://aiplatform.googleapis.com").replace(/\/+$/, ""),
+    extractModel: configuredVertexExtractModel,
+    extractFallbackModel: configuredVertexFallbackModel,
+    extractMaxTokens: getIntEnv("VERTEX_EXTRACT_MAX_TOKENS", getIntEnv("TIMEWEB_EXTRACT_MAX_TOKENS", 4096)),
+    extractAttempts: getIntEnv("VERTEX_EXTRACT_ATTEMPTS", getIntEnv("TIMEWEB_EXTRACT_ATTEMPTS", 3)),
+    timeoutMs: getIntEnv("VERTEX_TIMEOUT_MS", getIntEnv("TIMEWEB_TIMEOUT_MS", 120000)),
+    maxRetries: getIntEnv("VERTEX_MAX_RETRIES", getIntEnv("TIMEWEB_MAX_RETRIES", 2)),
   },
 };

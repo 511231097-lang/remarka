@@ -4,9 +4,12 @@ import {
   BookImportError,
   detectBookFormatFromFileName,
   extractSingleFb2FromZip,
+  getImportAnalysisModelLabel,
   inferBookTitleFromFileName,
+  normalizeImportAnalysisModelId,
   ProjectImportPayloadSchema,
   type BookFormat,
+  type ImportAnalysisModelId,
   type ProjectImportPayload,
   EMPTY_RICH_TEXT_DOCUMENT,
 } from "@remarka/contracts";
@@ -46,6 +49,25 @@ export class ImportValidationError extends Error {
   }
 }
 
+function jsonObject(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  return value as Record<string, unknown>;
+}
+
+function isTimewebExtractionProvider(): boolean {
+  const provider = String(process.env.EXTRACT_LLM_PROVIDER || process.env.LLM_PROVIDER || "vertex")
+    .trim()
+    .toLowerCase();
+  return provider === "timeweb";
+}
+
+function parseRequestedImportModel(raw: string | null | undefined): ImportAnalysisModelId | null {
+  if (!isTimewebExtractionProvider()) return null;
+  const normalized = String(raw || "").trim();
+  if (!normalized) return null;
+  return normalizeImportAnalysisModelId(normalized);
+}
+
 function serializeProjectImport(run: {
   id: string;
   projectId: string;
@@ -63,9 +85,17 @@ function serializeProjectImport(run: {
   chapterCount: number | null;
   startedAt: Date | null;
   completedAt: Date | null;
+  metadataJson?: unknown;
   createdAt: Date;
   updatedAt: Date;
 }): ProjectImportPayload {
+  const metadata = jsonObject(run.metadataJson);
+  const selectedModelId =
+    parseRequestedImportModel(String(metadata.selectedModelId || "")) ||
+    parseRequestedImportModel(String(metadata.requestedAnalysisModelId || "")) ||
+    null;
+  const selectedModelLabel = selectedModelId ? getImportAnalysisModelLabel(selectedModelId) : null;
+
   return ProjectImportPayloadSchema.parse({
     id: run.id,
     projectId: run.projectId,
@@ -76,6 +106,8 @@ function serializeProjectImport(run: {
     chapterCount: run.chapterCount,
     startedAt: run.startedAt ? run.startedAt.toISOString() : null,
     completedAt: run.completedAt ? run.completedAt.toISOString() : null,
+    selectedModelId,
+    selectedModelLabel,
     createdAt: run.createdAt.toISOString(),
     updatedAt: run.updatedAt.toISOString(),
   });
@@ -91,6 +123,7 @@ export interface CreateProjectImportInput {
   bytes: Uint8Array;
   requestedTitle?: string | null;
   requestedDescription?: string | null;
+  requestedAnalysisModelId?: string | null;
 }
 
 export async function createProjectImportFromUpload(input: CreateProjectImportInput): Promise<{
@@ -140,6 +173,15 @@ export async function createProjectImportFromUpload(input: CreateProjectImportIn
 
   const requestedTitle = normalizeTitle(input.requestedTitle);
   const requestedDescription = normalizeTitle(input.requestedDescription) || null;
+  const allowModelSelection = isTimewebExtractionProvider();
+  const requestedAnalysisModelRaw = normalizeTitle(input.requestedAnalysisModelId);
+  const requestedAnalysisModelId = allowModelSelection ? parseRequestedImportModel(requestedAnalysisModelRaw) : null;
+  if (allowModelSelection && requestedAnalysisModelRaw && !requestedAnalysisModelId) {
+    throw new ImportValidationError("IMPORT_INVALID_MODEL", "Unsupported analysis model");
+  }
+  const requestedAnalysisModelLabel = requestedAnalysisModelId
+    ? getImportAnalysisModelLabel(requestedAnalysisModelId)
+    : null;
   const fallbackTitle = inferBookTitleFromFileName(fileName) || DEFAULT_PROJECT_TITLE;
   const projectTitle = requestedTitle || fallbackTitle;
   const titleProvided = Boolean(requestedTitle);
@@ -205,6 +247,8 @@ export async function createProjectImportFromUpload(input: CreateProjectImportIn
             titleProvided,
             uploadedFileName: fileName,
             uploadedAt: new Date().toISOString(),
+            selectedModelId: requestedAnalysisModelId,
+            selectedModelLabel: requestedAnalysisModelLabel,
           },
         },
       });
@@ -257,6 +301,7 @@ export async function getLatestProjectImport(projectId: string): Promise<Project
       stage: true,
       error: true,
       chapterCount: true,
+      metadataJson: true,
       startedAt: true,
       completedAt: true,
       createdAt: true,
@@ -283,6 +328,7 @@ export function serializeLatestImportForProject(project: {
       | "failed";
     error: string | null;
     chapterCount: number | null;
+    metadataJson?: unknown;
     startedAt: Date | null;
     completedAt: Date | null;
     createdAt: Date;

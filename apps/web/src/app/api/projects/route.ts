@@ -22,6 +22,16 @@ export async function GET() {
         projectId: chapter.projectId,
         title: chapter.title,
         orderIndex: chapter.orderIndex,
+        latestRun: chapter.latestRun
+          ? {
+              id: chapter.latestRun.id,
+              state: chapter.latestRun.state,
+              phase: chapter.latestRun.phase,
+              error: chapter.latestRun.error,
+              createdAt: chapter.latestRun.createdAt.toISOString(),
+              updatedAt: chapter.latestRun.updatedAt.toISOString(),
+            }
+          : null,
         createdAt: chapter.createdAt.toISOString(),
         updatedAt: chapter.updatedAt.toISOString(),
       })),
@@ -50,6 +60,7 @@ export async function POST(request: Request) {
             projectId: chapter.projectId,
             title: chapter.title,
             orderIndex: chapter.orderIndex,
+            latestRun: null,
             createdAt: chapter.createdAt.toISOString(),
             updatedAt: chapter.updatedAt.toISOString(),
           })),

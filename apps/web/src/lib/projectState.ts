@@ -2,9 +2,11 @@ import { prisma } from "@remarka/db";
 import type { Prisma } from "@prisma/client";
 import {
   EMPTY_RICH_TEXT_DOCUMENT,
+  normalizeImportAnalysisModelId,
   QualityFlagsSchema,
   RichTextDocumentSchema,
   canonicalizeDocumentContent,
+  type ImportAnalysisModelId,
   richTextToPlainText,
   type AnalysisRunPayload,
   type DocumentSnapshot,
@@ -14,6 +16,13 @@ import {
 } from "@remarka/contracts";
 
 const DEFAULT_CHAPTER_TITLE = "Новая глава";
+
+function isTimewebExtractionProvider(): boolean {
+  const provider = String(process.env.EXTRACT_LLM_PROVIDER || process.env.LLM_PROVIDER || "vertex")
+    .trim()
+    .toLowerCase();
+  return provider === "timeweb";
+}
 
 export class ProjectNotFoundError extends Error {
   constructor(projectId: string) {
@@ -86,6 +95,23 @@ type ProjectRecord = {
   }>;
 };
 
+type AnalysisRunSummaryRecord = {
+  id: string;
+  state: AnalysisRunPayload["state"];
+  phase: AnalysisRunPayload["phase"];
+  error: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type ProjectListChapterRecord = ChapterRecord & {
+  latestRun: AnalysisRunSummaryRecord | null;
+};
+
+type ProjectListRecord = Omit<ProjectRecord, "chapters"> & {
+  chapters: ProjectListChapterRecord[];
+};
+
 function parseQualityFlags(value: unknown): QualityFlags | null {
   const parsed = QualityFlagsSchema.safeParse(value);
   return parsed.success ? parsed.data : null;
@@ -123,10 +149,12 @@ function serializeSnapshot(document: any, mentions: any[]): DocumentSnapshot {
     mentions: mentions.map((mention) => ({
       id: mention.id,
       entityId: mention.entityId,
+      mentionType: mention.mentionType,
       paragraphIndex: mention.paragraphIndex,
       startOffset: mention.startOffset,
       endOffset: mention.endOffset,
       sourceText: mention.sourceText,
+      confidence: mention.confidence,
       entity: {
         id: mention.entity.id,
         type: mention.entity.type,
@@ -250,8 +278,10 @@ async function enqueueAnalysisRun(params: {
   chapterId: string;
   contentVersion: number;
   idempotencyKey?: string | null;
+  requestedImportModelId?: ImportAnalysisModelId | null;
 }) {
   const idempotencyKey = String(params.idempotencyKey || "").trim() || null;
+  const requestedImportModelId = params.requestedImportModelId || null;
   const run = await params.tx.analysisRun.create({
     data: {
       projectId: params.projectId,
@@ -261,6 +291,16 @@ async function enqueueAnalysisRun(params: {
       state: "queued",
       phase: "queued",
       idempotencyKey,
+      ...(requestedImportModelId
+        ? {
+            qualityFlags: {
+              requestedExtractionModel: {
+                provider: "timeweb",
+                modelId: requestedImportModelId,
+              },
+            } as Prisma.InputJsonValue,
+          }
+        : {}),
     },
   });
 
@@ -305,6 +345,28 @@ async function enqueueAnalysisRun(params: {
   return run;
 }
 
+async function resolveProjectRequestedImportModelId(projectId: string, tx: any = prisma): Promise<ImportAnalysisModelId | null> {
+  if (!isTimewebExtractionProvider()) return null;
+
+  const latestImport = await tx.projectImport.findFirst({
+    where: { projectId },
+    orderBy: [{ createdAt: "desc" }],
+    select: {
+      metadataJson: true,
+    },
+  });
+
+  const metadata = latestImport?.metadataJson;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+
+  const record = metadata as Record<string, unknown>;
+  return (
+    normalizeImportAnalysisModelId(record.selectedModelId) ||
+    normalizeImportAnalysisModelId(record.requestedAnalysisModelId) ||
+    null
+  );
+}
+
 async function loadDocumentState(projectId: string, chapterId?: string | null, tx: any = prisma): Promise<DocumentViewResponse> {
   const document = await getOrCreateDocument(projectId, chapterId, tx);
 
@@ -341,12 +403,40 @@ async function loadDocumentState(projectId: string, chapterId?: string | null, t
   };
 }
 
-export async function listProjects(): Promise<ProjectRecord[]> {
-  return prisma.project.findMany({
+export async function listProjects(): Promise<ProjectListRecord[]> {
+  const projects = await prisma.project.findMany({
     orderBy: { updatedAt: "desc" },
     include: {
       chapters: {
         orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+        include: {
+          document: {
+            select: {
+              currentRun: {
+                select: {
+                  id: true,
+                  state: true,
+                  phase: true,
+                  error: true,
+                  createdAt: true,
+                  updatedAt: true,
+                },
+              },
+              analysisRuns: {
+                orderBy: [{ createdAt: "desc" }],
+                take: 1,
+                select: {
+                  id: true,
+                  state: true,
+                  phase: true,
+                  error: true,
+                  createdAt: true,
+                  updatedAt: true,
+                },
+              },
+            },
+          },
+        },
       },
       projectImports: {
         orderBy: [{ createdAt: "desc" }],
@@ -354,6 +444,36 @@ export async function listProjects(): Promise<ProjectRecord[]> {
       },
     },
   });
+
+  return projects.map((project: any) => ({
+    id: project.id,
+    title: project.title,
+    description: project.description,
+    createdAt: project.createdAt,
+    updatedAt: project.updatedAt,
+    projectImports: project.projectImports,
+    chapters: project.chapters.map((chapter: any) => {
+      const latestRun = chapter.document?.currentRun || chapter.document?.analysisRuns?.[0] || null;
+      return {
+        id: chapter.id,
+        projectId: chapter.projectId,
+        title: chapter.title,
+        orderIndex: chapter.orderIndex,
+        createdAt: chapter.createdAt,
+        updatedAt: chapter.updatedAt,
+        latestRun: latestRun
+          ? {
+              id: latestRun.id,
+              state: latestRun.state,
+              phase: latestRun.phase,
+              error: latestRun.error || null,
+              createdAt: latestRun.createdAt,
+              updatedAt: latestRun.updatedAt,
+            }
+          : null,
+      };
+    }),
+  }));
 }
 
 export async function createProject(input: { title: string; description?: string | null }): Promise<ProjectRecord> {
@@ -391,6 +511,41 @@ export async function createProject(input: { title: string; description?: string
       ...project,
       chapters: [firstChapter],
       projectImports: [],
+    };
+  });
+}
+
+export async function deleteProject(projectId: string): Promise<{
+  deletedProjectId: string;
+  fallbackProjectId: string | null;
+  fallbackChapterId: string | null;
+}> {
+  return prisma.$transaction(async (tx: any) => {
+    await ensureProjectExists(projectId, tx);
+
+    const fallbackProject = await tx.project.findFirst({
+      where: {
+        id: { not: projectId },
+      },
+      orderBy: [{ updatedAt: "desc" }, { createdAt: "desc" }],
+      include: {
+        chapters: {
+          orderBy: [{ orderIndex: "asc" }, { createdAt: "asc" }],
+          select: {
+            id: true,
+          },
+        },
+      },
+    });
+
+    await tx.project.delete({
+      where: { id: projectId },
+    });
+
+    return {
+      deletedProjectId: projectId,
+      fallbackProjectId: fallbackProject?.id || null,
+      fallbackChapterId: fallbackProject?.chapters[0]?.id || null,
     };
   });
 }
@@ -644,6 +799,7 @@ export async function saveProjectDocument(
       },
     });
 
+    const requestedImportModelId = await resolveProjectRequestedImportModelId(projectId, tx);
     const run = await enqueueAnalysisRun({
       tx,
       projectId,
@@ -651,6 +807,7 @@ export async function saveProjectDocument(
       chapterId: chapter.id,
       contentVersion: document.contentVersion,
       idempotencyKey,
+      requestedImportModelId,
     });
 
     await tx.project.update({
@@ -738,6 +895,7 @@ export async function rerunProjectChapterAnalysis(
       }
     }
 
+    const requestedImportModelId = await resolveProjectRequestedImportModelId(projectId, tx);
     const run = await enqueueAnalysisRun({
       tx,
       projectId,
@@ -745,6 +903,7 @@ export async function rerunProjectChapterAnalysis(
       chapterId: chapter.id,
       contentVersion: document.contentVersion,
       idempotencyKey,
+      requestedImportModelId,
     });
 
     await tx.project.update({

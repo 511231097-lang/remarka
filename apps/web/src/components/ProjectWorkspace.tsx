@@ -20,11 +20,13 @@ import {
   richTextToPlainText,
   type AnalysisRunPayload,
   type DocumentPayload,
+  type EntityType,
   type ProjectImportPayload,
 } from "@remarka/contracts";
 import { NarrativeEditor } from "@/components/NarrativeEditor";
 import {
   fetchProjectDocument,
+  fetchProjectCharacterSearch,
   fetchProjectEntities,
   fetchProjectEntityDetails,
   fetchProjectImportStatus,
@@ -34,6 +36,7 @@ import {
   type ProjectDocumentState,
   type ProjectEntityDetails,
   type ProjectEntityListItem,
+  type ProjectCharacterSearchResult,
 } from "@/lib/apiClient";
 import { buildSearchWithEntity, getEntityIdFromSearch, getMentionIdFromSearch } from "@/lib/entityDrawerUrl";
 import {
@@ -47,6 +50,8 @@ interface ProjectWorkspaceProps {
   projectId: string;
   chapterId: string;
 }
+
+const ACTIVE_ANALYSIS_MODEL_LABEL = "Gemini 3.1 Flash Lite (Vertex AI)";
 
 function serializeRichContent(value: unknown): string {
   return JSON.stringify(value || EMPTY_RICH_TEXT_DOCUMENT);
@@ -92,7 +97,10 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
   const [run, setRun] = useState<AnalysisRunPayload | null>(null);
   const [latestImport, setLatestImport] = useState<ProjectImportPayload | null>(null);
   const [draftRichContent, setDraftRichContent] = useState<unknown>(EMPTY_RICH_TEXT_DOCUMENT);
+  const [entityFilter, setEntityFilter] = useState<EntityType>("character");
+  const [entitySearchQuery, setEntitySearchQuery] = useState("");
   const [entities, setEntities] = useState<ProjectEntityListItem[]>([]);
+  const [characterSearch, setCharacterSearch] = useState<ProjectCharacterSearchResult>({ characters: [], mentions: [] });
   const [entityDetails, setEntityDetails] = useState<ProjectEntityDetails | null>(null);
   const [isEntityDetailsLoading, setIsEntityDetailsLoading] = useState(false);
   const [isInspectorOpen, setIsInspectorOpen] = useState(false);
@@ -167,9 +175,12 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
   }, [projectId, chapterId, applyServerDocument, debugLog]);
 
   const loadEntities = useCallback(async () => {
-    const loaded = await fetchProjectEntities(projectId);
+    const loaded = await fetchProjectEntities(projectId, {
+      type: entityFilter,
+      q: entitySearchQuery.trim() || undefined,
+    });
     setEntities(loaded);
-  }, [projectId]);
+  }, [projectId, entityFilter, entitySearchQuery]);
 
   const loadImportStatus = useCallback(async () => {
     const status = await fetchProjectImportStatus(projectId);
@@ -197,7 +208,10 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
     setRun(null);
     setLatestImport(null);
     setDraftRichContent(EMPTY_RICH_TEXT_DOCUMENT);
+    setEntityFilter("character");
+    setEntitySearchQuery("");
     setSaveStatus("idle");
+    setCharacterSearch({ characters: [], mentions: [] });
     setEntityDetails(null);
     setIsEntityDetailsLoading(false);
     setIsInspectorOpen(false);
@@ -227,7 +241,10 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
         debugLog("initialLoad:start");
         const [loadedDocument, loadedEntities, loadedImport] = await Promise.all([
           fetchProjectDocument(projectId, chapterId),
-          fetchProjectEntities(projectId),
+          fetchProjectEntities(projectId, {
+            type: entityFilter,
+            q: entitySearchQuery.trim() || undefined,
+          }),
           fetchProjectImportStatus(projectId),
         ]);
         if (!active) return;
@@ -257,6 +274,44 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
       active = false;
     };
   }, [projectId, chapterId, applyServerDocument, debugLog]);
+
+  useEffect(() => {
+    void loadEntities().catch((entityError) => {
+      setError(entityError instanceof Error ? entityError.message : "Ошибка загрузки сущностей");
+    });
+  }, [loadEntities]);
+
+  useEffect(() => {
+    if (entityFilter !== "character") {
+      setCharacterSearch({ characters: [], mentions: [] });
+      return;
+    }
+
+    const query = entitySearchQuery.trim();
+    if (!query) {
+      setCharacterSearch({ characters: [], mentions: [] });
+      return;
+    }
+
+    let active = true;
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          const result = await fetchProjectCharacterSearch(projectId, query, { limit: 50 });
+          if (!active) return;
+          setCharacterSearch(result);
+        } catch (searchError) {
+          if (!active) return;
+          setError(searchError instanceof Error ? searchError.message : "Ошибка поиска персонажей");
+        }
+      })();
+    }, 220);
+
+    return () => {
+      active = false;
+      window.clearTimeout(timer);
+    };
+  }, [projectId, entityFilter, entitySearchQuery]);
 
   useEffect(() => {
     const isImportActive = Boolean(latestImport && ["queued", "running"].includes(latestImport.state));
@@ -479,13 +534,14 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
 
   const groupedEntities = useMemo(
     () =>
-      ENTITY_TYPE_OPTIONS.map((option) => ({
+      ENTITY_TYPE_OPTIONS.filter((option) => option.value === entityFilter).map((option) => ({
         type: option.value,
         label: ENTITY_TYPE_LABELS_RU[option.value],
         items: entities.filter((entity) => entity.type === option.value),
       })),
-    [entities]
+    [entities, entityFilter]
   );
+  const showCharacterSearchResults = entityFilter === "character" && entitySearchQuery.trim().length > 0;
 
   const activeEntityName =
     entityDetails?.name || entities.find((entity) => entity.id === activeEntityId)?.name || null;
@@ -549,6 +605,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
         ? IconCircleCheck
         : IconLoader2
     : null;
+  const importModelChipLabel = `Модель: ${ACTIVE_ANALYSIS_MODEL_LABEL}`;
   const isRunInFlight = Boolean(run && (run.state === "queued" || run.state === "running"));
   const isRerunDisabled = isImportLocked || !document || isRerunSubmitting || isRunInFlight;
 
@@ -583,6 +640,7 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
                 {importChipLabel}
               </span>
             ) : null}
+            {importModelChipLabel ? <span className="status-chip">{importModelChipLabel}</span> : null}
             <span className="status-chip">
               <IconBrain size={14} stroke={1.8} />
               {formatAnalysisStatusRu(run?.state || "queued")}
@@ -697,32 +755,111 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
         {!activeEntityId ? (
           <>
             <div className="inspector-scroll">
-              {groupedEntities.map((group) => (
-                <section key={group.type} className="entity-group">
-                  <h3>{group.label}</h3>
-                  {!group.items.length ? <p className="muted">Пока пусто</p> : null}
-                  {group.items.map((entity) => (
+              <section className="entity-group">
+                <div className="entity-filter-tabs">
+                  {ENTITY_TYPE_OPTIONS.map((option) => (
                     <button
-                      key={entity.id}
-                      className={`entity-row-btn ${activeEntityId === entity.id ? "active" : ""}`}
+                      key={option.value}
                       type="button"
-                      onClick={() => {
-                        setEntityInUrl(entity.id);
-                        setIsInspectorOpen(true);
-                      }}
+                      className={`entity-filter-tab ${entityFilter === option.value ? "active" : ""}`}
+                      onClick={() => setEntityFilter(option.value)}
                     >
-                      <div>
-                        <div className="entity-name">{entity.name}</div>
-                        <div className="entity-summary">{entity.summary || "Summary появится после анализа"}</div>
-                      </div>
-                      <div className="entity-meta">
-                        <div className="entity-type-chip">{ENTITY_TYPE_SHORT_RU[entity.type]}</div>
-                        <div className="muted">Упоминаний: {entity.mentionCount}</div>
-                      </div>
+                      {option.label}
                     </button>
                   ))}
-                </section>
-              ))}
+                </div>
+                <input
+                  className="entity-search-input"
+                  type="search"
+                  value={entitySearchQuery}
+                  onChange={(event) => setEntitySearchQuery(event.target.value)}
+                  placeholder={
+                    entityFilter === "character"
+                      ? "Поиск по имени, алиасу и упоминаниям"
+                      : `Поиск в ${ENTITY_TYPE_LABELS_RU[entityFilter].toLowerCase()}`
+                  }
+                />
+              </section>
+
+              {showCharacterSearchResults ? (
+                <>
+                  <section className="entity-group">
+                    <h3>Персонажи</h3>
+                    {!characterSearch.characters.length ? <p className="muted">Нет совпадений</p> : null}
+                    {characterSearch.characters.map((character) => (
+                      <button
+                        key={character.id}
+                        className="entity-row-btn"
+                        type="button"
+                        onClick={() => {
+                          setEntityInUrl(character.id);
+                          setIsInspectorOpen(true);
+                        }}
+                      >
+                        <div>
+                          <div className="entity-name">{character.canonicalName}</div>
+                          <div className="entity-summary">
+                            {character.shortDescription || "Описание появится после анализа"}
+                          </div>
+                        </div>
+                        <div className="entity-meta">
+                          <div className="entity-type-chip">Персонаж</div>
+                          <div className="muted">Упоминаний: {character.mentionCount}</div>
+                        </div>
+                      </button>
+                    ))}
+                  </section>
+
+                  <section className="entity-group">
+                    <h3>Упоминания</h3>
+                    {!characterSearch.mentions.length ? <p className="muted">Нет совпадений</p> : null}
+                    {characterSearch.mentions.map((mention) => (
+                      <button
+                        key={mention.id}
+                        className={`mention-item mention-item-button ${activeMentionId === mention.id ? "active" : ""}`}
+                        type="button"
+                        onClick={() => handleMentionClick({ id: mention.id, chapterId: mention.chapterId })}
+                        title={mention.sourceText}
+                      >
+                        <div>{mention.snippet || mention.sourceText}</div>
+                        <div className="muted">
+                          {mention.canonicalName}
+                          {mention.chapterTitle ? ` • ${mention.chapterTitle}` : ""}
+                        </div>
+                      </button>
+                    ))}
+                  </section>
+                </>
+              ) : null}
+
+              {!showCharacterSearchResults
+                ? groupedEntities.map((group) => (
+                    <section key={group.type} className="entity-group">
+                      <h3>{group.label}</h3>
+                      {!group.items.length ? <p className="muted">Пока пусто</p> : null}
+                      {group.items.map((entity) => (
+                        <button
+                          key={entity.id}
+                          className={`entity-row-btn ${activeEntityId === entity.id ? "active" : ""}`}
+                          type="button"
+                          onClick={() => {
+                            setEntityInUrl(entity.id);
+                            setIsInspectorOpen(true);
+                          }}
+                        >
+                          <div>
+                            <div className="entity-name">{entity.name}</div>
+                            <div className="entity-summary">{entity.summary || "Summary появится после анализа"}</div>
+                          </div>
+                          <div className="entity-meta">
+                            <div className="entity-type-chip">{ENTITY_TYPE_SHORT_RU[entity.type]}</div>
+                            <div className="muted">Упоминаний: {entity.mentionCount}</div>
+                          </div>
+                        </button>
+                      ))}
+                    </section>
+                  ))
+                : null}
             </div>
           </>
         ) : (
@@ -733,8 +870,52 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
                 <h2>{entityDetails.name}</h2>
                 <div className="entity-type-chip">{ENTITY_TYPE_SHORT_RU[entityDetails.type]}</div>
                 <p className="entity-summary">
-                  {entityDetails.summary || "Summary будет добавлен после AI-анализа документа."}
+                  {entityDetails.shortDescription || entityDetails.summary || "Summary будет добавлен после AI-анализа документа."}
                 </p>
+
+                {entityDetails.type === "character" ? (
+                  <section>
+                    <h4 className="entity-section-title">
+                      <IconQuote size={15} stroke={1.8} />
+                      Профиль
+                    </h4>
+                    <p className="muted">Упоминаний: {entityDetails.mentionCount ?? entityDetails.mentions.length}</p>
+                    {entityDetails.firstAppearance ? (
+                      <p className="muted">
+                        Первое появление: {entityDetails.firstAppearance.chapterTitle} (offset {entityDetails.firstAppearance.offset ?? 0})
+                      </p>
+                    ) : null}
+                    {entityDetails.lastAppearance ? (
+                      <p className="muted">
+                        Последнее появление: {entityDetails.lastAppearance.chapterTitle} (offset {entityDetails.lastAppearance.offset ?? 0})
+                      </p>
+                    ) : null}
+                  </section>
+                ) : null}
+
+                {entityDetails.type === "character" ? (
+                  <section>
+                    <h4 className="entity-section-title">Алиасы</h4>
+                    {!entityDetails.aliases?.length ? <p className="muted">Нет</p> : null}
+                    {entityDetails.aliases?.map((alias) => (
+                      <div key={alias.id} className="muted">
+                        {alias.value} ({alias.aliasType})
+                      </div>
+                    ))}
+                  </section>
+                ) : null}
+
+                {entityDetails.type === "character" ? (
+                  <section>
+                    <h4 className="entity-section-title">Присутствие по главам</h4>
+                    {!entityDetails.chapters?.length ? <p className="muted">Нет</p> : null}
+                    {entityDetails.chapters?.map((chapter) => (
+                      <div key={chapter.chapterId} className="muted">
+                        {chapter.chapterTitle}: {chapter.mentionCount}
+                      </div>
+                    ))}
+                  </section>
+                ) : null}
 
                 <section>
                   <h4 className="entity-section-title">
@@ -786,7 +967,12 @@ export function ProjectWorkspace({ projectId, chapterId }: ProjectWorkspaceProps
                       onClick={() => handleMentionClick(mention)}
                       title={mention.sourceText}
                     >
-                      {mention.snippet || mention.sourceText}
+                      <div>{mention.snippet || mention.sourceText}</div>
+                      <div className="muted">
+                        {mention.mentionType || "alias"}
+                        {typeof mention.confidence === "number" ? ` • conf ${mention.confidence.toFixed(2)}` : ""}
+                        {mention.chapterTitle ? ` • ${mention.chapterTitle}` : ""}
+                      </div>
                     </button>
                   ))}
                 </section>

@@ -39,6 +39,9 @@ NAME_LIKE_RE = re.compile(
     r"(?:[А-ЯЁ][а-яё]+(?:[-'][А-ЯЁа-яё]+)?)(?:\s+[А-ЯЁ][а-яё]+(?:[-'][А-ЯЁа-яё]+)?){0,2}",
     re.UNICODE,
 )
+TARGET_CHUNK_WORDS = 1800
+MIN_CHUNK_WORDS = 900
+CHUNK_OVERLAP_RATIO = 0.12
 
 morph = pymorphy2.MorphAnalyzer() if pymorphy2 else None
 
@@ -65,6 +68,7 @@ class CandidateOut(BaseModel):
     candidateId: str
     text: str
     normalizedText: str
+    chunkId: Optional[str] = None
     paragraphIndex: int
     startOffset: int
     endOffset: int
@@ -74,7 +78,17 @@ class CandidateOut(BaseModel):
 class SnippetOut(BaseModel):
     snippetId: str
     paragraphIndex: int
+    chunkId: Optional[str] = None
     text: str
+
+
+class ChunkOut(BaseModel):
+    chunkId: str
+    startOffset: int
+    endOffset: int
+    text: str
+    paragraphStart: int
+    paragraphEnd: int
 
 
 class PrepassResponse(BaseModel):
@@ -82,6 +96,7 @@ class PrepassResponse(BaseModel):
     paragraphs: List[ParagraphOut]
     candidates: List[CandidateOut]
     snippets: List[SnippetOut]
+    chunks: List[ChunkOut]
 
 
 def canonicalize_content(content: str) -> str:
@@ -105,6 +120,82 @@ def split_paragraphs(content: str) -> List[ParagraphOut]:
         offset += len(text) + 2
 
     return paragraphs
+
+
+def paragraph_end_offset(paragraph: ParagraphOut) -> int:
+    return paragraph.startOffset + len(paragraph.text)
+
+
+def paragraph_word_count(paragraph: ParagraphOut) -> int:
+    return max(1, len(WORD_RE.findall(paragraph.text)))
+
+
+def build_chunks(paragraphs: List[ParagraphOut]) -> List[ChunkOut]:
+    if not paragraphs:
+        return []
+
+    chunks: List[ChunkOut] = []
+    i = 0
+    chunk_index = 0
+
+    while i < len(paragraphs):
+        start = i
+        words = 0
+        end = i
+
+        while end < len(paragraphs):
+            words += paragraph_word_count(paragraphs[end])
+            end += 1
+            if words >= TARGET_CHUNK_WORDS:
+                break
+
+        if words < MIN_CHUNK_WORDS and end < len(paragraphs):
+            while end < len(paragraphs) and words < MIN_CHUNK_WORDS:
+                words += paragraph_word_count(paragraphs[end])
+                end += 1
+
+        end = max(start + 1, min(end, len(paragraphs)))
+        chunk_paragraphs = paragraphs[start:end]
+        if not chunk_paragraphs:
+            break
+
+        chunk_index += 1
+        chunks.append(
+            ChunkOut(
+                chunkId=f"chunk:{chunk_index}",
+                startOffset=chunk_paragraphs[0].startOffset,
+                endOffset=paragraph_end_offset(chunk_paragraphs[-1]),
+                text="\n\n".join(item.text for item in chunk_paragraphs),
+                paragraphStart=chunk_paragraphs[0].index,
+                paragraphEnd=chunk_paragraphs[-1].index,
+            )
+        )
+
+        if end >= len(paragraphs):
+            break
+
+        overlap_target_words = max(1, int(words * CHUNK_OVERLAP_RATIO))
+        overlap_words = 0
+        overlap_count = 0
+        back = end - 1
+        while back >= start:
+            overlap_words += paragraph_word_count(paragraphs[back])
+            overlap_count += 1
+            if overlap_words >= overlap_target_words:
+                break
+            back -= 1
+
+        next_start = max(start + 1, end - overlap_count)
+        i = min(next_start, len(paragraphs))
+
+    return chunks
+
+
+def find_chunk_id_for_paragraph(chunks: List[ChunkOut], paragraph_index: int) -> Optional[str]:
+    for chunk in chunks:
+        if chunk.paragraphStart <= paragraph_index <= chunk.paragraphEnd:
+            return chunk.chunkId
+    return None
 
 
 def normalize_phrase(text: str) -> str:
@@ -155,7 +246,7 @@ def extract_with_yargy(paragraph_text: str) -> List[tuple[int, int, str]]:
     return out
 
 
-def build_candidates(paragraphs: List[ParagraphOut]) -> List[CandidateOut]:
+def build_candidates(paragraphs: List[ParagraphOut], chunks: List[ChunkOut]) -> List[CandidateOut]:
     candidates: List[CandidateOut] = []
     dedupe: Dict[str, CandidateOut] = {}
 
@@ -184,6 +275,7 @@ def build_candidates(paragraphs: List[ParagraphOut]) -> List[CandidateOut]:
                 candidateId=f"cand:{paragraph.index}:{local_start}:{local_end}:{len(candidates)+1}",
                 text=text,
                 normalizedText=normalized,
+                chunkId=find_chunk_id_for_paragraph(chunks, paragraph.index),
                 paragraphIndex=paragraph.index,
                 startOffset=start_offset,
                 endOffset=end_offset,
@@ -196,7 +288,7 @@ def build_candidates(paragraphs: List[ParagraphOut]) -> List[CandidateOut]:
     return candidates
 
 
-def build_snippets(paragraphs: List[ParagraphOut], candidates: List[CandidateOut]) -> List[SnippetOut]:
+def build_snippets(paragraphs: List[ParagraphOut], candidates: List[CandidateOut], chunks: List[ChunkOut]) -> List[SnippetOut]:
     snippet_map: Dict[int, SnippetOut] = {}
 
     for candidate in candidates:
@@ -204,6 +296,7 @@ def build_snippets(paragraphs: List[ParagraphOut], candidates: List[CandidateOut
         snippet_map[paragraph.index] = SnippetOut(
             snippetId=f"snip:{paragraph.index}",
             paragraphIndex=paragraph.index,
+            chunkId=candidate.chunkId or find_chunk_id_for_paragraph(chunks, paragraph.index),
             text=paragraph.text,
         )
 
@@ -212,6 +305,7 @@ def build_snippets(paragraphs: List[ParagraphOut], candidates: List[CandidateOut
             snippet_map[paragraph.index] = SnippetOut(
                 snippetId=f"snip:{paragraph.index}",
                 paragraphIndex=paragraph.index,
+                chunkId=find_chunk_id_for_paragraph(chunks, paragraph.index),
                 text=paragraph.text,
             )
 
@@ -228,12 +322,14 @@ def health() -> dict:
 @app.post("/prepass", response_model=PrepassResponse)
 def prepass(payload: PrepassRequest) -> PrepassResponse:
     paragraphs = split_paragraphs(payload.content)
-    candidates = build_candidates(paragraphs)
-    snippets = build_snippets(paragraphs, candidates)
+    chunks = build_chunks(paragraphs)
+    candidates = build_candidates(paragraphs, chunks)
+    snippets = build_snippets(paragraphs, candidates, chunks)
 
     return PrepassResponse(
         contentVersion=max(0, payload.contentVersion),
         paragraphs=paragraphs,
         candidates=candidates,
         snippets=snippets,
+        chunks=chunks,
     )

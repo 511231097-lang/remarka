@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  classifyMentionTypeFromAlias,
   ExtractionResultSchema,
+  isPronounConfidenceAccepted,
+  normalizeAliasType,
   normalizeEntityName,
   resolveMentionOffsets,
   richTextToPlainText,
@@ -11,6 +14,44 @@ describe("contracts utilities", () => {
   it("normalizes entity names for dedupe", () => {
     expect(normalizeEntityName("  Eren Voss  ")).toBe("eren voss");
     expect(normalizeEntityName("Eren, Voss!")).toBe("eren voss");
+  });
+
+  it("normalizes alias type with fallback", () => {
+    expect(normalizeAliasType("nickname")).toBe("nickname");
+    expect(normalizeAliasType("title")).toBe("title");
+    expect(normalizeAliasType("unknown", "descriptor")).toBe("descriptor");
+  });
+
+  it("classifies mention type from alias metadata", () => {
+    expect(
+      classifyMentionTypeFromAlias({
+        canonicalName: "Гарри Поттер",
+        alias: "Гарри Поттер",
+        aliasType: "name",
+      })
+    ).toBe("named");
+
+    expect(
+      classifyMentionTypeFromAlias({
+        canonicalName: "Гарри Поттер",
+        alias: "директор",
+        aliasType: "descriptor",
+      })
+    ).toBe("descriptor");
+
+    expect(
+      classifyMentionTypeFromAlias({
+        canonicalName: "Гарри Поттер",
+        alias: "Гарри",
+        aliasType: "nickname",
+      })
+    ).toBe("alias");
+  });
+
+  it("applies pronoun confidence threshold", () => {
+    expect(isPronounConfidenceAccepted(0.9)).toBe(true);
+    expect(isPronounConfidenceAccepted(0.899)).toBe(false);
+    expect(isPronounConfidenceAccepted(0.88, 0.88)).toBe(true);
   });
 
   it("splits paragraphs and computes deterministic starts", () => {

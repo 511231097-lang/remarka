@@ -9,6 +9,7 @@ export async function POST(request: Request) {
     const file = formData.get("file");
     const title = String(formData.get("title") || "").trim() || null;
     const description = String(formData.get("description") || "").trim() || null;
+    const analysisModelId = String(formData.get("analysisModelId") || "").trim() || null;
 
     if (!(file instanceof File)) {
       return Response.json(
@@ -27,6 +28,7 @@ export async function POST(request: Request) {
       bytes,
       requestedTitle: title,
       requestedDescription: description,
+      requestedAnalysisModelId: analysisModelId,
     });
 
     return Response.json(

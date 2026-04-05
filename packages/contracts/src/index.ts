@@ -34,6 +34,14 @@ export const MENTION_CANDIDATE_TYPES = ["alias", "role", "coreference", "ambiguo
 export type MentionCandidateType = (typeof MENTION_CANDIDATE_TYPES)[number];
 export const MentionCandidateTypeSchema = z.enum(MENTION_CANDIDATE_TYPES);
 
+export const MENTION_TYPES = ["named", "alias", "descriptor", "pronoun"] as const;
+export type MentionType = (typeof MENTION_TYPES)[number];
+export const MentionTypeSchema = z.enum(MENTION_TYPES);
+
+export const ALIAS_TYPES = ["name", "nickname", "title", "descriptor"] as const;
+export type AliasType = (typeof ALIAS_TYPES)[number];
+export const AliasTypeSchema = z.enum(ALIAS_TYPES);
+
 export const RichTextDocumentSchema = z
   .object({
     type: z.literal("doc"),
@@ -83,6 +91,30 @@ export function normalizeEntityName(name: string): string {
     .replace(/["'`’.,!?;:()\[\]{}]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+export function normalizeAliasType(value: unknown, fallback: AliasType = "name"): AliasType {
+  const raw = String(value || "").trim().toLowerCase();
+  const parsed = AliasTypeSchema.safeParse(raw);
+  return parsed.success ? parsed.data : fallback;
+}
+
+export function classifyMentionTypeFromAlias(params: {
+  canonicalName: string;
+  alias: string;
+  aliasType: AliasType;
+}): MentionType {
+  const aliasNormalized = normalizeEntityName(params.alias);
+  const canonicalNormalized = normalizeEntityName(params.canonicalName);
+  if (aliasNormalized && canonicalNormalized && aliasNormalized === canonicalNormalized) return "named";
+  if (params.aliasType === "descriptor" || params.aliasType === "title") return "descriptor";
+  return "alias";
+}
+
+export function isPronounConfidenceAccepted(confidence: number, threshold = 0.9): boolean {
+  if (!Number.isFinite(confidence)) return false;
+  if (!Number.isFinite(threshold)) return false;
+  return confidence >= threshold;
 }
 
 export function canonicalizeDocumentContent(content: string): string {
@@ -276,10 +308,22 @@ export const NameCandidateSchema = z
     candidateId: z.string().min(1),
     text: z.string().min(1),
     normalizedText: z.string().min(1),
+    chunkId: z.string().min(1).optional(),
     paragraphIndex: z.number().int().nonnegative(),
     startOffset: z.number().int().nonnegative(),
     endOffset: z.number().int().nonnegative(),
     confidence: z.number().min(0).max(1),
+  })
+  .strict();
+
+export const ChunkSchema = z
+  .object({
+    chunkId: z.string().min(1),
+    startOffset: z.number().int().nonnegative(),
+    endOffset: z.number().int().nonnegative(),
+    text: z.string(),
+    paragraphStart: z.number().int().nonnegative(),
+    paragraphEnd: z.number().int().nonnegative(),
   })
   .strict();
 
@@ -288,6 +332,7 @@ export const ContextSnippetSchema = z
     snippetId: z.string().min(1),
     paragraphIndex: z.number().int().nonnegative(),
     text: z.string().min(1),
+    chunkId: z.string().min(1).optional(),
   })
   .strict();
 
@@ -305,6 +350,7 @@ export const PrepassResultSchema = z
     ),
     candidates: z.array(NameCandidateSchema),
     snippets: z.array(ContextSnippetSchema),
+    chunks: z.array(ChunkSchema).default([]),
   })
   .strict();
 
@@ -314,6 +360,7 @@ export const EntityPassAliasSchema = z
   .object({
     alias: z.string().min(1),
     normalizedAlias: z.string().min(1),
+    aliasType: AliasTypeSchema.default("name"),
     observed: z.boolean(),
     confidence: z.number().min(0).max(1),
   })
@@ -358,6 +405,7 @@ export const PatchWindowOpSchema = z
     op: z.enum(["accept_candidate", "reject_candidate", "link_candidate", "create_entity_and_link", "set_location_parent"]),
     candidateId: z.string().min(1),
     entityId: z.string().nullable(),
+    confidence: z.number().min(0).max(1).optional(),
     newEntity: z
       .object({
         type: EntityTypeSchema,
@@ -392,6 +440,7 @@ export const EntityAliasPayloadSchema = z
     entityId: z.string(),
     alias: z.string().min(1),
     normalizedAlias: z.string().min(1),
+    aliasType: AliasTypeSchema,
     source: z.string().min(1),
     confidence: z.number().min(0).max(1),
     observed: z.boolean(),
@@ -453,10 +502,12 @@ export const SnapshotMentionSchema = z
   .object({
     id: z.string(),
     entityId: z.string(),
+    mentionType: MentionTypeSchema,
     paragraphIndex: z.number().int().nonnegative(),
     startOffset: z.number().int().nonnegative(),
     endOffset: z.number().int().nonnegative(),
     sourceText: z.string(),
+    confidence: z.number().min(0).max(1),
     entity: z
       .object({
         id: z.string(),

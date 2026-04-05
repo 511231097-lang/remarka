@@ -111,6 +111,58 @@ async function handleOutboxEvent(entry: any) {
   logger.warn({ eventType, outboxId: entry.id }, "Skipping unknown outbox event type");
 }
 
+async function processOutboxEntry(entry: any) {
+  try {
+    await handleOutboxEvent(entry);
+    await prisma.outbox.update({
+      where: { id: entry.id },
+      data: {
+        processedAt: new Date(),
+        error: null,
+      },
+    });
+  } catch (error) {
+    const nextAttempt = Number(entry.attemptCount || 0) + 1;
+    const message = error instanceof Error ? error.message : String(error);
+
+    await prisma.outbox.update({
+      where: { id: entry.id },
+      data: {
+        attemptCount: nextAttempt,
+        error: message.slice(0, 2000),
+        processedAt: nextAttempt >= workerConfig.outbox.maxAttempts ? new Date() : null,
+      },
+    });
+
+    logger.error(
+      {
+        err: error,
+        outboxId: entry.id,
+        eventType: entry.eventType,
+        attempt: nextAttempt,
+      },
+      "Failed to process outbox event"
+    );
+  }
+}
+
+async function runWithConcurrency<T>(items: T[], concurrency: number, worker: (item: T) => Promise<void>) {
+  if (items.length === 0) return;
+  const safeConcurrency = Math.max(1, Math.min(concurrency, items.length));
+  let cursor = 0;
+
+  const runners = Array.from({ length: safeConcurrency }, async () => {
+    while (true) {
+      const index = cursor;
+      cursor += 1;
+      if (index >= items.length) break;
+      await worker(items[index]);
+    }
+  });
+
+  await Promise.all(runners);
+}
+
 async function pollOutboxOnce() {
   const entries = await prisma.outbox.findMany({
     where: {
@@ -120,40 +172,7 @@ async function pollOutboxOnce() {
     take: workerConfig.outbox.batchSize,
   });
 
-  for (const entry of entries) {
-    try {
-      await handleOutboxEvent(entry);
-      await prisma.outbox.update({
-        where: { id: entry.id },
-        data: {
-          processedAt: new Date(),
-          error: null,
-        },
-      });
-    } catch (error) {
-      const nextAttempt = Number(entry.attemptCount || 0) + 1;
-      const message = error instanceof Error ? error.message : String(error);
-
-      await prisma.outbox.update({
-        where: { id: entry.id },
-        data: {
-          attemptCount: nextAttempt,
-          error: message.slice(0, 2000),
-          processedAt: nextAttempt >= workerConfig.outbox.maxAttempts ? new Date() : null,
-        },
-      });
-
-      logger.error(
-        {
-          err: error,
-          outboxId: entry.id,
-          eventType: entry.eventType,
-          attempt: nextAttempt,
-        },
-        "Failed to process outbox event"
-      );
-    }
-  }
+  await runWithConcurrency(entries, workerConfig.outbox.eventConcurrency, processOutboxEntry);
 
   return entries.length;
 }
@@ -164,6 +183,7 @@ async function main() {
       pollIntervalMs: workerConfig.outbox.pollIntervalMs,
       batchSize: workerConfig.outbox.batchSize,
       maxAttempts: workerConfig.outbox.maxAttempts,
+      eventConcurrency: workerConfig.outbox.eventConcurrency,
       preprocessorUrl: workerConfig.preprocessor.url,
     },
     "Worker started"

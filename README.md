@@ -8,7 +8,7 @@ Editor-first AI narrative structure editor.
 - Node worker + pg-boss (`apps/worker`)
 - PostgreSQL + Prisma (`packages/db`)
 - Shared contracts/utilities (`packages/contracts`)
-- Timeweb OpenAI-compatible extraction pipeline
+- Provider-based extraction pipeline (Vertex AI by default)
 
 ## Quick start
 
@@ -29,7 +29,7 @@ cp apps/worker/.env.example apps/worker/.env
 3. Set required variables (minimum):
 
 - `DATABASE_URL`
-- `EXTRACT_LLM_PROVIDER` (`timeweb` or `kia`)
+- `EXTRACT_LLM_PROVIDER` (`timeweb`, `kia`, or `vertex`)
 
 If `EXTRACT_LLM_PROVIDER=timeweb`:
 - `TIMEWEB_API_TOKEN`
@@ -41,6 +41,27 @@ If `EXTRACT_LLM_PROVIDER=kia`:
 - `KIA_API_KEY`
 - `KIA_CHAT_BASE_URL` (default `https://api.kie.ai/gemini-3-flash/v1`)
 - `KIA_GEMINI_MODEL` (default `gemini-3-flash-openai`)
+
+If `EXTRACT_LLM_PROVIDER=vertex`:
+- `VERTEX_API_KEY`
+- `VERTEX_EXTRACT_MODEL` (default `gemini-3.1-flash-lite-preview`)
+- Optional `VERTEX_BASE_URL` (default `https://aiplatform.googleapis.com`)
+
+Optional run artifacts storage:
+- `ANALYSIS_ARTIFACTS_ENABLED` (`true` by default)
+- `ARTIFACTS_STORAGE_PROVIDER` (`local` or `s3`)
+
+If `ARTIFACTS_STORAGE_PROVIDER=s3`:
+- `ARTIFACTS_S3_BUCKET`
+- `ARTIFACTS_S3_REGION` (default `us-east-1`)
+- Optional `ARTIFACTS_S3_ENDPOINT`
+- Optional `ARTIFACTS_S3_KEY_PREFIX`
+- Optional `ARTIFACTS_S3_FORCE_PATH_STYLE`
+- `ARTIFACTS_S3_ACCESS_KEY_ID`
+- `ARTIFACTS_S3_SECRET_ACCESS_KEY`
+- Optional `ARTIFACTS_S3_SESSION_TOKEN`
+
+Docker compose includes MinIO for S3-compatible artifact storage.
 
 4. Generate Prisma client and apply migrations:
 
@@ -72,6 +93,8 @@ cp .env.docker.example .env.docker
 2. Fill provider values in `.env.docker`:
    - `TIMEWEB_*` when `EXTRACT_LLM_PROVIDER=timeweb`
    - `KIA_*` when `EXTRACT_LLM_PROVIDER=kia`
+   - `VERTEX_*` when `EXTRACT_LLM_PROVIDER=vertex`
+   - Artifact storage defaults to MinIO (`ARTIFACTS_STORAGE_PROVIDER=s3`, endpoint `http://minio:9000`)
 
 3. Start all services:
 
@@ -80,6 +103,8 @@ npm run docker:up
 ```
 
 4. Open [http://localhost:3000](http://localhost:3000).
+
+MinIO console: [http://localhost:9001](http://localhost:9001).
 
 Useful commands:
 
@@ -97,7 +122,7 @@ npm run docker:down
 - Entity details page with summary and mention links.
 - Background extraction pipeline:
   - `PUT /api/projects/:projectId/document` saves content and enqueues `document.extract`.
-  - worker extracts entities/mentions/annotations via Timeweb/OpenAI-compatible API.
+  - worker extracts entities/mentions/annotations via configured provider (Vertex by default).
   - stale-version protection (`contentVersion`, `lastAnalyzedVersion`).
   - basic dedupe (`projectId + type + normalizedName`).
 - SSE status endpoint: `GET /api/projects/:projectId/stream`.

@@ -27,19 +27,41 @@ export async function GET(request: Request, context: RouteContext) {
     return Response.json({ error: "INVALID_TYPE" }, { status: 400 });
   }
 
+  const effectiveType = parsedType?.success ? parsedType.data : "character";
+
   const entities = await prisma.entity.findMany({
     where: {
       projectId,
-      ...(parsedType?.success ? { type: parsedType.data } : {}),
+      mergedIntoEntityId: null,
+      type: effectiveType,
       ...(q
         ? {
-            canonicalName: {
-              contains: q,
-              mode: "insensitive",
-            },
+            OR: [
+              {
+                canonicalName: {
+                  contains: q,
+                  mode: "insensitive",
+                },
+              },
+              {
+                aliases: {
+                  some: {
+                    alias: {
+                      contains: q,
+                      mode: "insensitive",
+                    },
+                  },
+                },
+              },
+            ],
           }
         : {}),
+      ...(effectiveType === "character" ? { mentionCount: { gt: 0 } } : {}),
     },
+    orderBy:
+      effectiveType === "character"
+        ? [{ mentionCount: "desc" }, { canonicalName: "asc" }]
+        : [{ canonicalName: "asc" }],
     include: {
       _count: {
         select: {
@@ -47,7 +69,6 @@ export async function GET(request: Request, context: RouteContext) {
         },
       },
     },
-    orderBy: [{ type: "asc" }, { canonicalName: "asc" }],
   });
 
   const locationIds = entities.filter((entity: any) => entity.type === "location").map((entity: any) => entity.id);
@@ -78,7 +99,7 @@ export async function GET(request: Request, context: RouteContext) {
       name: entity.canonicalName,
       containerEntityId: entity.type === "location" ? containerByChildId.get(entity.id) || null : null,
       summary: entity.summary,
-      mentionCount: entity._count.mentions,
+      mentionCount: entity.type === "character" ? Number(entity.mentionCount || 0) : Number(entity._count?.mentions || 0),
       createdAt: entity.createdAt.toISOString(),
       updatedAt: entity.updatedAt.toISOString(),
     })),

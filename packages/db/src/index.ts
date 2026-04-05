@@ -1,2 +1,2 @@
 export { prisma } from "./client";
-export { LocalBlobStore, type BlobStore, type BlobPutInput, type BlobPutResult } from "./blobStore";
+export { LocalBlobStore, S3BlobStore, type BlobStore, type BlobPutInput, type BlobPutResult } from "./blobStore";

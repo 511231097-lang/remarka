@@ -51,6 +51,20 @@ enum MentionCandidateType {
   ambiguous
 }
 
+enum MentionType {
+  named
+  alias
+  descriptor
+  pronoun
+}
+
+enum AliasType {
+  name
+  nickname
+  title
+  descriptor
+}
+
 enum BookFormat {
   fb2
   fb2_zip
@@ -104,21 +118,21 @@ model SourceAsset {
 }
 
 model ProjectImport {
-  id           String             @id @default(cuid())
-  projectId    String
+  id            String             @id @default(cuid())
+  projectId     String
   sourceAssetId String
-  format       BookFormat
-  state        ProjectImportState @default(queued)
-  stage        ProjectImportStage @default(queued)
-  error        String?
-  chapterCount Int?
-  metadataJson Json?
-  startedAt    DateTime?
-  completedAt  DateTime?
-  createdAt    DateTime           @default(now())
-  updatedAt    DateTime           @updatedAt
+  format        BookFormat
+  state         ProjectImportState @default(queued)
+  stage         ProjectImportStage @default(queued)
+  error         String?
+  chapterCount  Int?
+  metadataJson  Json?
+  startedAt     DateTime?
+  completedAt   DateTime?
+  createdAt     DateTime           @default(now())
+  updatedAt     DateTime           @updatedAt
 
-  project     Project    @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
   sourceAsset SourceAsset @relation(fields: [sourceAssetId], references: [id], onDelete: Restrict)
 
   @@index([projectId, createdAt])
@@ -133,23 +147,26 @@ model Chapter {
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  project      Project       @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  document     Document?
-  analysisRuns AnalysisRun[]
+  project                 Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  document                Document?
+  analysisRuns            AnalysisRun[]
+  firstAppearanceEntities Entity[]               @relation("EntityFirstAppearanceChapter")
+  lastAppearanceEntities  Entity[]               @relation("EntityLastAppearanceChapter")
+  characterStats          CharacterChapterStat[]
 
   @@index([projectId, orderIndex])
 }
 
 model Document {
-  id            String   @id @default(cuid())
-  projectId     String
-  chapterId     String   @unique
-  content       String   @db.Text
-  richContent   Json
-  contentVersion Int     @default(0)
-  currentRunId  String?
-  createdAt     DateTime @default(now())
-  updatedAt     DateTime @updatedAt
+  id             String   @id @default(cuid())
+  projectId      String
+  chapterId      String   @unique
+  content        String   @db.Text
+  richContent    Json
+  contentVersion Int      @default(0)
+  currentRunId   String?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
 
   project           Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
   chapter           Chapter            @relation(fields: [chapterId], references: [id], onDelete: Cascade)
@@ -164,28 +181,28 @@ model Document {
 }
 
 model AnalysisRun {
-  id                     String           @id @default(cuid())
-  projectId              String
-  documentId             String
-  chapterId              String
-  contentVersion         Int
-  idempotencyKey         String?
-  state                  AnalysisRunState @default(queued)
-  phase                  AnalysisRunPhase @default(queued)
-  error                  String?
-  patchBudgetReached     Boolean          @default(false)
-  uncertainCountRemaining Int             @default(0)
-  eligibleTotal          Int              @default(0)
-  eligibleResolved       Int              @default(0)
-  routingPolicyVersion   String?
-  qualityFlags           Json?
-  quickSnapshot          Json?
-  finalSnapshot          Json?
-  supersededByRunId      String?
-  startedAt              DateTime?
-  completedAt            DateTime?
-  createdAt              DateTime         @default(now())
-  updatedAt              DateTime         @updatedAt
+  id                      String           @id @default(cuid())
+  projectId               String
+  documentId              String
+  chapterId               String
+  contentVersion          Int
+  idempotencyKey          String?
+  state                   AnalysisRunState @default(queued)
+  phase                   AnalysisRunPhase @default(queued)
+  error                   String?
+  patchBudgetReached      Boolean          @default(false)
+  uncertainCountRemaining Int              @default(0)
+  eligibleTotal           Int              @default(0)
+  eligibleResolved        Int              @default(0)
+  routingPolicyVersion    String?
+  qualityFlags            Json?
+  quickSnapshot           Json?
+  finalSnapshot           Json?
+  supersededByRunId       String?
+  startedAt               DateTime?
+  completedAt             DateTime?
+  createdAt               DateTime         @default(now())
+  updatedAt               DateTime         @updatedAt
 
   project            Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
   document           Document           @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -198,51 +215,63 @@ model AnalysisRun {
   mentions           Mention[]
   patchDecisions     PatchDecision[]
 
+  @@unique([documentId, idempotencyKey])
   @@index([projectId, state])
   @@index([documentId, contentVersion])
   @@index([chapterId, createdAt])
-  @@unique([documentId, idempotencyKey])
 }
 
 model Entity {
-  id               String    @id @default(cuid())
-  projectId        String
-  type             EntityType
-  canonicalName    String
-  normalizedName   String
-  summary          String    @default("")
-  status           String    @default("active")
-  createdByRunId   String?
-  mergedIntoEntityId String?
-  lastSeenAt       DateTime?
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  id                       String     @id @default(cuid())
+  projectId                String
+  type                     EntityType
+  canonicalName            String
+  normalizedName           String
+  summary                  String     @default("")
+  mentionCount             Int        @default(0)
+  firstAppearanceChapterId String?
+  firstAppearanceOffset    Int?
+  lastAppearanceChapterId  String?
+  lastAppearanceOffset     Int?
+  status                   String     @default("active")
+  createdByRunId           String?
+  mergedIntoEntityId       String?
+  lastSeenAt               DateTime?
+  createdAt                DateTime   @default(now())
+  updatedAt                DateTime   @updatedAt
 
-  project          Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  createdByRun     AnalysisRun? @relation("CreatedEntities", fields: [createdByRunId], references: [id], onDelete: SetNull)
-  mergedIntoEntity Entity?      @relation("EntityMerge", fields: [mergedIntoEntityId], references: [id], onDelete: SetNull)
-  mergedFromEntities Entity[]   @relation("EntityMerge")
-  aliases          EntityAlias[]
-  mentions         Mention[]
-  hintedCandidates MentionCandidate[]
-  containerLinks   LocationContainment[] @relation("LocationContainmentChild")
-  containedByLinks LocationContainment[] @relation("LocationContainmentParent")
+  project                Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  createdByRun           AnalysisRun?           @relation("CreatedEntities", fields: [createdByRunId], references: [id], onDelete: SetNull)
+  firstAppearanceChapter Chapter?               @relation("EntityFirstAppearanceChapter", fields: [firstAppearanceChapterId], references: [id], onDelete: SetNull)
+  lastAppearanceChapter  Chapter?               @relation("EntityLastAppearanceChapter", fields: [lastAppearanceChapterId], references: [id], onDelete: SetNull)
+  mergedIntoEntity       Entity?                @relation("EntityMerge", fields: [mergedIntoEntityId], references: [id], onDelete: SetNull)
+  mergedFromEntities     Entity[]               @relation("EntityMerge")
+  aliases                EntityAlias[]
+  mentions               Mention[]
+  chapterStats           CharacterChapterStat[]
+  hintedCandidates       MentionCandidate[]
+  containerLinks         LocationContainment[]  @relation("LocationContainmentChild")
+  containedByLinks       LocationContainment[]  @relation("LocationContainmentParent")
 
   @@unique([projectId, type, normalizedName])
   @@index([projectId, type, canonicalName])
   @@index([projectId, type, normalizedName])
+  @@index([projectId, type, mentionCount])
+  @@index([firstAppearanceChapterId])
+  @@index([lastAppearanceChapterId])
 }
 
 model EntityAlias {
-  id              String   @id @default(cuid())
-  entityId         String
-  alias            String
-  normalizedAlias  String
-  source           String
-  confidence       Float
-  observed         Boolean  @default(true)
-  confirmedAt      DateTime?
-  createdAt        DateTime @default(now())
+  id              String    @id @default(cuid())
+  entityId        String
+  alias           String
+  normalizedAlias String
+  aliasType       AliasType @default(name)
+  source          String
+  confidence      Float
+  observed        Boolean   @default(true)
+  confirmedAt     DateTime?
+  createdAt       DateTime  @default(now())
 
   entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
 
@@ -252,28 +281,28 @@ model EntityAlias {
 }
 
 model MentionCandidate {
-  id             String                @id @default(cuid())
-  runId          String
-  documentId     String
-  contentVersion Int
-  paragraphIndex Int
-  startOffset    Int
-  endOffset      Int
-  sourceText     String
-  candidateType  MentionCandidateType
-  routing        MentionRouting        @default(deterministic)
-  decisionStatus MentionDecisionStatus @default(pending)
-  confidence     Float                 @default(0)
-  featuresJson   Json?
+  id              String                @id @default(cuid())
+  runId           String
+  documentId      String
+  contentVersion  Int
+  paragraphIndex  Int
+  startOffset     Int
+  endOffset       Int
+  sourceText      String
+  candidateType   MentionCandidateType
+  routing         MentionRouting        @default(deterministic)
+  decisionStatus  MentionDecisionStatus @default(pending)
+  confidence      Float                 @default(0)
+  featuresJson    Json?
   conflictGroupId String?
-  entityHintId   String?
-  createdAt      DateTime              @default(now())
-  updatedAt      DateTime              @updatedAt
+  entityHintId    String?
+  createdAt       DateTime              @default(now())
+  updatedAt       DateTime              @updatedAt
 
-  run       AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  document  Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  entityHint Entity?    @relation(fields: [entityHintId], references: [id], onDelete: SetNull)
-  mentions  Mention[]
+  run        AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  document   Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
+  entityHint Entity?     @relation(fields: [entityHintId], references: [id], onDelete: SetNull)
+  mentions   Mention[]
 
   @@index([runId])
   @@index([documentId, paragraphIndex])
@@ -281,19 +310,20 @@ model MentionCandidate {
 }
 
 model Mention {
-  id             String   @id @default(cuid())
+  id             String      @id @default(cuid())
   runId          String
   documentId     String
   contentVersion Int
   entityId       String
   candidateId    String?
+  mentionType    MentionType @default(alias)
   paragraphIndex Int
   startOffset    Int
   endOffset      Int
   sourceText     String
-  confidence     Float    @default(1)
-  resolvedBy     String   @default("deterministic")
-  createdAt      DateTime @default(now())
+  confidence     Float       @default(1)
+  resolvedBy     String      @default("deterministic")
+  createdAt      DateTime    @default(now())
 
   run       AnalysisRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
   document  Document          @relation(fields: [documentId], references: [id], onDelete: Cascade)
@@ -302,8 +332,25 @@ model Mention {
 
   @@index([documentId, paragraphIndex])
   @@index([documentId, entityId])
+  @@index([documentId, contentVersion, entityId])
+  @@index([entityId, mentionType])
   @@index([runId])
   @@index([candidateId])
+}
+
+model CharacterChapterStat {
+  id           String   @id @default(cuid())
+  characterId  String
+  chapterId    String
+  mentionCount Int
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  character Entity  @relation(fields: [characterId], references: [id], onDelete: Cascade)
+  chapter   Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+
+  @@unique([characterId, chapterId])
+  @@index([chapterId])
 }
 
 model PatchDecision {
@@ -327,15 +374,15 @@ model PatchDecision {
 }
 
 model Outbox {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   aggregateType String
   aggregateId   String
   eventType     String
   payloadJson   Json
-  createdAt     DateTime @default(now())
+  createdAt     DateTime  @default(now())
   processedAt   DateTime?
   error         String?
-  attemptCount  Int      @default(0)
+  attemptCount  Int       @default(0)
 
   @@index([processedAt, createdAt])
   @@index([aggregateType, aggregateId])

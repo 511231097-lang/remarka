@@ -59,6 +59,34 @@ export async function GET(_request: Request, context: RouteContext) {
       projectId,
     },
     include: {
+      aliases: {
+        orderBy: [{ createdAt: "asc" }],
+      },
+      firstAppearanceChapter: {
+        select: {
+          id: true,
+          title: true,
+          orderIndex: true,
+        },
+      },
+      lastAppearanceChapter: {
+        select: {
+          id: true,
+          title: true,
+          orderIndex: true,
+        },
+      },
+      chapterStats: {
+        include: {
+          chapter: {
+            select: {
+              id: true,
+              title: true,
+              orderIndex: true,
+            },
+          },
+        },
+      },
       containedByLinks: {
         select: {
           parentEntity: {
@@ -86,9 +114,12 @@ export async function GET(_request: Request, context: RouteContext) {
           document: {
             select: {
               chapterId: true,
+              contentVersion: true,
               content: true,
               chapter: {
                 select: {
+                  id: true,
+                  title: true,
                   orderIndex: true,
                 },
               },
@@ -123,14 +154,64 @@ export async function GET(_request: Request, context: RouteContext) {
     return a.startOffset - b.startOffset;
   });
 
+  const snapshotMentions = sortedMentions.filter(
+    (mention: any) => Number(mention.contentVersion) === Number(mention.document?.contentVersion)
+  );
+
+  const chapterPresence = [...entity.chapterStats]
+    .filter((item: any) => item.chapter)
+    .sort((a: any, b: any) => Number(a.chapter?.orderIndex ?? 0) - Number(b.chapter?.orderIndex ?? 0));
+
   return Response.json({
     entity: {
       id: entity.id,
       projectId: entity.projectId,
       type: entity.type,
       name: entity.canonicalName,
+      canonicalName: entity.canonicalName,
       containerEntityId: containers[0]?.id || null,
       summary: entity.summary,
+      shortDescription: entity.summary,
+      mentionCount: entity.type === "character" ? Number(entity.mentionCount || 0) : snapshotMentions.length,
+      firstAppearance:
+        entity.type === "character" && entity.firstAppearanceChapter
+          ? {
+              chapterId: entity.firstAppearanceChapter.id,
+              chapterTitle: entity.firstAppearanceChapter.title,
+              chapterOrderIndex: entity.firstAppearanceChapter.orderIndex,
+              offset: entity.firstAppearanceOffset,
+            }
+          : null,
+      lastAppearance:
+        entity.type === "character" && entity.lastAppearanceChapter
+          ? {
+              chapterId: entity.lastAppearanceChapter.id,
+              chapterTitle: entity.lastAppearanceChapter.title,
+              chapterOrderIndex: entity.lastAppearanceChapter.orderIndex,
+              offset: entity.lastAppearanceOffset,
+            }
+          : null,
+      chapters:
+        entity.type === "character"
+          ? chapterPresence.map((item: any) => ({
+              chapterId: item.chapter.id,
+              chapterTitle: item.chapter.title,
+              chapterOrderIndex: item.chapter.orderIndex,
+              mentionCount: item.mentionCount,
+            }))
+          : [],
+      aliases:
+        entity.type === "character"
+          ? entity.aliases
+              .map((alias: any) => ({
+                id: alias.id,
+                value: alias.alias,
+                normalizedValue: alias.normalizedAlias,
+                aliasType: alias.aliasType,
+                confidence: alias.confidence,
+              }))
+              .sort((a: any, b: any) => String(a.value).localeCompare(String(b.value), "ru", { sensitivity: "base" }))
+          : [],
       createdAt: entity.createdAt.toISOString(),
       updatedAt: entity.updatedAt.toISOString(),
       containers: containers.map((container: any) => ({
@@ -143,14 +224,17 @@ export async function GET(_request: Request, context: RouteContext) {
         type: child.type,
         name: child.canonicalName,
       })),
-      mentions: sortedMentions.map((mention: any) => ({
+      mentions: snapshotMentions.map((mention: any) => ({
         id: mention.id,
         documentId: mention.documentId,
         chapterId: mention.document?.chapterId || null,
+        chapterTitle: mention.document?.chapter?.title || null,
+        mentionType: mention.mentionType,
         paragraphIndex: mention.paragraphIndex,
         startOffset: mention.startOffset,
         endOffset: mention.endOffset,
         sourceText: mention.sourceText,
+        confidence: mention.confidence,
         snippet: buildMentionSnippet(
           String(mention.document?.content || ""),
           mention.startOffset,

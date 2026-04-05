@@ -35,10 +35,12 @@ describe("mention decorations", () => {
         {
           id: "m1",
           entityId: "e1",
+          mentionType: "named",
           paragraphIndex: 0,
           startOffset: 6,
           endOffset: 10,
           sourceText: "Beta",
+          confidence: 0.99,
           entity: {
             id: "e1",
             type: "character",
@@ -77,10 +79,12 @@ describe("mention decorations", () => {
         {
           id: "m2",
           entityId: "e2",
+          mentionType: "alias",
           paragraphIndex: 0,
           startOffset: 3,
           endOffset: 4,
           sourceText: "B",
+          confidence: 0.95,
           entity: {
             id: "e2",
             type: "event",

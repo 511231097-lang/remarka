@@ -4,13 +4,17 @@ import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import {
+  IconAlertTriangle,
   IconArrowDown,
   IconArrowUp,
   IconCheck,
   IconChevronDown,
   IconChevronRight,
+  IconCircleCheck,
+  IconDotsVertical,
   IconFileText,
   IconFolder,
+  IconLoader2,
   IconMenu2,
   IconMoonStars,
   IconPencil,
@@ -25,6 +29,8 @@ import {
   createProjectImportRequest,
   createProjectRequest,
   deleteProjectChapterRequest,
+  deleteProjectRequest,
+  fetchSidebarProjects,
   updateProjectChapterRequest,
   type ChapterMoveDirection,
   type SidebarProjectItem,
@@ -39,6 +45,7 @@ interface AppShellProps {
 
 type ThemeMode = "light" | "dark";
 type CreateMode = "blank" | "import";
+const ACTIVE_IMPORT_MODEL_LABEL = "Gemini 3.1 Flash Lite (Vertex AI)";
 
 function applyTheme(theme: ThemeMode) {
   document.documentElement.setAttribute("data-theme", theme);
@@ -60,6 +67,15 @@ function buildProjectHref(projectId: string, chapterId: string | null | undefine
   return chapterId ? `/projects/${projectId}?chapter=${encodeURIComponent(chapterId)}` : `/projects/${projectId}`;
 }
 
+function formatRunStateRu(run: NonNullable<NonNullable<SidebarProjectItem["chapters"][number]["latestRun"]>>): string {
+  if (run.state === "queued") return "в очереди";
+  if (run.state === "running") return "выполняется";
+  if (run.state === "completed") return "завершен";
+  if (run.state === "failed") return "ошибка";
+  if (run.state === "superseded") return "заменен";
+  return run.state;
+}
+
 export function AppShell({ projects, activeProjectId, activeChapterId = null, children }: AppShellProps) {
   const pathname = usePathname();
   const searchParams = useSearchParams();
@@ -70,14 +86,47 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
   const [isSavingProject, setIsSavingProject] = useState(false);
   const [creatingChapterProjectId, setCreatingChapterProjectId] = useState<string | null>(null);
   const [chapterBusyKey, setChapterBusyKey] = useState<string | null>(null);
+  const [projectBusyId, setProjectBusyId] = useState<string | null>(null);
   const [editingChapterId, setEditingChapterId] = useState<string | null>(null);
   const [editingChapterTitle, setEditingChapterTitle] = useState("");
+  const [openProjectMenuId, setOpenProjectMenuId] = useState<string | null>(null);
+  const [openChapterMenuKey, setOpenChapterMenuKey] = useState<string | null>(null);
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [createError, setCreateError] = useState<string | null>(null);
   const [chapterError, setChapterError] = useState<string | null>(null);
   const [theme, setTheme] = useState<ThemeMode>("light");
   const [isThemeReady, setIsThemeReady] = useState(false);
   const [createMode, setCreateMode] = useState<CreateMode>("blank");
+  const [liveProjects, setLiveProjects] = useState<SidebarProjectItem[]>(projects);
+
+  useEffect(() => {
+    setLiveProjects(projects);
+  }, [projects]);
+
+  useEffect(() => {
+    if (!activeProjectId) return;
+
+    let isActive = true;
+    const refreshSidebarProjects = async () => {
+      try {
+        const loaded = await fetchSidebarProjects();
+        if (!isActive) return;
+        setLiveProjects(loaded);
+      } catch {
+        // keep current sidebar snapshot
+      }
+    };
+
+    void refreshSidebarProjects();
+    const interval = window.setInterval(() => {
+      void refreshSidebarProjects();
+    }, 2500);
+
+    return () => {
+      isActive = false;
+      window.clearInterval(interval);
+    };
+  }, [activeProjectId]);
 
   useEffect(() => {
     setTheme(resolveInitialTheme());
@@ -85,12 +134,43 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
   }, []);
 
   useEffect(() => {
+    if (!openProjectMenuId && !openChapterMenuKey) return;
+
+    const closeMenus = () => {
+      setOpenProjectMenuId(null);
+      setOpenChapterMenuKey(null);
+    };
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as Element | null;
+      if (target?.closest("[data-action-menu-root='true']")) {
+        return;
+      }
+      closeMenus();
+    };
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeMenus();
+      }
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    document.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.removeEventListener("mousedown", handlePointerDown);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [openProjectMenuId, openChapterMenuKey]);
+
+  useEffect(() => {
     if (!isThemeReady) return;
     applyTheme(theme);
   }, [theme, isThemeReady]);
 
   const sortedProjects = useMemo(() => {
-    return [...projects]
+    return [...liveProjects]
       .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
       .map((project) => ({
         ...project,
@@ -99,7 +179,7 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
           return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
         }),
       }));
-  }, [projects]);
+  }, [liveProjects]);
 
   const chapterFromUrl = useMemo(() => searchParams.get("chapter")?.trim() || null, [searchParams]);
   const resolvedActiveChapterId = chapterFromUrl || activeChapterId;
@@ -115,11 +195,11 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
   }, [activeProjectId]);
 
   const activeProjectTitle = useMemo(() => {
-    const byActiveId = activeProjectId ? projects.find((project) => project.id === activeProjectId) : null;
+    const byActiveId = activeProjectId ? liveProjects.find((project) => project.id === activeProjectId) : null;
 
     const pathMatch = pathname.match(/^\/projects\/([^/?#]+)/);
     const projectIdFromPath = pathMatch?.[1] || null;
-    const byPath = projectIdFromPath ? projects.find((project) => project.id === projectIdFromPath) : null;
+    const byPath = projectIdFromPath ? liveProjects.find((project) => project.id === projectIdFromPath) : null;
 
     const activeProject = byActiveId || byPath;
     if (!activeProject?.title) return "Remarka";
@@ -135,7 +215,7 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
     }
 
     return activeProject.title;
-  }, [activeProjectId, activeChapterId, chapterFromUrl, pathname, projects]);
+  }, [activeProjectId, activeChapterId, chapterFromUrl, pathname, liveProjects]);
 
   async function handleCreateProject(formData: FormData) {
     const title = String(formData.get("title") || "").trim();
@@ -183,6 +263,7 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
   async function handleCreateChapter(projectId: string) {
     setChapterError(null);
     setCreatingChapterProjectId(projectId);
+    setOpenProjectMenuId(null);
     try {
       const chapter = await createProjectChapterRequest(projectId, {
         title: "Новая глава",
@@ -202,6 +283,7 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
     setChapterError(null);
     setEditingChapterId(chapterId);
     setEditingChapterTitle(currentTitle);
+    setOpenChapterMenuKey(null);
   }
 
   function handleCancelChapterRename() {
@@ -233,6 +315,7 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
   async function handleMoveChapter(projectId: string, chapterId: string, direction: ChapterMoveDirection) {
     setChapterError(null);
     setChapterBusyKey(`${projectId}:${chapterId}:move:${direction}`);
+    setOpenChapterMenuKey(null);
     try {
       await updateProjectChapterRequest(projectId, chapterId, { move: direction });
       router.refresh();
@@ -249,6 +332,7 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
 
     setChapterError(null);
     setChapterBusyKey(`${projectId}:${chapterId}:delete`);
+    setOpenChapterMenuKey(null);
     try {
       const result = await deleteProjectChapterRequest(projectId, chapterId);
 
@@ -270,6 +354,41 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
       setChapterError(error instanceof Error ? error.message : "Не удалось удалить главу");
     } finally {
       setChapterBusyKey(null);
+    }
+  }
+
+  async function handleDeleteProject(projectId: string, isActiveProject: boolean) {
+    const confirmed = window.confirm("Удалить проект вместе со всеми главами?");
+    if (!confirmed) return;
+
+    setChapterError(null);
+    setProjectBusyId(projectId);
+    setOpenProjectMenuId(null);
+    setOpenChapterMenuKey(null);
+
+    try {
+      const result = await deleteProjectRequest(projectId);
+
+      setLiveProjects((current) => current.filter((project) => project.id !== projectId));
+      setCollapsedProjects((current) => {
+        const next = { ...current };
+        delete next[projectId];
+        return next;
+      });
+
+      if (isActiveProject) {
+        if (result.fallbackProjectId) {
+          router.push(buildProjectHref(result.fallbackProjectId, result.fallbackChapterId));
+        } else {
+          router.push("/");
+        }
+      }
+
+      router.refresh();
+    } catch (error) {
+      setChapterError(error instanceof Error ? error.message : "Не удалось удалить проект");
+    } finally {
+      setProjectBusyId(null);
     }
   }
 
@@ -378,6 +497,8 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
               const isActive = activeProjectId === project.id || pathname === `/projects/${project.id}`;
               const firstChapterId = project.chapters[0]?.id || null;
               const isCollapsed = collapsedProjects[project.id] ?? !isActive;
+              const isProjectBusy = projectBusyId === project.id || creatingChapterProjectId === project.id;
+              const isProjectMenuOpen = openProjectMenuId === project.id;
               return (
                 <div key={project.id} className="project-tree-item">
                   <div className={`project-nav-item ${isActive ? "active" : ""}`}>
@@ -397,20 +518,58 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
                     <Link
                       href={buildProjectHref(project.id, firstChapterId)}
                       className="project-nav-link"
-                      onClick={() => setIsSidebarOpen(false)}
+                      onClick={() => {
+                        setIsSidebarOpen(false);
+                        setOpenProjectMenuId(null);
+                        setOpenChapterMenuKey(null);
+                      }}
                     >
                       <div className="project-nav-title">{project.title}</div>
                     </Link>
-                    <button
-                      className="project-add-chapter-btn"
-                      type="button"
-                      aria-label="Создать главу"
-                      title="Создать главу"
-                      disabled={creatingChapterProjectId === project.id}
-                      onClick={() => void handleCreateChapter(project.id)}
+                    <div
+                      className={`tree-actions ${isProjectMenuOpen ? "menu-open" : ""}`}
+                      data-action-menu-root="true"
                     >
-                      <IconPlus size={14} stroke={1.8} />
-                    </button>
+                      <button
+                        className={`tree-menu-trigger ${isProjectMenuOpen ? "open" : ""}`}
+                        type="button"
+                        aria-label="Действия проекта"
+                        aria-expanded={isProjectMenuOpen}
+                        onClick={() => {
+                          setOpenChapterMenuKey(null);
+                          setOpenProjectMenuId((current) => (current === project.id ? null : project.id));
+                        }}
+                        disabled={isProjectBusy}
+                      >
+                        <IconDotsVertical size={14} stroke={1.8} />
+                      </button>
+                      {isProjectMenuOpen ? (
+                        <div className="tree-menu-panel" role="menu" aria-label="Действия проекта">
+                          <button
+                            className="tree-menu-item"
+                            type="button"
+                            onClick={() => void handleCreateChapter(project.id)}
+                            disabled={isProjectBusy}
+                          >
+                            <span className="tree-menu-item-icon">
+                              <IconPlus size={13} stroke={1.9} />
+                            </span>
+                            Новая глава
+                          </button>
+                          <button
+                            className="tree-menu-item danger"
+                            type="button"
+                            onClick={() => void handleDeleteProject(project.id, isActive)}
+                            disabled={isProjectBusy}
+                          >
+                            <span className="tree-menu-item-icon">
+                              <IconTrash size={13} stroke={1.9} />
+                            </span>
+                            Удалить проект
+                          </button>
+                        </div>
+                      ) : null}
+                    </div>
                   </div>
 
                   {!isCollapsed ? (
@@ -420,9 +579,27 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
                         const isActiveChapter = isActive && resolvedActiveChapterId === chapter.id;
                         const isEditingChapter = editingChapterId === chapter.id;
                         const isBusyChapter = (chapterBusyKey || "").startsWith(`${project.id}:${chapter.id}:`);
+                        const chapterMenuKey = `${project.id}:${chapter.id}`;
+                        const isChapterMenuOpen = openChapterMenuKey === chapterMenuKey;
                         const canMoveUp = chapterIndex > 0;
                         const canMoveDown = chapterIndex < project.chapters.length - 1;
                         const isOnlyChapter = project.chapters.length <= 1;
+                        const latestRun = chapter.latestRun || null;
+                        const isRunQueued = latestRun?.state === "queued";
+                        const isRunRunning = latestRun?.state === "running";
+                        const isRunFailed = latestRun?.state === "failed";
+                        const isRunCompleted = latestRun?.state === "completed";
+                        const isRunInProgress = isRunQueued || isRunRunning;
+                        const chapterRunLabel = latestRun
+                          ? `Анализ: ${formatRunStateRu(latestRun)}${latestRun.phase ? ` (${latestRun.phase})` : ""}`
+                          : "Анализ не запускался";
+                        const ChapterStatusIcon = isRunInProgress
+                          ? IconLoader2
+                          : isRunFailed
+                            ? IconAlertTriangle
+                            : isRunCompleted
+                              ? IconCircleCheck
+                              : IconFileText;
                         return (
                           <div key={chapter.id} className={`chapter-nav-item ${isActiveChapter ? "active" : ""}`}>
                             {isEditingChapter ? (
@@ -458,52 +635,100 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
                                 <Link
                                   href={buildProjectHref(project.id, chapter.id)}
                                   className="chapter-nav-link"
-                                  onClick={() => setIsSidebarOpen(false)}
+                                  onClick={() => {
+                                    setIsSidebarOpen(false);
+                                    setOpenChapterMenuKey(null);
+                                    setOpenProjectMenuId(null);
+                                  }}
                                 >
-                                  <IconFileText size={13} stroke={1.8} />
+                                  <span
+                                    className={`chapter-status-indicator ${
+                                      isRunInProgress
+                                        ? "running"
+                                        : isRunFailed
+                                          ? "failed"
+                                          : isRunCompleted
+                                            ? "completed"
+                                            : "idle"
+                                    }`}
+                                    title={chapterRunLabel}
+                                  >
+                                    <ChapterStatusIcon
+                                      size={13}
+                                      stroke={1.8}
+                                      className={isRunInProgress ? "icon-spin" : undefined}
+                                    />
+                                  </span>
                                   <span className="chapter-nav-title">{chapter.title}</span>
                                 </Link>
-                                <div className="chapter-actions">
+                                <div
+                                  className={`tree-actions ${isChapterMenuOpen ? "menu-open" : ""}`}
+                                  data-action-menu-root="true"
+                                >
                                   <button
-                                    className="chapter-action-btn"
+                                    className={`tree-menu-trigger ${isChapterMenuOpen ? "open" : ""}`}
                                     type="button"
-                                    aria-label="Переименовать главу"
-                                    title="Переименовать"
-                                    onClick={() => handleStartChapterRename(chapter.id, chapter.title)}
+                                    aria-label="Действия главы"
+                                    aria-expanded={isChapterMenuOpen}
+                                    onClick={() => {
+                                      setOpenProjectMenuId(null);
+                                      setOpenChapterMenuKey((current) =>
+                                        current === chapterMenuKey ? null : chapterMenuKey
+                                      );
+                                    }}
                                     disabled={isBusyChapter}
                                   >
-                                    <IconPencil size={12} stroke={1.9} />
+                                    <IconDotsVertical size={14} stroke={1.8} />
                                   </button>
-                                  <button
-                                    className="chapter-action-btn"
-                                    type="button"
-                                    aria-label="Переместить выше"
-                                    title="Выше"
-                                    onClick={() => void handleMoveChapter(project.id, chapter.id, "up")}
-                                    disabled={isBusyChapter || !canMoveUp}
-                                  >
-                                    <IconArrowUp size={12} stroke={1.9} />
-                                  </button>
-                                  <button
-                                    className="chapter-action-btn"
-                                    type="button"
-                                    aria-label="Переместить ниже"
-                                    title="Ниже"
-                                    onClick={() => void handleMoveChapter(project.id, chapter.id, "down")}
-                                    disabled={isBusyChapter || !canMoveDown}
-                                  >
-                                    <IconArrowDown size={12} stroke={1.9} />
-                                  </button>
-                                  <button
-                                    className="chapter-action-btn danger"
-                                    type="button"
-                                    aria-label="Удалить главу"
-                                    title={isOnlyChapter ? "Нельзя удалить последнюю главу" : "Удалить"}
-                                    onClick={() => void handleDeleteChapter(project.id, chapter.id, isActiveChapter)}
-                                    disabled={isBusyChapter || isOnlyChapter}
-                                  >
-                                    <IconTrash size={12} stroke={1.9} />
-                                  </button>
+                                  {isChapterMenuOpen ? (
+                                    <div className="tree-menu-panel" role="menu" aria-label="Действия главы">
+                                      <button
+                                        className="tree-menu-item"
+                                        type="button"
+                                        onClick={() => handleStartChapterRename(chapter.id, chapter.title)}
+                                        disabled={isBusyChapter}
+                                      >
+                                        <span className="tree-menu-item-icon">
+                                          <IconPencil size={13} stroke={1.9} />
+                                        </span>
+                                        Переименовать
+                                      </button>
+                                      <button
+                                        className="tree-menu-item"
+                                        type="button"
+                                        onClick={() => void handleMoveChapter(project.id, chapter.id, "up")}
+                                        disabled={isBusyChapter || !canMoveUp}
+                                      >
+                                        <span className="tree-menu-item-icon">
+                                          <IconArrowUp size={13} stroke={1.9} />
+                                        </span>
+                                        Переместить выше
+                                      </button>
+                                      <button
+                                        className="tree-menu-item"
+                                        type="button"
+                                        onClick={() => void handleMoveChapter(project.id, chapter.id, "down")}
+                                        disabled={isBusyChapter || !canMoveDown}
+                                      >
+                                        <span className="tree-menu-item-icon">
+                                          <IconArrowDown size={13} stroke={1.9} />
+                                        </span>
+                                        Переместить ниже
+                                      </button>
+                                      <button
+                                        className="tree-menu-item danger"
+                                        type="button"
+                                        onClick={() => void handleDeleteChapter(project.id, chapter.id, isActiveChapter)}
+                                        disabled={isBusyChapter || isOnlyChapter}
+                                        title={isOnlyChapter ? "Нельзя удалить последнюю главу" : "Удалить"}
+                                      >
+                                        <span className="tree-menu-item-icon">
+                                          <IconTrash size={13} stroke={1.9} />
+                                        </span>
+                                        Удалить главу
+                                      </button>
+                                    </div>
+                                  ) : null}
                                 </div>
                               </>
                             )}
@@ -570,7 +795,10 @@ export function AppShell({ projects, activeProjectId, activeChapterId = null, ch
                 rows={4}
               />
               {createMode === "import" ? (
-                <input className="input" name="file" type="file" accept=".fb2,.zip,.fb2.zip" required />
+                <>
+                  <input className="input" name="file" type="file" accept=".fb2,.zip,.fb2.zip" required />
+                  <input className="input" value={`Модель анализа: ${ACTIVE_IMPORT_MODEL_LABEL}`} readOnly disabled />
+                </>
               ) : null}
               {createError ? <div className="error-text">{createError}</div> : null}
               <div className="modal-actions">
