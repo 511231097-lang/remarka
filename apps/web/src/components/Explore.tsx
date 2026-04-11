@@ -1,9 +1,10 @@
 "use client";
 
 import { motion } from "motion/react";
-import { BookOpen, Users, Lightbulb, Heart, User, TrendingUp, Clock, Search, ChevronLeft, ChevronRight, MapPin } from "lucide-react";
+import { BookOpen, Users, Lightbulb, Heart, TrendingUp, Clock, Search, ChevronLeft, ChevronRight, MapPin } from "lucide-react";
 import { useState, useEffect } from "react";
 import Link from "next/link";
+import { UserAvatar } from "@/components/UserAvatar";
 import { displayAuthor, type BookCardDTO } from "@/lib/books";
 import { listBooks } from "@/lib/booksClient";
 
@@ -192,7 +193,8 @@ export function Explore() {
         {!loading && books.length > 0 && (
           <>
           <div className="space-y-4">
-          {paginatedBooks.map((book, index) => (
+          {paginatedBooks.map((book, index) => {
+            return (
             <motion.div
               key={book.id}
               initial={{ opacity: 0, y: 20 }}
@@ -229,9 +231,12 @@ export function Explore() {
                   </div>
 
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <div className="w-6 h-6 rounded-full bg-secondary flex items-center justify-center">
-                      <User className="w-3 h-3 text-primary" />
-                    </div>
+                    <UserAvatar
+                      name={book.owner.name}
+                      image={book.owner.image}
+                      size="xxs"
+                      fallbackTextClassName="text-[10px]"
+                    />
                     <span>{book.owner.name}</span>
                     <span>•</span>
                     <span>
@@ -262,7 +267,8 @@ export function Explore() {
                 </div>
               </div>
             </motion.div>
-          ))}
+            );
+          })}
           </div>
 
           {/* Pagination */}

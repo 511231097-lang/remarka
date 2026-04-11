@@ -101,6 +101,23 @@ npm run docker:up
 
 4. Open [http://localhost:3000](http://localhost:3000).
 
+### Docker compose (web hot reload / dev mode)
+
+If you need frontend hot reload without rebuilding on each change:
+
+```bash
+npm run docker:up:dev
+```
+
+This keeps db/worker/minio from `docker-compose.yml`, but runs `web` as `next dev`.
+
+Useful commands:
+
+```bash
+npm run docker:logs:dev
+npm run docker:down:dev
+```
+
 MinIO console: [http://localhost:9001](http://localhost:9001).
 
 Useful commands:

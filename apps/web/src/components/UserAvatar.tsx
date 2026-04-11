@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 
-type AvatarSize = "xs" | "md";
+type AvatarSize = "xxs" | "xs" | "md";
 
 interface UserAvatarProps {
   name: string;
@@ -13,6 +13,7 @@ interface UserAvatarProps {
 }
 
 const SIZES_CLASS: Record<AvatarSize, string> = {
+  xxs: "w-6 h-6 min-w-6 min-h-6",
   xs: "w-8 h-8 min-w-8 min-h-8",
   md: "w-24 h-24 min-w-24 min-h-24",
 };

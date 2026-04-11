@@ -1,0 +1,16 @@
+services:
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: base
+    environment:
+      NODE_ENV: development
+      CHOKIDAR_USEPOLLING: "1"
+      WATCHPACK_POLLING: "true"
+    command: ["npm", "--prefix", "apps/web", "run", "dev", "--", "-H", "0.0.0.0", "-p", "3000"]
+    volumes:
+      - ./apps:/app/apps
+      - ./packages:/app/packages
+      - ./tsconfig.json:/app/tsconfig.json:ro
+      - ./tsconfig.base.json:/app/tsconfig.base.json:ro

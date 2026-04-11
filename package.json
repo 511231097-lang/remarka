@@ -18,8 +18,11 @@
     "db:migrate:deploy": "npm --prefix packages/db run prisma:migrate:deploy",
     "test:unit": "npm --prefix apps/web run test:unit",
     "docker:up": "docker compose up --build -d",
+    "docker:up:dev": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d",
     "docker:down": "docker compose down",
-    "docker:logs": "docker compose logs -f --tail=200"
+    "docker:down:dev": "docker compose -f docker-compose.yml -f docker-compose.dev.yml down",
+    "docker:logs": "docker compose logs -f --tail=200",
+    "docker:logs:dev": "docker compose -f docker-compose.yml -f docker-compose.dev.yml logs -f --tail=200"
   },
   "dependencies": {
     "openai": "6.25.0",
