@@ -1,32 +1,18 @@
-import "./globals.css";
-import type { ReactNode } from "react";
+import type { Metadata } from "next";
+import "@/styles/index.css";
+import { ThemeProvider } from "@/lib/ThemeContext";
 
-export const metadata = {
-  title: "Remarka",
-  description: "AI narrative structure editor",
+export const metadata: Metadata = {
+  title: "Литанализ",
+  description: "AI Literary Analysis App",
 };
 
-export default function RootLayout({ children }: { children: ReactNode }) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="ru" suppressHydrationWarning>
-      <head>
-        <script
-          dangerouslySetInnerHTML={{
-            __html: `
-              (function () {
-                try {
-                  var stored = localStorage.getItem('remarka-theme');
-                  var theme = stored === 'light' || stored === 'dark'
-                    ? stored
-                    : (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-                  document.documentElement.setAttribute('data-theme', theme);
-                } catch (e) {}
-              })();
-            `,
-          }}
-        />
-      </head>
-      <body>{children}</body>
+    <html lang="ru">
+      <body>
+        <ThemeProvider>{children}</ThemeProvider>
+      </body>
     </html>
   );
 }

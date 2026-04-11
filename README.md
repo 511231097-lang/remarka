@@ -1,10 +1,11 @@
-# Remarka MVP
+# Remarka (Reset UI + Auth)
 
-Editor-first AI narrative structure editor.
+Target-UI rollout with Google Auth on `apps/web`, while preserving worker/agent extraction pipeline.
 
 ## Stack
 
 - Next.js 15 (`apps/web`)
+- Auth.js / NextAuth + Google OAuth (`apps/web`)
 - Node worker + pg-boss (`apps/worker`)
 - PostgreSQL + Prisma (`packages/db`)
 - Shared contracts/utilities (`packages/contracts`)
@@ -26,26 +27,18 @@ cp apps/web/.env.example apps/web/.env.local
 cp apps/worker/.env.example apps/worker/.env
 ```
 
-3. Set required variables (minimum):
+3. Set required variables:
 
+Web (`apps/web/.env.local`):
 - `DATABASE_URL`
+- `AUTH_SECRET`
+- `GOOGLE_CLIENT_ID`
+- `GOOGLE_CLIENT_SECRET`
+- `NEXTAUTH_URL` (for local: `http://localhost:3000`)
+
+Worker (`apps/worker/.env`):
 - `EXTRACT_LLM_PROVIDER` (`timeweb`, `kia`, or `vertex`)
-
-If `EXTRACT_LLM_PROVIDER=timeweb`:
-- `TIMEWEB_API_TOKEN`
-- `TIMEWEB_PROXY_SOURCE`
-- `TIMEWEB_EXTRACT_ACCESS_ID`
-- `TIMEWEB_EXTRACT_MODEL`
-
-If `EXTRACT_LLM_PROVIDER=kia`:
-- `KIA_API_KEY`
-- `KIA_CHAT_BASE_URL` (default `https://api.kie.ai/gemini-3-flash/v1`)
-- `KIA_GEMINI_MODEL` (default `gemini-3-flash-openai`)
-
-If `EXTRACT_LLM_PROVIDER=vertex`:
-- `VERTEX_API_KEY`
-- `VERTEX_EXTRACT_MODEL` (default `gemini-3.1-flash-lite-preview`)
-- Optional `VERTEX_BASE_URL` (default `https://aiplatform.googleapis.com`)
+- provider-specific credentials (`TIMEWEB_*`, `KIA_*`, `VERTEX_*`)
 
 Optional run artifacts storage:
 - `ANALYSIS_ARTIFACTS_ENABLED` (`true` by default)
@@ -113,16 +106,22 @@ npm run docker:logs
 npm run docker:down
 ```
 
-## Implemented MVP flows
+## Current web routes
 
-- Projects list + new project creation.
-- Project workspace with tabs:
-  - `Document`: editor + inline highlights + margin notes + autosave + async analysis status.
-  - `Entities`: grouped entity list, search, type filter.
-- Entity details page with summary and mention links.
-- Background extraction pipeline:
-  - `PUT /api/projects/:projectId/document` saves content and enqueues `document.extract`.
-  - worker extracts entities/mentions/annotations via configured provider (Vertex by default).
-  - stale-version protection (`contentVersion`, `lastAnalyzedVersion`).
-  - basic dedupe (`projectId + type + normalizedName`).
-- SSE status endpoint: `GET /api/projects/:projectId/stream`.
+Public:
+- `/`
+- `/signin`
+
+Protected (requires session):
+- `/explore`, `/library`, `/favorites`, `/plans`, `/profile`, `/upload`
+- `/book/:bookId` + nested routes (`characters`, `themes`, `locations`, `quotes`, `search`, etc.)
+
+API:
+- `/api/auth/[...nextauth]`
+
+## Worker/agent pipeline
+
+Worker/extraction pipeline is preserved as-is (`apps/worker`, `apps/preprocessor`, `packages/contracts`, `packages/db`):
+- outbox-driven event processing
+- import pipeline (`project.import.requested`)
+- extraction pipeline (`analysis.run.requested`)
