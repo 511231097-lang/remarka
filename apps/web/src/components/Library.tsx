@@ -2,16 +2,53 @@
 
 import { motion } from "motion/react";
 import { Upload, BookOpen, Users, Lightbulb, Clock, Lock, Globe, MapPin } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
-import { mockBooks, currentUser } from "@/lib/mockData";
+import { currentUser } from "@/lib/mockData";
+import { displayAuthor, type BookCardDTO } from "@/lib/books";
+import { listBooks } from "@/lib/booksClient";
 
 export function Library() {
-  const myBooks = mockBooks.filter((b) => b.uploadedBy.id === currentUser.id);
-  const [hasBooks] = useState(myBooks.length > 0);
+  const [myBooks, setMyBooks] = useState<BookCardDTO[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await listBooks({
+          scope: "library",
+          page: 1,
+          pageSize: 100,
+        });
+
+        if (!active) return;
+        setMyBooks(response.items);
+      } catch (loadError) {
+        if (!active) return;
+        const message = loadError instanceof Error ? loadError.message : "Не удалось загрузить библиотеку";
+        setError(message);
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void load();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const hasBooks = myBooks.length > 0;
 
   if (!hasBooks) {
-    return <EmptyLibrary />;
+    return <EmptyLibrary loading={loading} error={error} />;
   }
 
   return (
@@ -24,7 +61,6 @@ export function Library() {
           </p>
         </div>
 
-        {/* Add Book CTA */}
         <motion.div
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
@@ -53,6 +89,12 @@ export function Library() {
           )}
         </motion.div>
 
+        {error && (
+          <div className="mb-6 p-4 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive">
+            {error}
+          </div>
+        )}
+
         <div className="space-y-4">
           {myBooks.map((book, index) => (
             <motion.div
@@ -68,7 +110,7 @@ export function Library() {
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
                     <h2 className="text-xl text-foreground mb-1">{book.title}</h2>
-                    <p className="text-muted-foreground mb-4">{book.author}</p>
+                    <p className="text-muted-foreground mb-4">{displayAuthor(book.author)}</p>
 
                     <div className="flex items-center gap-6 text-sm flex-wrap">
                       <div className="flex items-center gap-2 text-muted-foreground">
@@ -94,7 +136,7 @@ export function Library() {
                     <div className="flex items-center gap-2">
                       <Clock className="w-4 h-4" />
                       <span>
-                        {new Date(book.uploadedAt).toLocaleDateString("ru-RU", {
+                        {new Date(book.createdAt).toLocaleDateString("ru-RU", {
                           day: "numeric",
                           month: "long",
                         })}
@@ -124,7 +166,7 @@ export function Library() {
   );
 }
 
-function EmptyLibrary() {
+function EmptyLibrary({ loading, error }: { loading: boolean; error: string | null }) {
   return (
     <div className="min-h-screen bg-background flex items-center justify-center px-6">
       <motion.div
@@ -139,8 +181,11 @@ function EmptyLibrary() {
         <div className="space-y-3">
           <h1 className="text-2xl text-foreground">Начните исследование</h1>
           <p className="text-muted-foreground">
-            Загрузите вашу первую книгу, чтобы получить структурированный анализ персонажей, тем и событий
+            {loading
+              ? "Загружаем ваши книги..."
+              : "Загрузите вашу первую книгу, чтобы получить структурированный анализ персонажей, тем и событий"}
           </p>
+          {error && <p className="text-sm text-destructive">{error}</p>}
         </div>
 
         <Link
@@ -158,7 +203,7 @@ function EmptyLibrary() {
             </div>
             <div>
               <p className="text-sm text-foreground">Загрузите файл книги</p>
-              <p className="text-xs text-muted-foreground">Форматы: EPUB, PDF, TXT</p>
+              <p className="text-xs text-muted-foreground">Форматы: FB2 или ZIP с FB2</p>
             </div>
           </div>
 
@@ -167,8 +212,8 @@ function EmptyLibrary() {
               <span className="text-sm text-primary">2</span>
             </div>
             <div>
-              <p className="text-sm text-foreground">Дождитесь анализа</p>
-              <p className="text-xs text-muted-foreground">Обычно занимает 2-5 минут</p>
+              <p className="text-sm text-foreground">Дождитесь загрузки</p>
+              <p className="text-xs text-muted-foreground">Мы извлечем название и автора из FB2</p>
             </div>
           </div>
 
@@ -177,8 +222,8 @@ function EmptyLibrary() {
               <span className="text-sm text-primary">3</span>
             </div>
             <div>
-              <p className="text-sm text-foreground">Исследуйте инсайты</p>
-              <p className="text-xs text-muted-foreground">Персонажи, темы, события и цитаты</p>
+              <p className="text-sm text-foreground">Исследуйте карточку книги</p>
+              <p className="text-xs text-muted-foreground">Детальный анализ подключим на следующем этапе</p>
             </div>
           </div>
         </div>

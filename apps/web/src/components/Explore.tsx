@@ -1,10 +1,11 @@
 "use client";
 
 import { motion } from "motion/react";
-import { BookOpen, Users, Lightbulb, Heart, User, TrendingUp, Clock, Upload, Search, ChevronLeft, ChevronRight, MapPin } from "lucide-react";
+import { BookOpen, Users, Lightbulb, Heart, User, TrendingUp, Clock, Search, ChevronLeft, ChevronRight, MapPin } from "lucide-react";
 import { useState, useEffect } from "react";
 import Link from "next/link";
-import { mockBooks } from "@/lib/mockData";
+import { displayAuthor, type BookCardDTO } from "@/lib/books";
+import { listBooks } from "@/lib/booksClient";
 
 type SortBy = "recent" | "popular" | "likes";
 
@@ -14,41 +15,57 @@ export function Explore() {
   const [sortBy, setSortBy] = useState<SortBy>("popular");
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
-  const [likedBooks, setLikedBooks] = useState<Set<string>>(
-    new Set(mockBooks.filter((b) => b.isLiked).map((b) => b.id))
-  );
+  const [likedBooks, setLikedBooks] = useState<Set<string>>(new Set());
+  const [books, setBooks] = useState<BookCardDTO[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const publicBooks = mockBooks.filter((b) => b.isPublic);
-
-  const filteredBooks = publicBooks.filter((book) => {
-    if (!searchQuery) return true;
-    const query = searchQuery.toLowerCase();
-    return (
-      book.title.toLowerCase().includes(query) ||
-      book.author.toLowerCase().includes(query) ||
-      book.uploadedBy.name.toLowerCase().includes(query)
-    );
-  });
-
-  const sortedBooks = [...filteredBooks].sort((a, b) => {
-    if (sortBy === "recent") {
-      return new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime();
-    }
-    if (sortBy === "popular") {
-      return b.likesCount - a.likesCount;
-    }
-    return 0;
-  });
-
-  const totalPages = Math.ceil(sortedBooks.length / ITEMS_PER_PAGE);
-  const startIndex = (currentPage - 1) * ITEMS_PER_PAGE;
-  const endIndex = startIndex + ITEMS_PER_PAGE;
-  const paginatedBooks = sortedBooks.slice(startIndex, endIndex);
+  const totalPages = Math.max(1, Math.ceil(total / ITEMS_PER_PAGE));
+  const paginatedBooks = books;
 
   // Reset page when search or sort changes
   useEffect(() => {
     setCurrentPage(1);
   }, [searchQuery, sortBy]);
+
+  useEffect(() => {
+    let active = true;
+
+    async function load() {
+      setLoading(true);
+      setError(null);
+      try {
+        const response = await listBooks({
+          scope: "explore",
+          q: searchQuery || undefined,
+          sort: sortBy === "likes" ? "popular" : sortBy,
+          page: currentPage,
+          pageSize: ITEMS_PER_PAGE,
+        });
+
+        if (!active) return;
+        setBooks(response.items);
+        setTotal(response.total);
+      } catch (loadError) {
+        if (!active) return;
+        const message = loadError instanceof Error ? loadError.message : "Не удалось загрузить каталог";
+        setError(message);
+        setBooks([]);
+        setTotal(0);
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    }
+
+    void load();
+
+    return () => {
+      active = false;
+    };
+  }, [currentPage, searchQuery, sortBy]);
 
   const toggleLike = (bookId: string) => {
     setLikedBooks((prev) => {
@@ -130,8 +147,28 @@ export function Explore() {
           </div>
         </motion.div>
 
+        {error && (
+          <motion.div
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6 p-4 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive"
+          >
+            {error}
+          </motion.div>
+        )}
+
+        {loading && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            className="text-center py-16 text-muted-foreground"
+          >
+            Загрузка каталога...
+          </motion.div>
+        )}
+
         {/* No Results */}
-        {sortedBooks.length === 0 && (
+        {!loading && books.length === 0 && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
@@ -152,7 +189,7 @@ export function Explore() {
         )}
 
         {/* Books Grid */}
-        {sortedBooks.length > 0 && (
+        {!loading && books.length > 0 && (
           <>
           <div className="space-y-4">
           {paginatedBooks.map((book, index) => (
@@ -169,7 +206,7 @@ export function Explore() {
                     <h2 className="text-xl text-foreground mb-1 hover:text-primary transition-colors">
                       {book.title}
                     </h2>
-                    <p className="text-muted-foreground">{book.author}</p>
+                    <p className="text-muted-foreground">{displayAuthor(book.author)}</p>
                   </Link>
 
                   <div className="flex items-center gap-6 text-sm mb-4 flex-wrap">
@@ -195,10 +232,10 @@ export function Explore() {
                     <div className="w-6 h-6 rounded-full bg-secondary flex items-center justify-center">
                       <User className="w-3 h-3 text-primary" />
                     </div>
-                    <span>{book.uploadedBy.name}</span>
+                    <span>{book.owner.name}</span>
                     <span>•</span>
                     <span>
-                      {new Date(book.uploadedAt).toLocaleDateString("ru-RU", {
+                      {new Date(book.createdAt).toLocaleDateString("ru-RU", {
                         day: "numeric",
                         month: "long",
                       })}

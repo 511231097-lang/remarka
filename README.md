@@ -35,6 +35,9 @@ Web (`apps/web/.env.local`):
 - `GOOGLE_CLIENT_ID`
 - `GOOGLE_CLIENT_SECRET`
 - `NEXTAUTH_URL` (for local: `http://localhost:3000`)
+- `IMPORT_BLOB_DIR` (for uploaded Book files, default `/tmp/remarka-imports`)
+- `IMPORT_MAX_FILE_BYTES` (upload size limit, default `26214400`)
+- `IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES` (zip safety limit, default `52428800`)
 
 Worker (`apps/worker/.env`):
 - `EXTRACT_LLM_PROVIDER` (`timeweb`, `kia`, or `vertex`)
@@ -88,6 +91,7 @@ cp .env.docker.example .env.docker
    - `KIA_*` when `EXTRACT_LLM_PROVIDER=kia`
    - `VERTEX_*` when `EXTRACT_LLM_PROVIDER=vertex`
    - Artifact storage defaults to MinIO (`ARTIFACTS_STORAGE_PROVIDER=s3`, endpoint `http://minio:9000`)
+   - Book source files are stored in a separate MinIO bucket (`BOOKS_STORAGE_PROVIDER=s3`, `BOOKS_S3_BUCKET=remarka-books`)
 
 3. Start all services:
 
@@ -118,6 +122,9 @@ Protected (requires session):
 
 API:
 - `/api/auth/[...nextauth]`
+- `/api/books` (`GET`, `POST`)
+- `/api/books/:bookId` (`GET`, `PATCH`, `DELETE`)
+- `/api/books/:bookId/chapters` (`GET`)
 
 ## Worker/agent pipeline
 

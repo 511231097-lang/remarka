@@ -116,6 +116,44 @@ model Project {
   @@index([ownerUserId])
 }
 
+model Book {
+  id              String   @id @default(cuid())
+  ownerUserId     String
+  title           String
+  author          String?
+  chapterCount    Int      @default(0)
+  isPublic        Boolean  @default(true)
+  fileName        String
+  mimeType        String
+  sizeBytes       Int
+  storageProvider String
+  storageKey      String
+  fileSha256      String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  owner    User          @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  chapters BookChapter[]
+
+  @@index([ownerUserId, createdAt])
+  @@index([isPublic, createdAt])
+}
+
+model BookChapter {
+  id         String   @id @default(cuid())
+  bookId     String
+  orderIndex Int
+  title      String
+  previewText String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([bookId, orderIndex])
+  @@index([bookId, orderIndex])
+}
+
 model SourceAsset {
   id         String   @id @default(cuid())
   provider   String
@@ -538,6 +576,7 @@ model User {
   accounts      Account[]
   sessions      Session[]
   projects      Project[]
+  books         Book[]
 }
 
 model Account {

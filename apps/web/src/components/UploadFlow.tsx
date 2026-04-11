@@ -1,41 +1,67 @@
 "use client";
 
 import { motion } from "motion/react";
-import { Upload, FileText, Loader2, CheckCircle2, Globe, Lock, Crown } from "lucide-react";
+import { Upload, FileText, Loader2, CheckCircle2, Globe, Lock, Crown, AlertCircle } from "lucide-react";
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { currentUser } from "@/lib/mockData";
+import { createBook } from "@/lib/booksClient";
 
 type UploadStep = "select" | "metadata" | "processing" | "complete";
 
 export function UploadFlow() {
   const [step, setStep] = useState<UploadStep>("select");
   const [fileName, setFileName] = useState("");
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isPublic, setIsPublic] = useState(true);
+  const [createdBookId, setCreatedBookId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
   const canCreatePrivate = currentUser.plan.features.privateBooks;
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      setFileName(file.name);
+    if (!file) return;
+
+    setSelectedFile(file);
+    setFileName(file.name);
+    setError(null);
+    setStep("metadata");
+  };
+
+  const handleStartProcessing = async () => {
+    if (!selectedFile) {
+      setError("Выберите файл книги");
+      return;
+    }
+
+    setError(null);
+    setStep("processing");
+
+    try {
+      const created = await createBook({
+        file: selectedFile,
+        isPublic,
+      });
+
+      setCreatedBookId(created.id);
+      setStep("complete");
+    } catch (createError) {
+      const message = createError instanceof Error ? createError.message : "Не удалось загрузить книгу";
+      setError(message);
       setStep("metadata");
     }
   };
 
-  const handleStartProcessing = () => {
-    setStep("processing");
-
-    // Mock processing
-    setTimeout(() => {
-      setStep("complete");
-    }, 3000);
-  };
-
   const handleComplete = () => {
-    router.push("/book/1");
+    if (createdBookId) {
+      router.push(`/book/${createdBookId}`);
+      return;
+    }
+
+    router.push("/library");
   };
 
   if (step === "metadata") {
@@ -52,6 +78,13 @@ export function UploadFlow() {
           </div>
 
           <div className="p-6 bg-card border border-border rounded-lg space-y-6">
+            {error && (
+              <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/30 text-sm text-destructive flex items-start gap-2">
+                <AlertCircle className="w-4 h-4 mt-0.5" />
+                <span>{error}</span>
+              </div>
+            )}
+
             <div>
               <h3 className="text-foreground mb-4">Видимость анализа</h3>
               <div className="space-y-3">
@@ -141,22 +174,22 @@ export function UploadFlow() {
           </div>
 
           <div className="space-y-2">
-            <h2 className="text-2xl text-foreground">Анализируем книгу</h2>
+            <h2 className="text-2xl text-foreground">Загружаем книгу</h2>
             <p className="text-muted-foreground">{fileName}</p>
           </div>
 
           <div className="space-y-3 pt-4">
             <div className="flex items-center gap-3 text-sm text-muted-foreground">
               <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-              <span>Извлечение текста и структуры</span>
+              <span>Проверяем формат FB2/ZIP</span>
             </div>
             <div className="flex items-center gap-3 text-sm text-muted-foreground">
               <div className="w-2 h-2 rounded-full bg-primary animate-pulse" style={{ animationDelay: "0.2s" }} />
-              <span>Выявление персонажей и тем</span>
+              <span>Извлекаем метаданные книги</span>
             </div>
             <div className="flex items-center gap-3 text-sm text-muted-foreground">
               <div className="w-2 h-2 rounded-full bg-primary animate-pulse" style={{ animationDelay: "0.4s" }} />
-              <span>Создание связей между элементами</span>
+              <span>Сохраняем книгу в библиотеке</span>
             </div>
           </div>
         </motion.div>
@@ -182,9 +215,9 @@ export function UploadFlow() {
           </motion.div>
 
           <div className="space-y-2">
-            <h2 className="text-2xl text-foreground">Анализ завершён</h2>
+            <h2 className="text-2xl text-foreground">Книга загружена</h2>
             <p className="text-muted-foreground">
-              Книга готова к исследованию
+              Открыть страницу книги
             </p>
           </div>
 
@@ -209,14 +242,21 @@ export function UploadFlow() {
         <div className="text-center space-y-2">
           <h1 className="text-2xl text-foreground">Загрузите книгу</h1>
           <p className="text-muted-foreground">
-            Поддерживаются форматы EPUB, PDF и TXT
+            Поддерживаются форматы FB2 и ZIP с одним файлом FB2
           </p>
         </div>
+
+        {error && (
+          <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/30 text-sm text-destructive flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 mt-0.5" />
+            <span>{error}</span>
+          </div>
+        )}
 
         <label className="block">
           <input
             type="file"
-            accept=".epub,.pdf,.txt"
+            accept=".fb2,.zip,.fb2.zip"
             onChange={handleFileSelect}
             className="hidden"
           />
@@ -231,8 +271,8 @@ export function UploadFlow() {
           <div className="flex gap-3 items-start">
             <FileText className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
             <div>
-              <p className="text-sm text-foreground">Анализ займёт 2-5 минут</p>
-              <p className="text-xs text-muted-foreground">В зависимости от размера книги</p>
+              <p className="text-sm text-foreground">Из файла автоматически извлечем название и автора</p>
+              <p className="text-xs text-muted-foreground">Для FB2 / FB2 ZIP</p>
             </div>
           </div>
         </div>
