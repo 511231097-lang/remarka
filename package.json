@@ -10,6 +10,8 @@
   "scripts": {
     "web:dev": "npm --prefix apps/web run dev",
     "web:build": "npm --prefix apps/web run build",
+    "web:start": "npm --prefix apps/web run start",
+    "web:prod": "npm run web:build && npm run web:start",
     "worker:dev": "npm --prefix apps/worker run dev",
     "worker:start": "npm --prefix apps/worker run start",
     "analytics:extraction": "npm --prefix apps/worker run analytics:extraction --",

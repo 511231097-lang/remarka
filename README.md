@@ -66,10 +66,10 @@ npm run db:generate
 npm run db:migrate
 ```
 
-5. Start web and worker in separate terminals:
+5. Start web (production mode) and worker in separate terminals:
 
 ```bash
-npm run web:dev
+npm run web:prod
 ```
 
 ```bash
@@ -110,6 +110,7 @@ npm run docker:up:dev
 ```
 
 This keeps db/worker/minio from `docker-compose.yml`, but runs `web` as `next dev`.
+Dev compose uses a separate volume for `/app/apps/web/.next`, so host `.next` artifacts are not written to the repo tree.
 
 Useful commands:
 

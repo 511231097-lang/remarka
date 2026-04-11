@@ -134,6 +134,7 @@ model Book {
 
   owner    User          @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   chapters BookChapter[]
+  likes    BookLike[]
 
   @@index([ownerUserId, createdAt])
   @@index([isPublic, createdAt])
@@ -152,6 +153,19 @@ model BookChapter {
 
   @@unique([bookId, orderIndex])
   @@index([bookId, orderIndex])
+}
+
+model BookLike {
+  bookId    String
+  userId    String
+  createdAt DateTime @default(now())
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([bookId, userId])
+  @@index([userId, createdAt])
+  @@index([bookId, createdAt])
 }
 
 model SourceAsset {
@@ -577,6 +591,7 @@ model User {
   sessions      Session[]
   projects      Project[]
   books         Book[]
+  bookLikes     BookLike[]
 }
 
 model Account {

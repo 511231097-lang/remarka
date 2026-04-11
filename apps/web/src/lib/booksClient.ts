@@ -1,7 +1,7 @@
-import type { BookChapterDTO, BookCoreDTO, BooksListResponseDTO } from "@/lib/books";
+import type { BookChapterDTO, BookCoreDTO, BookLikeStateDTO, BooksListResponseDTO } from "@/lib/books";
 
 export interface ListBooksParams {
-  scope: "explore" | "library";
+  scope: "explore" | "library" | "favorites";
   q?: string;
   sort?: "recent" | "popular";
   page?: number;
@@ -66,6 +66,24 @@ export async function deleteBook(bookId: string): Promise<void> {
   });
 
   await ensureOk(response, "Не удалось удалить книгу");
+}
+
+export async function likeBook(bookId: string): Promise<BookLikeStateDTO> {
+  const response = await fetch(`/api/books/${bookId}/like`, {
+    method: "POST",
+  });
+
+  const safe = await ensureOk(response, "Не удалось поставить лайк");
+  return safe.json();
+}
+
+export async function unlikeBook(bookId: string): Promise<BookLikeStateDTO> {
+  const response = await fetch(`/api/books/${bookId}/like`, {
+    method: "DELETE",
+  });
+
+  const safe = await ensureOk(response, "Не удалось снять лайк");
+  return safe.json();
 }
 
 export async function getBookChapters(bookId: string): Promise<BookChapterDTO[]> {

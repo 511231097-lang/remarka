@@ -4,6 +4,7 @@ services:
       context: .
       dockerfile: Dockerfile
       target: base
+    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
     environment:
       NODE_ENV: development
       CHOKIDAR_USEPOLLING: "1"
@@ -14,3 +15,7 @@ services:
       - ./packages:/app/packages
       - ./tsconfig.json:/app/tsconfig.json:ro
       - ./tsconfig.base.json:/app/tsconfig.base.json:ro
+      - remarka_web_next_cache:/app/apps/web/.next
+
+volumes:
+  remarka_web_next_cache:

@@ -50,8 +50,10 @@ function resolveUploadFormat(fileName: string): BookFormat | null {
   return null;
 }
 
-function parseScope(value: string | null): "explore" | "library" {
-  return value === "library" ? "library" : "explore";
+function parseScope(value: string | null): "explore" | "library" | "favorites" {
+  if (value === "library") return "library";
+  if (value === "favorites") return "favorites";
+  return "explore";
 }
 
 function parseSort(value: string | null): "recent" | "popular" {
@@ -185,25 +187,37 @@ export async function GET(request: Request) {
   const pageSize = Math.min(parsePositiveInt(searchParams.get("pageSize"), DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
   const skip = (page - 1) * pageSize;
 
-  const where: Prisma.BookWhereInput = scope === "library" ? { ownerUserId: authUser.id } : { isPublic: true };
-
-  if (q) {
-    where.AND = [
-      {
-        OR: [
-          { title: { contains: q, mode: "insensitive" } },
-          { author: { contains: q, mode: "insensitive" } },
-          { owner: { name: { contains: q, mode: "insensitive" } } },
-          { owner: { email: { contains: q, mode: "insensitive" } } },
-        ],
-      },
-    ];
+  const andFilters: Prisma.BookWhereInput[] = [];
+  if (scope === "library") {
+    andFilters.push({ ownerUserId: authUser.id });
+  } else if (scope === "favorites") {
+    andFilters.push({ isPublic: true });
+    andFilters.push({ ownerUserId: { not: authUser.id } });
+    andFilters.push({ likes: { some: { userId: authUser.id } } });
+  } else {
+    andFilters.push({ isPublic: true });
   }
 
-  const orderBy: Prisma.BookOrderByWithRelationInput =
+  if (q) {
+    andFilters.push({
+      OR: [
+        { title: { contains: q, mode: "insensitive" } },
+        { author: { contains: q, mode: "insensitive" } },
+        { owner: { name: { contains: q, mode: "insensitive" } } },
+        { owner: { email: { contains: q, mode: "insensitive" } } },
+      ],
+    });
+  }
+
+  const where: Prisma.BookWhereInput =
+    andFilters.length > 1
+      ? { AND: andFilters }
+      : andFilters[0] || {};
+
+  const orderBy: Prisma.BookOrderByWithRelationInput[] =
     sort === "popular"
-      ? { createdAt: "desc" } // v1 fallback: popular -> recent
-      : { createdAt: "desc" };
+      ? [{ likes: { _count: "desc" } }, { createdAt: "desc" }]
+      : [{ createdAt: "desc" }];
 
   const [total, rows] = await prisma.$transaction([
     prisma.book.count({ where }),
@@ -221,12 +235,25 @@ export async function GET(request: Request) {
             image: true,
           },
         },
+        likes: {
+          where: {
+            userId: authUser.id,
+          },
+          select: {
+            bookId: true,
+          },
+        },
+        _count: {
+          select: {
+            likes: true,
+          },
+        },
       },
     }),
   ]);
 
   return NextResponse.json({
-    items: rows.map(toBookCardDTO),
+    items: rows.map((row) => toBookCardDTO(row, authUser.id)),
     page,
     pageSize,
     total,

@@ -1,4 +1,4 @@
-import type { Book, BookChapter, User } from "@prisma/client";
+import type { Book, BookChapter, BookLike, User } from "@prisma/client";
 
 export interface BookOwnerDTO {
   id: string;
@@ -19,6 +19,8 @@ export interface BookCardDTO {
   themesCount: number;
   locationsCount: number;
   likesCount: number;
+  isLiked: boolean;
+  canLike: boolean;
 }
 
 export interface BookCoreDTO {
@@ -39,6 +41,12 @@ export interface BooksListResponseDTO {
   total: number;
 }
 
+export interface BookLikeStateDTO {
+  bookId: string;
+  isLiked: boolean;
+  likesCount: number;
+}
+
 export interface BookChapterDTO {
   id: string;
   orderIndex: number;
@@ -48,6 +56,13 @@ export interface BookChapterDTO {
 
 type BookWithOwner = Book & {
   owner: Pick<User, "id" | "name" | "email" | "image">;
+};
+
+type BookCardProjection = BookWithOwner & {
+  _count: {
+    likes: number;
+  };
+  likes: Pick<BookLike, "bookId">[];
 };
 
 export function resolveOwnerName(owner: Pick<User, "name" | "email">): string {
@@ -66,7 +81,10 @@ export function toBookOwnerDTO(owner: Pick<User, "id" | "name" | "email" | "imag
   };
 }
 
-export function toBookCardDTO(book: BookWithOwner): BookCardDTO {
+export function toBookCardDTO(book: BookCardProjection, viewerUserId: string): BookCardDTO {
+  const isLiked = book.likes.length > 0;
+  const canLike = book.isPublic && book.ownerUserId !== viewerUserId;
+
   return {
     id: book.id,
     title: book.title,
@@ -79,7 +97,9 @@ export function toBookCardDTO(book: BookWithOwner): BookCardDTO {
     charactersCount: 0,
     themesCount: 0,
     locationsCount: 0,
-    likesCount: 0,
+    likesCount: book._count.likes,
+    isLiked,
+    canLike,
   };
 }
 

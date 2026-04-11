@@ -6,9 +6,9 @@ import { useState, useEffect } from "react";
 import Link from "next/link";
 import { UserAvatar } from "@/components/UserAvatar";
 import { displayAuthor, type BookCardDTO } from "@/lib/books";
-import { listBooks } from "@/lib/booksClient";
+import { likeBook, listBooks, unlikeBook } from "@/lib/booksClient";
 
-type SortBy = "recent" | "popular" | "likes";
+type SortBy = "recent" | "popular";
 
 const ITEMS_PER_PAGE = 10;
 
@@ -16,7 +16,7 @@ export function Explore() {
   const [sortBy, setSortBy] = useState<SortBy>("popular");
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
-  const [likedBooks, setLikedBooks] = useState<Set<string>>(new Set());
+  const [likePendingIds, setLikePendingIds] = useState<Set<string>>(new Set());
   const [books, setBooks] = useState<BookCardDTO[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -40,7 +40,7 @@ export function Explore() {
         const response = await listBooks({
           scope: "explore",
           q: searchQuery || undefined,
-          sort: sortBy === "likes" ? "popular" : sortBy,
+          sort: sortBy,
           page: currentPage,
           pageSize: ITEMS_PER_PAGE,
         });
@@ -68,16 +68,77 @@ export function Explore() {
     };
   }, [currentPage, searchQuery, sortBy]);
 
-  const toggleLike = (bookId: string) => {
-    setLikedBooks((prev) => {
+  const toggleLike = async (book: BookCardDTO) => {
+    if (!book.canLike) return;
+    if (likePendingIds.has(book.id)) return;
+
+    const previousState = {
+      isLiked: book.isLiked,
+      likesCount: book.likesCount,
+    };
+
+    setLikePendingIds((prev) => {
       const next = new Set(prev);
-      if (next.has(bookId)) {
-        next.delete(bookId);
-      } else {
-        next.add(bookId);
-      }
+      next.add(book.id);
       return next;
     });
+
+    setBooks((prev) =>
+      prev.map((item) =>
+        item.id === book.id
+          ? {
+              ...item,
+              isLiked: !previousState.isLiked,
+              likesCount: Math.max(
+                0,
+                previousState.likesCount + (previousState.isLiked ? -1 : 1),
+              ),
+            }
+          : item,
+      ),
+    );
+
+    try {
+      const likeState = previousState.isLiked
+        ? await unlikeBook(book.id)
+        : await likeBook(book.id);
+
+      setBooks((prev) =>
+        prev.map((item) =>
+          item.id === book.id
+            ? {
+                ...item,
+                isLiked: likeState.isLiked,
+                likesCount: likeState.likesCount,
+              }
+            : item,
+        ),
+      );
+    } catch (likeError) {
+      const message =
+        likeError instanceof Error
+          ? likeError.message
+          : "Не удалось обновить лайк";
+      setError(message);
+
+      setBooks((prev) =>
+        prev.map((item) =>
+          item.id === book.id
+            ? {
+                ...item,
+                isLiked: previousState.isLiked,
+                likesCount: previousState.likesCount,
+              }
+            : item,
+        ),
+      );
+    } finally {
+      setLikePendingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(book.id);
+        return next;
+      });
+    }
   };
 
   return (
@@ -250,19 +311,20 @@ export function Explore() {
 
                 <div className="flex flex-col items-end gap-3">
                   <button
-                    onClick={() => toggleLike(book.id)}
+                    onClick={() => void toggleLike(book)}
+                    disabled={!book.canLike || likePendingIds.has(book.id)}
                     className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                      likedBooks.has(book.id)
-                        ? "bg-primary/10 text-primary"
-                        : "bg-secondary text-muted-foreground hover:bg-secondary/80"
+                      !book.canLike
+                        ? "bg-secondary text-muted-foreground/70 cursor-not-allowed"
+                        : book.isLiked
+                          ? "bg-primary/10 text-primary"
+                          : "bg-secondary text-muted-foreground hover:bg-secondary/80"
                     }`}
                   >
                     <Heart
-                      className={`w-4 h-4 ${likedBooks.has(book.id) ? "fill-current" : ""}`}
+                      className={`w-4 h-4 ${book.isLiked ? "fill-current" : ""}`}
                     />
-                    <span className="text-sm">
-                      {likedBooks.has(book.id) ? book.likesCount + 1 : book.likesCount}
-                    </span>
+                    <span className="text-sm">{book.likesCount}</span>
                   </button>
                 </div>
               </div>
