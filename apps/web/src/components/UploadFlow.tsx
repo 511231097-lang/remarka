@@ -10,16 +10,21 @@ import { createBook } from "@/lib/booksClient";
 
 type UploadStep = "select" | "metadata" | "processing" | "complete";
 
-export function UploadFlow() {
+interface UploadFlowProps {
+  defaultBookVisibilityPublic: boolean;
+}
+
+export function UploadFlow({ defaultBookVisibilityPublic }: UploadFlowProps) {
+  const canCreatePrivate = currentUser.plan.features.privateBooks;
   const [step, setStep] = useState<UploadStep>("select");
   const [fileName, setFileName] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isPublic, setIsPublic] = useState(true);
+  const [isPublic, setIsPublic] = useState(
+    canCreatePrivate ? defaultBookVisibilityPublic : true,
+  );
   const [createdBookId, setCreatedBookId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
-
-  const canCreatePrivate = currentUser.plan.features.privateBooks;
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

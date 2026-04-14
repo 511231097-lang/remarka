@@ -272,6 +272,8 @@ export function resolveMentionOffsets<T extends { paragraphIndex: number; mentio
   return resolved;
 }
 
+export * from "./bookExpertCore";
+
 export const ExtractionEntitySchema = z
   .object({
     entityRef: z.string().trim().min(1).max(120),
@@ -641,3 +643,5 @@ export const ProjectSchema = z.object({
 });
 
 export * from "./bookImport";
+export * from "./bookExpertCore";
+export * from "./bookGraph";

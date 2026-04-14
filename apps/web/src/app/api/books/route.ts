@@ -1,7 +1,6 @@
-import { LocalBlobStore, S3BlobStore, type BlobStore, prisma } from "@remarka/db";
+import { LocalBlobStore, S3BlobStore, enqueueBookAnalyzerStage, type BlobStore, prisma } from "@remarka/db";
 import {
   BookImportError,
-  buildPlainTextFromParsedChapter,
   detectBookFormatFromFileName,
   ensureParsedBookHasChapters,
   inferBookTitleFromFileName,
@@ -21,7 +20,23 @@ const DEFAULT_IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES = 50 * 1024 * 1024;
 const DEFAULT_LOCAL_BLOB_ROOT = "/tmp/remarka-imports";
 const DEFAULT_BOOKS_S3_REGION = "us-east-1";
 const DEFAULT_BOOKS_S3_KEY_PREFIX = "remarka/books";
-const PREVIEW_MAX_CHARS = 160;
+const UPLOAD_BOOK_PIPELINE_TASKS = [
+  "core_window_scan",
+  "core_merge",
+  "core_profiles",
+  "core_quotes_finalize",
+  "core_literary",
+  "canonical_text",
+  "scene_build",
+  "entity_graph",
+  "event_relation_graph",
+  "summary_store",
+  "evidence_store",
+  "text_index",
+  "quote_store",
+] as const;
+const UPLOAD_BOOK_INITIAL_OUTBOX = ["core_window_scan", "canonical_text"] as const;
+const UPLOAD_BOOK_INITIAL_OUTBOX_SET = new Set<string>(UPLOAD_BOOK_INITIAL_OUTBOX);
 
 function parsePositiveInt(value: string | null, fallback: number): number {
   const parsed = Number.parseInt(String(value || ""), 10);
@@ -60,12 +75,12 @@ function parseSort(value: string | null): "recent" | "popular" {
   return value === "popular" ? "popular" : "recent";
 }
 
-function parseIsPublic(value: FormDataEntryValue | null): boolean {
+function parseIsPublic(value: FormDataEntryValue | null): boolean | null {
   const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) return true;
+  if (!normalized) return null;
   if (["1", "true", "yes", "on"].includes(normalized)) return true;
   if (["0", "false", "no", "off"].includes(normalized)) return false;
-  return true;
+  return null;
 }
 
 function resolveMimeType(format: BookFormat, fileType: string): string {
@@ -73,56 +88,6 @@ function resolveMimeType(format: BookFormat, fileType: string): string {
   if (normalized) return normalized;
   if (format === "fb2") return "application/x-fictionbook+xml";
   return "application/zip";
-}
-
-function normalizePreviewText(value: string): string {
-  return String(value || "")
-    .replace(/\r\n?/g, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join(" ")
-    .replace(/[\t ]+/g, " ")
-    .trim();
-}
-
-function trimPreviewText(value: string, maxChars: number): string {
-  const normalized = normalizePreviewText(value);
-  if (!normalized) return "";
-  if (normalized.length <= maxChars) return normalized;
-
-  let candidate = normalized.slice(0, maxChars).trimEnd();
-  if (!candidate) return "";
-
-  const lastSpace = candidate.lastIndexOf(" ");
-  if (lastSpace >= Math.floor(maxChars * 0.6)) {
-    candidate = candidate.slice(0, lastSpace).trimEnd();
-  }
-
-  if (!candidate) {
-    candidate = normalized.slice(0, maxChars).trimEnd();
-  }
-
-  return `${candidate}…`;
-}
-
-function inlineTextFromChapterBlock(block: ParsedChapter["blocks"][number]): string {
-  return normalizePreviewText(block.inlines.map((part) => part.text).join(""));
-}
-
-function resolveChapterPreview(chapter: ParsedChapter): string | null {
-  const firstParagraph = chapter.blocks.find((block) => {
-    if (block.type !== "paragraph") return false;
-    return Boolean(inlineTextFromChapterBlock(block));
-  });
-
-  if (firstParagraph) {
-    const preview = trimPreviewText(inlineTextFromChapterBlock(firstParagraph), PREVIEW_MAX_CHARS);
-    return preview || null;
-  }
-
-  const fallback = trimPreviewText(buildPlainTextFromParsedChapter(chapter), PREVIEW_MAX_CHARS);
-  return fallback || null;
 }
 
 function resolveChapterTitle(chapter: ParsedChapter, orderIndex: number): string {
@@ -246,6 +211,9 @@ export async function GET(request: Request) {
         _count: {
           select: {
             likes: true,
+            bookCharacters: true,
+            bookThemes: true,
+            bookLocations: true,
           },
         },
       },
@@ -294,7 +262,7 @@ export async function POST(request: Request) {
 
   let parsedTitle: string | null = null;
   let parsedAuthor: string | null = null;
-  let chaptersToCreate: Array<{ orderIndex: number; title: string; previewText: string | null }> = [];
+  let chaptersToCreate: Array<{ orderIndex: number; title: string; summary: string | null }> = [];
 
   try {
     const parsed = await parseBook({
@@ -313,7 +281,7 @@ export async function POST(request: Request) {
       return {
         orderIndex,
         title: resolveChapterTitle(chapter, orderIndex),
-        previewText: resolveChapterPreview(chapter),
+        summary: null,
       };
     });
   } catch (error) {
@@ -335,36 +303,60 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Failed to store uploaded file" }, { status: 500 });
   }
 
-  const created = await prisma.book.create({
-    data: {
-      ownerUserId: authUser.id,
-      title: parsedTitle || inferBookTitleFromFileName(fileEntry.name) || "Без названия",
-      author: parsedAuthor,
-      chapterCount: chaptersToCreate.length,
-      isPublic: parseIsPublic(formData.get("isPublic")),
-      fileName: fileEntry.name,
-      mimeType: resolveMimeType(format, fileEntry.type),
-      sizeBytes: blob.sizeBytes,
-      storageProvider: blob.provider,
-      storageKey: blob.storageKey,
-      fileSha256: blob.sha256,
-      chapters: {
-        create: chaptersToCreate,
-      },
-    },
-    include: {
-      owner: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          image: true,
+  const created = await prisma.$transaction(async (tx) => {
+    const createdBook = await tx.book.create({
+      data: {
+        ownerUserId: authUser.id,
+        title: parsedTitle || inferBookTitleFromFileName(fileEntry.name) || "Без названия",
+        author: parsedAuthor,
+        summary: null,
+        chapterCount: chaptersToCreate.length,
+        isPublic: parseIsPublic(formData.get("isPublic")) ?? authUser.defaultBookVisibilityPublic,
+        analysisState: "queued",
+        analysisError: null,
+        analysisStartedAt: null,
+        analysisCompletedAt: null,
+        fileName: fileEntry.name,
+        mimeType: resolveMimeType(format, fileEntry.type),
+        sizeBytes: blob.sizeBytes,
+        storageProvider: blob.provider,
+        storageKey: blob.storageKey,
+        fileSha256: blob.sha256,
+        chapters: {
+          create: chaptersToCreate,
         },
       },
-    },
+      include: {
+        owner: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            image: true,
+          },
+        },
+      },
+    });
+
+    for (const analyzerType of UPLOAD_BOOK_PIPELINE_TASKS) {
+      await enqueueBookAnalyzerStage({
+        client: tx,
+        bookId: createdBook.id,
+        analyzerType,
+        publishEvent: UPLOAD_BOOK_INITIAL_OUTBOX_SET.has(analyzerType),
+      });
+    }
+
+    return createdBook;
   });
 
   const dto = toBookCoreDTO(created);
   dto.canManage = true;
+  console.info("[book-core-scheduled]", {
+    bookId: created.id,
+    analyzers: UPLOAD_BOOK_PIPELINE_TASKS,
+    initialOutbox: UPLOAD_BOOK_INITIAL_OUTBOX,
+    chapterCount: created.chapterCount,
+  });
   return NextResponse.json(dto, { status: 201 });
 }

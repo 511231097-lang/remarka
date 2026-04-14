@@ -1,24 +1,49 @@
 "use client";
 
 import { motion } from "motion/react";
-import { Users, Lightbulb, BookOpen, ArrowRight, Quote, MapPin } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowRight,
+  BookMarked,
+  CheckCircle,
+  FileText,
+  Lightbulb,
+  MapPin,
+  Palette,
+  Swords,
+  User,
+  Users,
+} from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BookNavigation } from "./BookNavigation";
 import { BookSettings } from "./BookSettings";
-import { getBook, getBookChapters } from "@/lib/booksClient";
-import { displayAuthor, type BookChapterDTO, type BookCoreDTO } from "@/lib/books";
+import { ChatPreview } from "./ChatPreview";
+import { DownloadAnalysisPdfButton } from "./DownloadAnalysisPdfButton";
+import {
+  getBook,
+  getBookAnalysisStatus,
+  getBookLiteraryAnalysis,
+  type BookAnalyzerState,
+} from "@/lib/booksClient";
+import { displayAuthor, type BookCoreDTO, type BookLiteraryAnalysisDTO, type LiterarySectionKeyDTO } from "@/lib/books";
 
-const PLACEHOLDER_CHARACTERS = ["Персонажи появятся", "после интеграции", "аналитического контура"];
-const PLACEHOLDER_THEMES = ["Темы появятся после", "подключения extraction", "и агрегации данных"];
-const PLACEHOLDER_LOCATIONS = ["Локации появятся", "после второй волны", "интеграции"];
+function resolveState(value: BookAnalyzerState): BookAnalyzerState {
+  if (value === "queued" || value === "running" || value === "completed" || value === "failed" || value === "not_requested") {
+    return value;
+  }
+  return "not_requested";
+}
 
 export function BookOverview() {
   const params = useParams<{ bookId: string }>();
   const bookId = String(params.bookId || "");
+
   const [book, setBook] = useState<BookCoreDTO | null>(null);
-  const [chapters, setChapters] = useState<BookChapterDTO[]>([]);
+  const [analysis, setAnalysis] = useState<BookLiteraryAnalysisDTO | null>(null);
+  const [literaryState, setLiteraryState] = useState<BookAnalyzerState>("not_requested");
+  const [quotesState, setQuotesState] = useState<BookAnalyzerState>("not_requested");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -29,25 +54,37 @@ export function BookOverview() {
     async function load() {
       setLoading(true);
       setError(null);
-      try {
-        const [bookResponse, chaptersResponse] = await Promise.all([
-          getBook(bookId),
-          getBookChapters(bookId),
-        ]);
-        if (!active) return;
-        setBook(bookResponse);
-        setChapters(chaptersResponse);
-      } catch (loadError) {
-        if (!active) return;
-        const message = loadError instanceof Error ? loadError.message : "Не удалось загрузить книгу";
-        setError(message);
+
+      const [bookResult, statusResult, analysisResult] = await Promise.allSettled([
+        getBook(bookId),
+        getBookAnalysisStatus(bookId),
+        getBookLiteraryAnalysis(bookId),
+      ]);
+
+      if (!active) return;
+
+      if (bookResult.status === "fulfilled") {
+        setBook(bookResult.value);
+      } else {
         setBook(null);
-        setChapters([]);
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
+        setError(bookResult.reason instanceof Error ? bookResult.reason.message : "Не удалось загрузить книгу");
       }
+
+      if (statusResult.status === "fulfilled") {
+        setLiteraryState(resolveState(statusResult.value.views.literary.state));
+        setQuotesState(resolveState(statusResult.value.views.quotes.state));
+      } else {
+        setLiteraryState("not_requested");
+        setQuotesState("not_requested");
+      }
+
+      if (analysisResult.status === "fulfilled") {
+        setAnalysis(analysisResult.value);
+      } else {
+        setAnalysis(null);
+      }
+
+      setLoading(false);
     }
 
     void load();
@@ -56,21 +93,134 @@ export function BookOverview() {
     };
   }, [bookId]);
 
+  useEffect(() => {
+    if (!bookId) return;
+    const shouldPoll = literaryState === "queued" || literaryState === "running" || quotesState === "queued" || quotesState === "running";
+    if (!shouldPoll) return;
+
+    let active = true;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const schedulePoll = (delayMs: number) => {
+      pollTimer = setTimeout(() => {
+        void pollOnce();
+      }, Math.max(1000, delayMs));
+    };
+
+    async function pollOnce() {
+      try {
+        const status = await getBookAnalysisStatus(bookId);
+        if (!active) return;
+
+        const nextLiteraryState = resolveState(status.views.literary.state);
+        const nextQuotesState = resolveState(status.views.quotes.state);
+        setLiteraryState(nextLiteraryState);
+        setQuotesState(nextQuotesState);
+
+        if (nextLiteraryState === "completed") {
+          try {
+            const nextAnalysis = await getBookLiteraryAnalysis(bookId);
+            if (!active) return;
+            setAnalysis(nextAnalysis);
+          } catch {
+            // keep previous state, poll loop may continue if needed
+          }
+        }
+
+        if (nextLiteraryState === "queued" || nextLiteraryState === "running" || nextQuotesState === "queued" || nextQuotesState === "running") {
+          schedulePoll(status.pollIntervalMs || 3000);
+        }
+      } catch {
+        if (!active) return;
+        schedulePoll(4000);
+      }
+    }
+
+    schedulePoll(2000);
+
+    return () => {
+      active = false;
+      if (pollTimer) {
+        clearTimeout(pollTimer);
+      }
+    };
+  }, [bookId, literaryState, quotesState]);
+
+  const sections = useMemo(
+    () => [
+      {
+        key: "what_is_really_going_on" as const,
+        title: "Что на самом деле происходит",
+        icon: FileText,
+        path: `/book/${bookId}/what-is-really-going-on`,
+      },
+      { key: "main_idea" as const, title: "Главная идея", icon: Lightbulb, path: `/book/${bookId}/main-idea` },
+      { key: "how_it_works" as const, title: "Как это работает", icon: BookMarked, path: `/book/${bookId}/how-it-works` },
+      { key: "hidden_details" as const, title: "Скрытые детали", icon: User, path: `/book/${bookId}/hidden-details` },
+      { key: "characters" as const, title: "Персонажи", icon: Users, path: `/book/${bookId}/characters` },
+      { key: "conflicts" as const, title: "Конфликты", icon: Swords, path: `/book/${bookId}/conflicts` },
+      { key: "structure" as const, title: "Структура", icon: MapPin, path: `/book/${bookId}/structure` },
+      { key: "important_turns" as const, title: "Важные повороты", icon: Palette, path: `/book/${bookId}/important-turns` },
+      { key: "takeaways" as const, title: "Что важно вынести", icon: AlertCircle, path: `/book/${bookId}/takeaways` },
+      { key: "conclusion" as const, title: "Вывод", icon: CheckCircle, path: `/book/${bookId}/conclusion` },
+    ],
+    [bookId]
+  );
+
+  const previewByKey = useMemo(() => {
+    const map = new Map<LiterarySectionKeyDTO, string>();
+    if (analysis) {
+      for (const section of sections) {
+        const summary = analysis.sections[section.key]?.summary || "";
+        if (summary) map.set(section.key, summary);
+      }
+    }
+
+    const fallbackText =
+      literaryState === "failed"
+        ? "Не удалось сформировать раздел"
+        : literaryState === "queued" || literaryState === "running"
+          ? "Раздел формируется..."
+          : quotesState === "queued" || quotesState === "running"
+            ? "Сначала формируем слой цитат..."
+            : "Раздел пока недоступен";
+
+    for (const section of sections) {
+      if (!map.has(section.key)) {
+        map.set(section.key, fallbackText);
+      }
+    }
+
+    return map;
+  }, [analysis, literaryState, quotesState, sections]);
+
+  const downloadDisabledReason = useMemo(() => {
+    if (literaryState === "completed") return null;
+    if (literaryState === "queued" || literaryState === "running") {
+      return "Литературный анализ еще формируется";
+    }
+    if (quotesState === "queued" || quotesState === "running") {
+      return "Сначала формируется слой цитат";
+    }
+    if (literaryState === "failed") {
+      return "Экспорт станет доступен после успешного анализа";
+    }
+    return "Анализ еще недоступен";
+  }, [literaryState, quotesState]);
+
   return (
     <div className="min-h-screen bg-background">
       <BookNavigation />
       <div className="max-w-6xl mx-auto px-6 pb-12">
-        {loading && (
-          <div className="pt-12 text-muted-foreground">Загрузка книги...</div>
-        )}
+        {loading ? <div className="pt-12 text-muted-foreground">Загрузка книги...</div> : null}
 
-        {error && !loading && (
+        {error && !loading ? (
           <div className="pt-12 p-4 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive">
             {error}
           </div>
-        )}
+        ) : null}
 
-        {book && !loading && (
+        {book && !loading ? (
           <>
             <motion.div
               initial={{ opacity: 0, y: 20 }}
@@ -82,12 +232,19 @@ export function BookOverview() {
                   <h1 className="text-3xl lg:text-4xl text-foreground mb-2">{book.title}</h1>
                   <p className="text-lg lg:text-xl text-muted-foreground">{displayAuthor(book.author)}</p>
                 </div>
-                <BookSettings
-                  book={book}
-                  onBookUpdated={(updatedBook) => {
-                    setBook(updatedBook);
-                  }}
-                />
+                <div className="flex items-center gap-2">
+                  <DownloadAnalysisPdfButton
+                    bookId={bookId}
+                    disabled={Boolean(downloadDisabledReason)}
+                    disabledReason={downloadDisabledReason || undefined}
+                  />
+                  <BookSettings
+                    book={book}
+                    onBookUpdated={(updatedBook) => {
+                      setBook(updatedBook);
+                    }}
+                  />
+                </div>
               </div>
             </motion.div>
 
@@ -95,197 +252,43 @@ export function BookOverview() {
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.1 }}
-              className="grid grid-cols-2 md:grid-cols-5 gap-4 mb-12"
+              className="mb-12"
             >
-              <div className="p-6 bg-card border border-border rounded-lg">
-                <div className="flex items-center gap-3 mb-2">
-                  <BookOpen className="w-5 h-5 text-primary" />
-                  <span className="text-2xl text-foreground">{book.chapterCount}</span>
-                </div>
-                <p className="text-sm text-muted-foreground">Глав</p>
-              </div>
-
-              <div className="p-6 bg-card border border-border rounded-lg">
-                <div className="flex items-center gap-3 mb-2">
-                  <Users className="w-5 h-5 text-primary" />
-                  <span className="text-2xl text-foreground">0</span>
-                </div>
-                <p className="text-sm text-muted-foreground">Персонажей</p>
-              </div>
-
-              <div className="p-6 bg-card border border-border rounded-lg">
-                <div className="flex items-center gap-3 mb-2">
-                  <Lightbulb className="w-5 h-5 text-primary" />
-                  <span className="text-2xl text-foreground">0</span>
-                </div>
-                <p className="text-sm text-muted-foreground">Тем</p>
-              </div>
-
-              <div className="p-6 bg-card border border-border rounded-lg">
-                <div className="flex items-center gap-3 mb-2">
-                  <MapPin className="w-5 h-5 text-primary" />
-                  <span className="text-2xl text-foreground">0</span>
-                </div>
-                <p className="text-sm text-muted-foreground">Локаций</p>
-              </div>
-
-              <Link href={`/book/${bookId}/quotes`} className="p-6 bg-card border border-border rounded-lg hover:border-primary/30 transition-colors">
-                <div className="flex items-center gap-3 mb-2">
-                  <Quote className="w-5 h-5 text-primary" />
-                  <span className="text-2xl text-foreground">0</span>
-                </div>
-                <p className="text-sm text-muted-foreground">Цитат</p>
-              </Link>
+              <ChatPreview bookId={bookId} bookTitle={book.title} />
             </motion.div>
 
-            <div className="space-y-12">
-              <motion.section
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.2 }}
-              >
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-2xl text-foreground">Персонажи</h2>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              {sections.map((section, index) => (
+                <motion.div
+                  key={section.path}
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.2 + index * 0.05 }}
+                >
                   <Link
-                    href={`/book/${bookId}/characters`}
-                    className="text-sm text-primary hover:underline flex items-center gap-1"
+                    href={section.path}
+                    className="group block p-5 bg-card border border-border rounded-lg hover:border-primary/30 transition-colors h-full"
                   >
-                    Все персонажи
-                    <ArrowRight className="w-4 h-4" />
-                  </Link>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {PLACEHOLDER_CHARACTERS.map((item, index) => (
-                    <motion.div
-                      key={item}
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.3 + index * 0.1 }}
-                      className="block p-5 bg-card border border-border rounded-lg"
-                    >
-                      <h3 className="text-lg text-foreground mb-3">{item}</h3>
-                      <p className="text-sm text-muted-foreground">Детали персонажей появятся после следующего этапа интеграции.</p>
-                    </motion.div>
-                  ))}
-                </div>
-              </motion.section>
-
-              <motion.section
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.4 }}
-              >
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-2xl text-foreground">Темы</h2>
-                  <Link
-                    href={`/book/${bookId}/themes`}
-                    className="text-sm text-primary hover:underline flex items-center gap-1"
-                  >
-                    Все темы
-                    <ArrowRight className="w-4 h-4" />
-                  </Link>
-                </div>
-
-                <div className="space-y-4">
-                  {PLACEHOLDER_THEMES.map((item, index) => (
-                    <motion.div
-                      key={item}
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.5 + index * 0.1 }}
-                      className="block p-5 bg-card border border-border rounded-lg"
-                    >
-                      <h3 className="text-lg text-foreground mb-2">{item}</h3>
-                      <p className="text-sm text-muted-foreground">Контент тематического анализа пока отображается как заглушка.</p>
-                    </motion.div>
-                  ))}
-                </div>
-              </motion.section>
-
-              <motion.section
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.6 }}
-              >
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-2xl text-foreground">Локации</h2>
-                  <Link
-                    href={`/book/${bookId}/locations`}
-                    className="text-sm text-primary hover:underline flex items-center gap-1"
-                  >
-                    Все локации
-                    <ArrowRight className="w-4 h-4" />
-                  </Link>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {PLACEHOLDER_LOCATIONS.map((item, index) => (
-                    <motion.div
-                      key={item}
-                      initial={{ opacity: 0, y: 20 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: 0.7 + index * 0.1 }}
-                      className="block p-5 bg-card border border-border rounded-lg"
-                    >
-                      <h3 className="text-lg text-foreground mb-2">{item}</h3>
-                      <p className="text-sm text-muted-foreground">Раздел локаций будет заполнен после подключения аналитических сущностей.</p>
-                    </motion.div>
-                  ))}
-                </div>
-              </motion.section>
-
-              <motion.section
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.8 }}
-              >
-                <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-2xl text-foreground">Структура произведения</h2>
-                </div>
-
-                <div className="space-y-3">
-                  {chapters.length > 0 ? (
-                    chapters.map((chapter, index) => (
-                      <motion.div
-                        key={chapter.id}
-                        initial={{ opacity: 0, x: -20 }}
-                        animate={{ opacity: 1, x: 0 }}
-                        transition={{ delay: 0.9 + index * 0.1 }}
-                        className="flex items-start gap-4 p-4 bg-card border border-border rounded-lg"
-                      >
-                        <div className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center flex-shrink-0">
-                          <span className="text-sm text-primary">{chapter.orderIndex}</span>
-                        </div>
-                        <div className="flex-1">
-                          <h3 className="text-foreground mb-1">{chapter.title}</h3>
-                          {chapter.previewText ? (
-                            <p className="text-sm text-muted-foreground line-clamp-2">{chapter.previewText}</p>
-                          ) : null}
-                        </div>
-                      </motion.div>
-                    ))
-                  ) : (
-                    <motion.div
-                      initial={{ opacity: 0, x: -20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ delay: 0.9 }}
-                      className="flex items-start gap-4 p-4 bg-card border border-border rounded-lg"
-                    >
-                      <div className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center flex-shrink-0">
-                        <span className="text-sm text-primary">1</span>
+                    <div className="flex items-start gap-4 mb-3">
+                      <div className="p-2 bg-secondary rounded-lg flex-shrink-0">
+                        <section.icon className="w-5 h-5 text-primary" />
                       </div>
                       <div className="flex-1">
-                        <h3 className="text-foreground mb-1">Структура пока недоступна</h3>
-                        <p className="text-sm text-muted-foreground">Для этой книги пока не найдено глав.</p>
+                        <h3 className="text-lg text-foreground mb-2 flex items-center gap-2">
+                          {section.title}
+                          <ArrowRight className="w-4 h-4 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
+                        </h3>
+                        <p className="text-sm text-muted-foreground line-clamp-2">
+                          {previewByKey.get(section.key)}
+                        </p>
                       </div>
-                    </motion.div>
-                  )}
-                </div>
-              </motion.section>
+                    </div>
+                  </Link>
+                </motion.div>
+              ))}
             </div>
           </>
-        )}
+        ) : null}
       </div>
     </div>
   );

@@ -1,5 +1,5 @@
-import { CharactersList } from "@/components/CharactersList";
+import { BookCharactersAnalysis } from "@/components/BookCharactersAnalysis";
 
-export default function CharactersListPage() {
-  return <CharactersList />;
+export default function BookCharactersAnalysisPage() {
+  return <BookCharactersAnalysis />;
 }

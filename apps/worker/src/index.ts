@@ -1,5 +1,29 @@
 import { prisma } from "@remarka/db";
 import { workerConfig } from "./config";
+import { processBookCharacters } from "./jobs/processBookCharacters";
+import { processBookChatIndex } from "./jobs/processBookChatIndex";
+import {
+  processBookCoreLiterary,
+  processBookCoreMerge,
+  processBookCoreProfiles,
+  processBookCoreQuotesFinalize,
+  processBookCoreWindowScan,
+} from "./jobs/processBookExpertCore";
+import {
+  processBookCanonicalText,
+  processBookEntityGraph,
+  processBookEventRelationGraph,
+  processBookEvidenceStore,
+  processBookQuoteStore,
+  processBookSceneBuild,
+  processBookSummaryStore,
+  processBookTextIndex,
+} from "./jobs/processBookGraph";
+import { processBookLiterary } from "./jobs/processBookLiterary";
+import { processBookLocations } from "./jobs/processBookLocations";
+import { processBookQuotes } from "./jobs/processBookQuotes";
+import { processBookSummary } from "./jobs/processBookSummary";
+import { processBookThemes } from "./jobs/processBookThemes";
 import { processDocumentExtract } from "./jobs/processDocumentExtract";
 import { processProjectImport } from "./jobs/processProjectImport";
 import { logger } from "./logger";
@@ -85,6 +109,196 @@ async function handleOutboxEvent(entry: any) {
   const eventType = String(entry.eventType || "").trim();
   const payload = entry.payloadJson || {};
 
+  const processBookAnalyzer = async () => {
+    const bookId = String(payload?.bookId || "").trim();
+    const analyzerType = String(payload?.analyzerType || "").trim().toLowerCase();
+    if (!bookId) {
+      throw new Error("Invalid book.analyzer.requested payload");
+    }
+    if (!analyzerType) {
+      throw new Error("Invalid book.analyzer.requested payload: analyzerType is required");
+    }
+
+    if (analyzerType === "quotes") {
+      if (!workerConfig.pipeline.enableBookQuotesAnalyzer) {
+        const now = new Date();
+        await prisma.bookAnalyzerTask.upsert({
+          where: {
+            bookId_analyzerType: {
+              bookId,
+              analyzerType: "quotes",
+            },
+          },
+          create: {
+            bookId,
+            analyzerType: "quotes",
+            state: "completed",
+            error: null,
+            startedAt: now,
+            completedAt: now,
+          },
+          update: {
+            state: "completed",
+            error: null,
+            startedAt: now,
+            completedAt: now,
+          },
+        });
+
+        logger.info(
+          {
+            bookId,
+            outboxId: entry.id,
+          },
+          "Skipping quotes analyzer because BOOK_QUOTES_ANALYZER_ENABLED is false"
+        );
+        return;
+      }
+
+      await processBookQuotes({ bookId });
+      return;
+    }
+
+    if (analyzerType === "literary") {
+      if (!workerConfig.pipeline.enableBookLiteraryAnalyzer) {
+        const now = new Date();
+        await prisma.bookAnalyzerTask.upsert({
+          where: {
+            bookId_analyzerType: {
+              bookId,
+              analyzerType: "literary",
+            },
+          },
+          create: {
+            bookId,
+            analyzerType: "literary",
+            state: "completed",
+            error: null,
+            startedAt: now,
+            completedAt: now,
+          },
+          update: {
+            state: "completed",
+            error: null,
+            startedAt: now,
+            completedAt: now,
+          },
+        });
+
+        logger.info(
+          {
+            bookId,
+            outboxId: entry.id,
+          },
+          "Skipping literary analyzer because BOOK_LITERARY_ANALYZER_ENABLED is false"
+        );
+        return;
+      }
+
+      await processBookLiterary({ bookId });
+      return;
+    }
+
+    if (analyzerType === "chat_index") {
+      await processBookChatIndex({ bookId });
+      return;
+    }
+
+    if (analyzerType === "core_window_scan") {
+      await processBookCoreWindowScan({ bookId });
+      return;
+    }
+
+    if (analyzerType === "core_merge") {
+      await processBookCoreMerge({ bookId });
+      return;
+    }
+
+    if (analyzerType === "core_profiles") {
+      await processBookCoreProfiles({ bookId });
+      return;
+    }
+
+    if (analyzerType === "core_quotes_finalize") {
+      await processBookCoreQuotesFinalize({ bookId });
+      return;
+    }
+
+    if (analyzerType === "core_literary") {
+      await processBookCoreLiterary({ bookId });
+      return;
+    }
+
+    if (analyzerType === "canonical_text") {
+      await processBookCanonicalText({ bookId });
+      return;
+    }
+
+    if (analyzerType === "scene_build") {
+      await processBookSceneBuild({ bookId });
+      return;
+    }
+
+    if (analyzerType === "entity_graph") {
+      await processBookEntityGraph({ bookId });
+      return;
+    }
+
+    if (analyzerType === "event_relation_graph") {
+      await processBookEventRelationGraph({ bookId });
+      return;
+    }
+
+    if (analyzerType === "summary_store") {
+      await processBookSummaryStore({ bookId });
+      return;
+    }
+
+    if (analyzerType === "evidence_store") {
+      await processBookEvidenceStore({ bookId });
+      return;
+    }
+
+    if (analyzerType === "text_index") {
+      await processBookTextIndex({ bookId });
+      return;
+    }
+
+    if (analyzerType === "quote_store") {
+      await processBookQuoteStore({ bookId });
+      return;
+    }
+
+    if (analyzerType === "summary") {
+      await processBookSummary({ bookId });
+      return;
+    }
+
+    if (analyzerType === "characters") {
+      await processBookCharacters({ bookId });
+      return;
+    }
+
+    if (analyzerType === "themes") {
+      await processBookThemes({ bookId });
+      return;
+    }
+
+    if (analyzerType === "locations") {
+      await processBookLocations({ bookId });
+      return;
+    }
+
+    logger.info(
+      {
+        bookId,
+        analyzerType,
+        outboxId: entry.id,
+      },
+      "Skipping unsupported book analyzer type"
+    );
+  };
+
   if (eventType === "analysis.run.requested") {
     const runId = String(payload?.runId || "").trim();
     if (!runId) {
@@ -105,6 +319,21 @@ async function handleOutboxEvent(entry: any) {
 
   if (eventType === "document.reindex.requested") {
     await handleReindexEvent(payload);
+    return;
+  }
+
+  if (eventType === "book.analysis.requested") {
+    logger.info(
+      {
+        outboxId: entry.id,
+      },
+      "Skipping deprecated book.analysis.requested event"
+    );
+    return;
+  }
+
+  if (eventType === "book.analyzer.requested") {
+    await processBookAnalyzer();
     return;
   }
 

@@ -23,6 +23,7 @@ interface ProfileProps {
     name: string | null;
     email: string | null;
     image: string | null;
+    defaultBookVisibilityPublic: boolean;
   };
 }
 
@@ -36,7 +37,49 @@ export function Profile({ authUser }: ProfileProps) {
     0,
   );
   const [showPlans, setShowPlans] = useState(false);
+  const [defaultBookVisibilityPublic, setDefaultBookVisibilityPublic] = useState(
+    authUser.defaultBookVisibilityPublic,
+  );
+  const [privacySaving, setPrivacySaving] = useState(false);
+  const [privacyError, setPrivacyError] = useState<string | null>(null);
   const { theme, toggleTheme } = useTheme();
+
+  async function handleDefaultBookVisibilityChange(nextValue: boolean) {
+    const previousValue = defaultBookVisibilityPublic;
+    setDefaultBookVisibilityPublic(nextValue);
+    setPrivacyError(null);
+    setPrivacySaving(true);
+
+    try {
+      const response = await fetch("/api/profile/settings", {
+        method: "PATCH",
+        headers: {
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          defaultBookVisibilityPublic: nextValue,
+        }),
+      });
+
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(String(payload?.error || "Не удалось сохранить настройки"));
+      }
+
+      const savedValue =
+        typeof payload?.defaultBookVisibilityPublic === "boolean"
+          ? payload.defaultBookVisibilityPublic
+          : nextValue;
+      setDefaultBookVisibilityPublic(savedValue);
+    } catch (error) {
+      const message =
+        error instanceof Error ? error.message : "Не удалось сохранить настройки";
+      setDefaultBookVisibilityPublic(previousValue);
+      setPrivacyError(message);
+    } finally {
+      setPrivacySaving(false);
+    }
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -336,16 +379,30 @@ export function Profile({ authUser }: ProfileProps) {
               <p className="text-sm text-muted-foreground mb-4">
                 По умолчанию делать загруженные книги публичными
               </p>
-              <label className="flex items-center gap-3 cursor-pointer">
+              <label
+                className={`flex items-center gap-3 ${
+                  privacySaving ? "cursor-not-allowed opacity-70" : "cursor-pointer"
+                }`}
+              >
                 <input
                   type="checkbox"
-                  defaultChecked
+                  checked={defaultBookVisibilityPublic}
+                  onChange={(event) => {
+                    void handleDefaultBookVisibilityChange(event.target.checked);
+                  }}
+                  disabled={privacySaving}
                   className="w-5 h-5 rounded border-border text-primary focus:ring-primary"
                 />
                 <span className="text-sm text-foreground">
                   Публиковать автоматически
                 </span>
               </label>
+              {privacySaving ? (
+                <p className="text-xs text-muted-foreground mt-3">Сохраняем...</p>
+              ) : null}
+              {privacyError ? (
+                <p className="text-xs text-destructive mt-3">{privacyError}</p>
+              ) : null}
             </div>
 
             <div className="p-6 bg-card border border-border rounded-lg">

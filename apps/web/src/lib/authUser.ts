@@ -7,6 +7,7 @@ export interface AuthUser {
   name: string | null;
   email: string | null;
   image: string | null;
+  defaultBookVisibilityPublic: boolean;
 }
 
 export async function resolveAuthUser(): Promise<AuthUser | null> {
@@ -21,6 +22,7 @@ export async function resolveAuthUser(): Promise<AuthUser | null> {
       name: true,
       email: true,
       image: true,
+      defaultBookVisibilityPublic: true,
     },
   });
 

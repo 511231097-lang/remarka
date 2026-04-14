@@ -203,6 +203,365 @@ export interface CharacterMergeArbiterResult {
   rationale: string;
 }
 
+export interface BookChapterSummaryInput {
+  chapterTitle: string;
+  chapterText: string;
+}
+
+export interface BookChapterSummaryResult {
+  summary: string;
+}
+
+export interface BookSummaryFromChapterSummariesInput {
+  bookTitle: string;
+  author: string | null;
+  chapterSummaries: Array<{
+    orderIndex: number;
+    title: string;
+    summary: string;
+  }>;
+}
+
+export interface BookSummaryFromChapterSummariesResult {
+  summary: string;
+}
+
+export interface BookChapterCharactersInput {
+  chapterTitle: string;
+  chapterText: string;
+}
+
+export interface BookChapterCharactersResult {
+  characters: Array<{
+    name: string;
+    aliases: string[];
+    roleInChapter: string;
+    mentionCount: number;
+    quotes: Array<{
+      text: string;
+      context: string;
+    }>;
+  }>;
+}
+
+export interface BookCharacterProfileSynthesisInput {
+  bookTitle: string;
+  bookAuthor: string | null;
+  characterName: string;
+  aliases: string[];
+  mentionCount: number;
+  firstAppearanceChapterOrder: number | null;
+  chapterSignals: Array<{
+    chapterOrderIndex: number;
+    chapterTitle: string;
+    roleInChapter: string;
+    quotes: Array<{
+      text: string;
+      context: string;
+    }>;
+  }>;
+}
+
+export interface BookCharacterProfileSynthesisResult {
+  role: string;
+  description: string;
+  arc: string;
+}
+
+export interface BookChapterLocationsInput {
+  chapterTitle: string;
+  chapterText: string;
+}
+
+export interface BookChapterLocationsResult {
+  locations: Array<{
+    name: string;
+    aliases: string[];
+    functionInChapter: string;
+    mentionCount: number;
+    quotes: Array<{
+      text: string;
+      context: string;
+    }>;
+  }>;
+}
+
+export interface BookLocationProfileSynthesisInput {
+  bookTitle: string;
+  bookAuthor: string | null;
+  locationName: string;
+  aliases: string[];
+  mentionCount: number;
+  firstAppearanceChapterOrder: number | null;
+  chapterSignals: Array<{
+    chapterOrderIndex: number;
+    chapterTitle: string;
+    functionInChapter: string;
+    quotes: Array<{
+      text: string;
+      context: string;
+    }>;
+  }>;
+}
+
+export interface BookLocationProfileSynthesisResult {
+  description: string;
+  significance: string;
+}
+
+export interface BookChapterThemesInput {
+  chapterTitle: string;
+  chapterText: string;
+}
+
+export interface BookChapterThemesResult {
+  themes: Array<{
+    name: string;
+    aliases: string[];
+    manifestationInChapter: string;
+    mentionCount: number;
+    quotes: Array<{
+      text: string;
+      context: string;
+    }>;
+  }>;
+}
+
+export interface BookThemeProfileSynthesisInput {
+  bookTitle: string;
+  bookAuthor: string | null;
+  themeName: string;
+  aliases: string[];
+  mentionCount: number;
+  firstAppearanceChapterOrder: number | null;
+  chapterSignals: Array<{
+    chapterOrderIndex: number;
+    chapterTitle: string;
+    manifestationInChapter: string;
+    quotes: Array<{
+      text: string;
+      context: string;
+    }>;
+  }>;
+}
+
+export interface BookThemeProfileSynthesisResult {
+  description: string;
+  development: string;
+}
+
+export type BookQuoteType =
+  | "dialogue"
+  | "monologue"
+  | "narration"
+  | "description"
+  | "reflection"
+  | "action";
+
+export type BookQuoteTag =
+  | "conflict"
+  | "relationship"
+  | "identity"
+  | "morality"
+  | "power"
+  | "freedom"
+  | "fear"
+  | "guilt"
+  | "hope"
+  | "fate"
+  | "society"
+  | "violence"
+  | "love"
+  | "death"
+  | "faith";
+
+export type BookQuoteMentionKind = "character" | "theme" | "location";
+
+export interface BookChapterQuotesInput {
+  chapterTitle: string;
+  chapterText: string;
+}
+
+export interface BookChapterQuotesResult {
+  quotes: Array<{
+    text: string;
+    startChar: number;
+    endChar: number;
+    type: BookQuoteType;
+    tags: BookQuoteTag[];
+    confidence: number;
+    commentary: string;
+    mentions: Array<{
+      kind: BookQuoteMentionKind;
+      value: string;
+      normalizedValue: string;
+      startChar: number;
+      endChar: number;
+      confidence: number;
+    }>;
+  }>;
+}
+
+export type BookLiterarySectionKey =
+  | "what_is_really_going_on"
+  | "main_idea"
+  | "how_it_works"
+  | "hidden_details"
+  | "characters"
+  | "conflicts"
+  | "structure"
+  | "important_turns"
+  | "takeaways"
+  | "conclusion";
+
+export const BOOK_LITERARY_SECTION_KEYS: BookLiterarySectionKey[] = [
+  "what_is_really_going_on",
+  "main_idea",
+  "how_it_works",
+  "hidden_details",
+  "characters",
+  "conflicts",
+  "structure",
+  "important_turns",
+  "takeaways",
+  "conclusion",
+];
+
+export interface BookLiterarySynthesisInput {
+  bookTitle: string;
+  bookAuthor: string | null;
+  chapterCount: number;
+  quotes: Array<{
+    quoteId: string;
+    chapterOrderIndex: number;
+    type: BookQuoteType;
+    tags: BookQuoteTag[];
+    confidence: number;
+    text: string;
+    commentary: string | null;
+    mentions: Array<{
+      kind: BookQuoteMentionKind;
+      value: string;
+      confidence: number;
+    }>;
+  }>;
+}
+
+export interface BookLiterarySynthesisSection {
+  title: string;
+  summary: string;
+  bodyMarkdown: string;
+  bullets: string[];
+  evidenceQuoteIds: string[];
+  confidence: number;
+}
+
+export interface BookLiterarySynthesisResult {
+  sections: Record<BookLiterarySectionKey, BookLiterarySynthesisSection>;
+}
+
+export interface BookChapterLiterarySynthesisInput {
+  bookTitle: string;
+  bookAuthor: string | null;
+  chapterOrderIndex: number;
+  chapterTitle: string;
+  chapterText: string;
+}
+
+export interface BookLiteraryMergeChapterInput {
+  chapterOrderIndex: number;
+  chapterTitle: string;
+  sections: Record<BookLiterarySectionKey, BookLiterarySynthesisSection>;
+}
+
+export interface BookLiteraryMergeSynthesisInput {
+  bookTitle: string;
+  bookAuthor: string | null;
+  chapterCount: number;
+  chapterAnalyses: BookLiteraryMergeChapterInput[];
+}
+
+export interface BookChapterStructuralFactsInput {
+  bookTitle: string;
+  bookAuthor: string | null;
+  chapterOrderIndex: number;
+  chapterTitle: string;
+  chapterText: string;
+}
+
+export interface BookChapterStructuralFactsResult {
+  events: Array<{
+    id: string;
+    description: string;
+    characters: string[];
+    importance: number;
+  }>;
+  characterChanges: Array<{
+    character: string;
+    before: string;
+    after: string;
+    reason: string;
+  }>;
+  conflicts: Array<{
+    type: "external" | "internal";
+    description: string;
+    participants: string[];
+  }>;
+  symbols: Array<{
+    entity: string;
+    description: string;
+    context: string;
+  }>;
+  facts: string[];
+}
+
+export interface BookLiteraryMergeFactsChapterInput {
+  chapterOrderIndex: number;
+  chapterTitle: string;
+  facts: BookChapterStructuralFactsResult;
+}
+
+export type BookLiteraryPatternEvidenceType =
+  | "event"
+  | "characterChange"
+  | "conflict"
+  | "symbol"
+  | "fact";
+
+export interface BookLiteraryPatternEvidence {
+  type: BookLiteraryPatternEvidenceType;
+  chapter: number;
+  ref: string;
+}
+
+export interface BookLiteraryPattern {
+  id: string;
+  name: string;
+  core: string;
+  whyItMatters: string;
+  evidence: BookLiteraryPatternEvidence[];
+  evolution: string;
+  strength: number;
+}
+
+export interface BookLiteraryPatternPassInput {
+  bookTitle: string;
+  chapterCount: number;
+  chapterFacts: BookLiteraryMergeFactsChapterInput[];
+}
+
+export interface BookLiteraryPatternPassResult {
+  patterns: BookLiteraryPattern[];
+}
+
+export interface BookLiteraryMergeFactsSynthesisInput {
+  bookTitle: string;
+  bookAuthor: string | null;
+  chapterCount: number;
+  chapterFacts: BookLiteraryMergeFactsChapterInput[];
+  patterns: BookLiteraryPattern[];
+}
+
 export interface LlmTokenUsage {
   promptTokens: number;
   completionTokens: number;
@@ -226,21 +585,37 @@ export interface StrictJsonCallDebug {
   jsonCandidate: string;
 }
 
-interface StrictJsonCallResult<T> {
+export type StrictJsonPhase =
+  | "entity_pass"
+  | "act_pass"
+  | "appearance_pass"
+  | "mention_completion"
+  | "character_merge_arbiter"
+  | "character_book_pass"
+  | "character_profile"
+  | "book_chapter_summary"
+  | "book_summary"
+  | "book_chapter_characters"
+  | "book_character_profile"
+  | "book_chapter_locations"
+  | "book_location_profile"
+  | "book_chapter_themes"
+  | "book_theme_profile"
+  | "book_chapter_quotes"
+  | "book_literary"
+  | "book_core_window_scan"
+  | "book_core_profiles"
+  | "book_core_literary_pattern"
+  | "book_core_literary_synthesis";
+
+export interface StrictJsonCallResult<T> {
   result: T;
   meta: StrictJsonCallMeta;
   debug: StrictJsonCallDebug;
 }
 
 export class ExtractionStructuredOutputError extends Error {
-  phase:
-    | "entity_pass"
-    | "act_pass"
-    | "appearance_pass"
-    | "mention_completion"
-    | "character_merge_arbiter"
-    | "character_book_pass"
-    | "character_profile";
+  phase: StrictJsonPhase;
   provider: "kia" | "timeweb" | "vertex";
   model: string;
   attempt: number;
@@ -251,14 +626,7 @@ export class ExtractionStructuredOutputError extends Error {
 
   constructor(params: {
     message: string;
-    phase:
-      | "entity_pass"
-      | "act_pass"
-      | "appearance_pass"
-      | "mention_completion"
-      | "character_merge_arbiter"
-      | "character_book_pass"
-      | "character_profile";
+    phase: StrictJsonPhase;
     provider: "kia" | "timeweb" | "vertex";
     model: string;
     attempt: number;
@@ -453,21 +821,30 @@ function extractJsonCandidate(raw: string): string {
   return trimmed;
 }
 
-async function callStrictJson<T>(params: {
+type VertexThinkingLevel = "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
+
+export async function callStrictJson<T>(params: {
   prompt: string;
   schema: z.ZodType<T, z.ZodTypeDef, unknown>;
-  phase:
-    | "entity_pass"
-    | "act_pass"
-    | "appearance_pass"
-    | "mention_completion"
-    | "character_merge_arbiter"
-    | "character_book_pass"
-    | "character_profile";
+  phase: StrictJsonPhase;
   timewebModelId?: string | null;
+  vertexModel?: string | null;
+  vertexThinkingLevel?: VertexThinkingLevel | null;
+  maxTokens?: number | null;
+  allowedModels?: string[] | null;
+  disableGlobalFallback?: boolean;
+  maxAttempts?: number | null;
 }): Promise<StrictJsonCallResult<T>> {
+  const resolveVertexModelForPhase = (phase: string): string => {
+    const phaseModel = workerConfig.vertex.phaseModels[phase];
+    if (typeof phaseModel === "string" && phaseModel.trim().length > 0) {
+      return phaseModel.trim();
+    }
+    return workerConfig.vertex.extractModel;
+  };
   const provider = workerConfig.extraction.provider;
   const requestedTimewebModelId = provider === "timeweb" ? String(params.timewebModelId || "").trim() : "";
+  const requestedVertexModel = provider === "vertex" ? String(params.vertexModel || "").trim() : "";
   const client =
     provider === "kia"
       ? createKiaClient()
@@ -480,7 +857,7 @@ async function callStrictJson<T>(params: {
     provider === "kia"
       ? workerConfig.kia.extractModel
       : provider === "vertex"
-        ? workerConfig.vertex.extractModel
+        ? requestedVertexModel || resolveVertexModelForPhase(params.phase)
         : workerConfig.timeweb.extractModel;
   const configuredFallbackModel =
     provider === "kia"
@@ -488,26 +865,38 @@ async function callStrictJson<T>(params: {
       : provider === "vertex"
         ? workerConfig.vertex.extractFallbackModel
         : workerConfig.timeweb.extractFallbackModel;
-  const modelCandidates = Array.from(
-    new Set(
-      [
-        requestedTimewebModelId,
-        configuredPrimaryModel,
-        configuredFallbackModel,
-      ]
-        .map((value) => value.trim())
-        .filter((value) => value.length > 0)
-    )
-  );
+  const allowedModels = Array.isArray(params.allowedModels)
+    ? params.allowedModels.map((value) => String(value || "").trim()).filter((value) => value.length > 0)
+    : [];
+  const modelCandidates =
+    allowedModels.length > 0
+      ? Array.from(new Set(allowedModels))
+      : Array.from(
+          new Set(
+            [
+              requestedTimewebModelId,
+              requestedVertexModel,
+              configuredPrimaryModel,
+              params.disableGlobalFallback ? "" : configuredFallbackModel,
+            ]
+              .map((value) => value.trim())
+              .filter((value) => value.length > 0)
+          )
+        );
   const maxAttempts = Math.max(
     1,
-    provider === "kia"
-      ? workerConfig.kia.extractAttempts
-      : provider === "vertex"
-        ? workerConfig.vertex.extractAttempts
-        : workerConfig.timeweb.extractAttempts
+    Number.isFinite(params.maxAttempts)
+      ? Math.floor(params.maxAttempts as number)
+      : provider === "kia"
+        ? workerConfig.kia.extractAttempts
+        : provider === "vertex"
+          ? workerConfig.vertex.extractAttempts
+          : workerConfig.timeweb.extractAttempts
   );
   const maxTokens =
+    params.maxTokens && Number.isFinite(params.maxTokens)
+      ? Math.max(1, Math.floor(params.maxTokens))
+      :
     provider === "kia"
       ? workerConfig.kia.extractMaxTokens
       : provider === "vertex"
@@ -526,29 +915,69 @@ async function callStrictJson<T>(params: {
     for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
       const attemptStartedAtMs = Date.now();
       try {
-        const response = await client.chat.completions.create(
-          {
-            model,
-            messages: [
-              {
-                role: "system",
-                content:
-                  "You are a strict JSON extractor. Return exactly one complete JSON object (root must be an object, never an array) that matches the schema. No markdown. No prose.",
-              },
-              {
-                role: "user",
-                content:
-                  attempt === 1
-                    ? params.prompt
-                    : `${params.prompt}\n\nIMPORTANT: previous output was invalid. Return ONLY one complete valid JSON object that matches the schema exactly. Root must be an object with required keys. Do not use alternate keys.`,
-              },
-            ],
-            temperature: 0,
-            max_tokens: maxTokens,
-            response_format: {
-              type: "json_object",
+        const requestPayload: Record<string, unknown> = {
+          model,
+          messages: [
+            {
+              role: "system",
+              content:
+                [
+                  "Ты — строгий JSON-движок анализа художественного произведения.",
+                  "",
+                  "Работаешь только по входным данным текущего запроса.",
+                  "Нельзя использовать внешние знания о книге, авторе, персонажах, сюжете или мире произведения.",
+                  "Нельзя додумывать отсутствующие факты.",
+                  "Нельзя смешивать данные из разных источников, если это не разрешено во входе явно.",
+                  "",
+                  "Общие правила работы:",
+                  "",
+                  "1. Возвращай только результат по заданной структуре.",
+                  "2. Не добавляй пояснений, комментариев, вступлений и заключений вне требуемого формата.",
+                  "3. Не используй markdown, если он не запрошен внутри конкретных полей.",
+                  "4. Не используй академический, канцелярский или художественно-украшенный стиль без прямого требования.",
+                  "5. Не используй общие фразы, которые подходят почти к любой книге.",
+                  "6. Любое утверждение должно опираться только на входные данные.",
+                  "7. Если данных недостаточно, явно снижай уверенность и не выдумывай недостающее.",
+                  "8. Сохраняй язык входного запроса. Если вход на русском, ответ полностью на русском.",
+                  "9. Никакого смешения языков в одном ответе.",
+                  "10. Никаких служебных артефактов вроде [object Object], null вместо строки, пустых объектов, битых массивов или незаполненных шаблонов.",
+                  "11. Строго соблюдай типы полей: строки остаются строками, массивы — массивами, числа — числами.",
+                  "12. Не подменяй извлечение фактов интерпретацией.",
+                  "13. Не подменяй объяснение книги моралью или универсальными выводами.",
+                  "14. Если поле требует конкретики, давай конкретику, а не абстракцию.",
+                  "15. При сомнении выбирай более узкую, фактическую и проверяемую формулировку.",
+                  "",
+                  "Правило качества:",
+                  "если утверждение нельзя проверить по входным данным, его нельзя включать в ответ.",
+                  "",
+                  "Главный приоритет:",
+                  "точность, структурность, консистентность, чистый машинно-обрабатываемый результат.",
+                ].join("\n"),
             },
+            {
+              role: "user",
+              content:
+                attempt === 1
+                  ? params.prompt
+                  : `${params.prompt}\n\nIMPORTANT: previous output was invalid. Return ONLY one complete valid JSON object that matches the schema exactly. Root must be an object with required keys. Do not use alternate keys.`,
+            },
+          ],
+          temperature: 0,
+          max_tokens: maxTokens,
+          response_format: {
+            type: "json_object",
           },
+        };
+
+        if (provider === "vertex") {
+          const thinkingLevel = String(params.vertexThinkingLevel || "").trim().toUpperCase();
+          if (thinkingLevel === "MINIMAL" || thinkingLevel === "LOW" || thinkingLevel === "MEDIUM" || thinkingLevel === "HIGH") {
+            requestPayload.vertexThinkingLevel = thinkingLevel;
+          }
+        }
+
+        const response = await client.chat.completions.create(
+          requestPayload as any,
           proxySource
             ? {
                 headers: {
@@ -682,6 +1111,16 @@ async function callStrictJson<T>(params: {
   throw lastError || new Error(`${params.phase} failed`);
 }
 
+function resolveBookLiteraryMaxTokens(): number {
+  if (workerConfig.extraction.provider === "vertex") {
+    return workerConfig.vertex.literaryMaxTokens;
+  }
+  if (workerConfig.extraction.provider === "kia") {
+    return workerConfig.kia.extractMaxTokens;
+  }
+  return workerConfig.timeweb.extractMaxTokens;
+}
+
 function buildKnownEntitiesLiteral(knownEntities: KnownEntityForPrompt[]): string {
   if (!knownEntities.length) return "[]";
   return JSON.stringify(
@@ -718,6 +1157,35 @@ function asString(value: unknown): string | null {
   return trimmed.length > 0 ? trimmed : null;
 }
 
+function asStringLike(value: unknown): string | null {
+  const direct = asString(value);
+  if (direct) {
+    if (direct.toLowerCase() === "[object object]") return null;
+    return direct;
+  }
+
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return String(value);
+  }
+
+  const record = asRecord(value);
+  if (!record) return null;
+
+  const nested = (
+    asString(record.fact) ||
+    asString(record.text) ||
+    asString(record.value) ||
+    asString(record.description) ||
+    asString(record.ref) ||
+    asString(record.name) ||
+    asString(record.title) ||
+    asString(record.label)
+  );
+  if (!nested) return null;
+  if (nested.toLowerCase() === "[object object]") return null;
+  return nested;
+}
+
 function asOptionalNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;
   if (typeof value === "string") {
@@ -748,6 +1216,1234 @@ function normalizeSummary(rawSummary: unknown): string {
   const explicit = asString(rawSummary);
   if (!explicit) return "";
   return truncateText(collapseWhitespace(explicit), 500);
+}
+
+const BookChapterSummaryResultSchema = z.object({
+  summary: z.string().min(1).max(200),
+});
+
+const BookSummaryFromChapterSummariesResultSchema = z.object({
+  summary: z.string().min(1).max(280),
+});
+
+const BookChapterCharactersResultSchema = z.object({
+  characters: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(140),
+        aliases: z.array(z.string().min(1).max(140)).max(16),
+        roleInChapter: z.string().min(1).max(200),
+        mentionCount: z.number().int().min(1).max(500),
+        quotes: z
+          .array(
+            z.object({
+              text: z.string().min(1).max(320),
+              context: z.string().min(1).max(320),
+            })
+          )
+          .max(8),
+      })
+    )
+    .max(64),
+});
+
+const BookCharacterProfileSynthesisResultSchema = z.object({
+  role: z.string().min(1).max(140),
+  description: z.string().min(1).max(360),
+  arc: z.string().min(1).max(360),
+});
+
+const BookChapterLocationsResultSchema = z.object({
+  locations: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(140),
+        aliases: z.array(z.string().min(1).max(140)).max(16),
+        functionInChapter: z.string().min(1).max(220),
+        mentionCount: z.number().int().min(1).max(500),
+        quotes: z
+          .array(
+            z.object({
+              text: z.string().min(1).max(320),
+              context: z.string().min(1).max(320),
+            })
+          )
+          .max(8),
+      })
+    )
+    .max(64),
+});
+
+const BookLocationProfileSynthesisResultSchema = z.object({
+  description: z.string().min(1).max(360),
+  significance: z.string().min(1).max(360),
+});
+
+const BookChapterThemesResultSchema = z.object({
+  themes: z
+    .array(
+      z.object({
+        name: z.string().min(1).max(140),
+        aliases: z.array(z.string().min(1).max(140)).max(16),
+        manifestationInChapter: z.string().min(1).max(220),
+        mentionCount: z.number().int().min(1).max(500),
+        quotes: z
+          .array(
+            z.object({
+              text: z.string().min(1).max(320),
+              context: z.string().min(1).max(320),
+            })
+          )
+          .max(8),
+      })
+    )
+    .max(64),
+});
+
+const BookThemeProfileSynthesisResultSchema = z.object({
+  description: z.string().min(1).max(360),
+  development: z.string().min(1).max(360),
+});
+
+const BookQuoteTypeSchema = z.enum([
+  "dialogue",
+  "monologue",
+  "narration",
+  "description",
+  "reflection",
+  "action",
+]);
+
+const BookQuoteTagSchema = z.enum([
+  "conflict",
+  "relationship",
+  "identity",
+  "morality",
+  "power",
+  "freedom",
+  "fear",
+  "guilt",
+  "hope",
+  "fate",
+  "society",
+  "violence",
+  "love",
+  "death",
+  "faith",
+]);
+
+const BookQuoteMentionKindSchema = z.enum(["character", "theme", "location"]);
+
+const BookChapterQuotesResultSchema = z.object({
+  quotes: z
+    .array(
+      z.object({
+        text: z.string().min(1).max(1200),
+        startChar: z.number().int().min(0),
+        endChar: z.number().int().min(1),
+        type: BookQuoteTypeSchema,
+        tags: z.array(BookQuoteTagSchema).max(8),
+        confidence: z.number().min(0).max(1),
+        commentary: z.string().min(0).max(420),
+        mentions: z
+          .array(
+            z.object({
+              kind: BookQuoteMentionKindSchema,
+              value: z.string().min(1).max(140),
+              normalizedValue: z.string().min(1).max(140),
+              startChar: z.number().int().min(0),
+              endChar: z.number().int().min(1),
+              confidence: z.number().min(0).max(1),
+            })
+          )
+          .max(16),
+      })
+    )
+    .max(320),
+});
+
+const BookLiterarySectionSchema = z.object({
+  title: z.string().min(1).max(120),
+  summary: z.string().min(1).max(360),
+  bodyMarkdown: z.string().min(1).max(4000),
+  bullets: z.array(z.string().min(1).max(240)).min(4).max(7),
+  evidenceQuoteIds: z.array(z.string().min(1)).max(24),
+  confidence: z.number().min(0).max(1),
+});
+
+const BookLiterarySynthesisResultSchema = z.object({
+  sections: z.object({
+    what_is_really_going_on: BookLiterarySectionSchema,
+    main_idea: BookLiterarySectionSchema,
+    how_it_works: BookLiterarySectionSchema,
+    hidden_details: BookLiterarySectionSchema,
+    characters: BookLiterarySectionSchema,
+    conflicts: BookLiterarySectionSchema,
+    structure: BookLiterarySectionSchema,
+    important_turns: BookLiterarySectionSchema,
+    takeaways: BookLiterarySectionSchema,
+    conclusion: BookLiterarySectionSchema,
+  }),
+});
+
+const BookChapterStructuralFactsResultSchema = z.object({
+  events: z
+    .array(
+      z.object({
+        id: z.string().min(1).max(80),
+        description: z.string().min(1).max(360),
+        characters: z.array(z.string().min(1).max(140)).max(16),
+        importance: z.number().min(0).max(1),
+      })
+    )
+    .min(4)
+    .max(10),
+  characterChanges: z
+    .array(
+      z.object({
+        character: z.string().min(1).max(140),
+        before: z.string().min(1).max(320),
+        after: z.string().min(1).max(320),
+        reason: z.string().min(1).max(360),
+      })
+    )
+    .max(3),
+  conflicts: z
+    .array(
+      z.object({
+        type: z.enum(["external", "internal"]),
+        description: z.string().min(1).max(360),
+        participants: z.array(z.string().min(1).max(140)).max(16),
+      })
+    )
+    .min(1)
+    .max(4),
+  symbols: z
+    .array(
+      z.object({
+        entity: z.string().min(1).max(140),
+        description: z.string().min(1).max(320),
+        context: z.string().min(1).max(360),
+      })
+    )
+    .max(3),
+  facts: z.array(z.string().min(1).max(420)).min(1).max(8),
+});
+
+const BookLiteraryPatternEvidenceSchema = z.object({
+  type: z.enum(["event", "characterChange", "conflict", "symbol", "fact"]),
+  chapter: z.number().int().min(1).max(5000),
+  ref: z.string().min(1).max(260),
+});
+
+const BookLiteraryPatternSchema = z.object({
+  id: z.string().min(1).max(80),
+  name: z.string().min(1).max(160),
+  core: z.string().min(1).max(220),
+  whyItMatters: z.string().min(1).max(420),
+  evidence: z.array(BookLiteraryPatternEvidenceSchema).min(3).max(6),
+  evolution: z.string().min(1).max(720),
+  strength: z.number().min(0).max(1),
+});
+
+const BookLiteraryPatternPassResultSchema = z.object({
+  patterns: z.array(BookLiteraryPatternSchema).min(4).max(7),
+});
+
+function normalizeBookChapterSummaryPayload(raw: unknown): BookChapterSummaryResult {
+  const root = asRecord(raw) || {};
+  const summaryCandidate =
+    asString(root.summary) ||
+    asString(root.chapterSummary) ||
+    asString(root.description) ||
+    asString(root.text) ||
+    asString(root.value) ||
+    "";
+  const summary = truncateText(collapseWhitespace(summaryCandidate), 200);
+  return { summary };
+}
+
+function normalizeBookSummaryPayload(raw: unknown): BookSummaryFromChapterSummariesResult {
+  const root = asRecord(raw) || {};
+  const summaryCandidate =
+    asString(root.summary) ||
+    asString(root.bookSummary) ||
+    asString(root.description) ||
+    asString(root.text) ||
+    asString(root.value) ||
+    "";
+  const summary = truncateText(collapseWhitespace(summaryCandidate), 280);
+  return { summary };
+}
+
+function normalizeStringList(value: unknown, maxItems: number, maxChars: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+
+  for (const item of value) {
+    const itemText = asStringLike(item);
+    if (!itemText) continue;
+    const text = truncateText(collapseWhitespace(itemText), maxChars);
+    if (!text) continue;
+    const key = text.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(text);
+    if (out.length >= maxItems) break;
+  }
+
+  return out;
+}
+
+function normalizeBookChapterCharactersPayload(raw: unknown): BookChapterCharactersResult {
+  const root = asRecord(raw) || {};
+  const items = Array.isArray(root.characters)
+    ? root.characters
+    : Array.isArray(root.items)
+      ? root.items
+      : Array.isArray(root.persons)
+        ? root.persons
+        : Array.isArray(root.entities)
+          ? root.entities
+          : [];
+
+  const byName = new Map<string, BookChapterCharactersResult["characters"][number]>();
+
+  for (const item of items) {
+    const record = asRecord(item);
+    if (!record) continue;
+
+    const nameCandidate =
+      asString(record.name) ||
+      asString(record.characterName) ||
+      asString(record.canonicalName) ||
+      asString(record.title) ||
+      "";
+    const name = truncateText(collapseWhitespace(nameCandidate), 140);
+    if (!name) continue;
+
+    const normalizedName = normalizeEntityName(name);
+    if (!normalizedName) continue;
+
+    const aliases = normalizeStringList(
+      Array.isArray(record.aliases)
+        ? record.aliases
+        : Array.isArray(record.alias)
+          ? record.alias
+          : [],
+      16,
+      140
+    ).filter((alias) => normalizeEntityName(alias) !== normalizedName);
+    const roleInChapter = truncateText(
+      collapseWhitespace(
+        asString(record.roleInChapter) ||
+          asString(record.role) ||
+          asString(record.chapterRole) ||
+          "Важный участник событий главы"
+      ),
+      200
+    );
+    const mentionCountRaw = asOptionalNumber(record.mentionCount);
+    const mentionCount = Math.max(1, Math.min(500, Math.round(mentionCountRaw ?? 1)));
+    const rawQuotes = Array.isArray(record.quotes)
+      ? record.quotes
+      : Array.isArray(record.citations)
+        ? record.citations
+        : Array.isArray(record.examples)
+          ? record.examples
+          : [];
+
+    const quoteMap = new Map<string, { text: string; context: string }>();
+    for (const quoteValue of rawQuotes) {
+      const quoteRecord = asRecord(quoteValue);
+      const quoteTextRaw =
+        (quoteRecord ? asString(quoteRecord.text) || asString(quoteRecord.quote) : null) ||
+        (typeof quoteValue === "string" ? quoteValue : null) ||
+        "";
+      const contextRaw =
+        (quoteRecord ? asString(quoteRecord.context) || asString(quoteRecord.note) : null) || "Эпизод главы";
+      const text = truncateText(collapseWhitespace(quoteTextRaw), 320);
+      const context = truncateText(collapseWhitespace(contextRaw), 320);
+      if (!text || !context) continue;
+      const quoteKey = text.toLowerCase();
+      if (quoteMap.has(quoteKey)) continue;
+      quoteMap.set(quoteKey, { text, context });
+      if (quoteMap.size >= 8) break;
+    }
+
+    const existing = byName.get(normalizedName);
+    if (!existing) {
+      byName.set(normalizedName, {
+        name,
+        aliases,
+        roleInChapter: roleInChapter || "Важный участник событий главы",
+        mentionCount,
+        quotes: Array.from(quoteMap.values()).slice(0, 8),
+      });
+      continue;
+    }
+
+    existing.mentionCount = Math.min(500, existing.mentionCount + mentionCount);
+    if (!existing.roleInChapter || existing.roleInChapter === "Важный участник событий главы") {
+      existing.roleInChapter = roleInChapter || existing.roleInChapter;
+    }
+
+    const aliasUnion = normalizeStringList([...existing.aliases, ...aliases], 16, 140).filter(
+      (alias) => normalizeEntityName(alias) !== normalizedName
+    );
+    existing.aliases = aliasUnion;
+
+    const existingQuotes = new Map(existing.quotes.map((quote) => [quote.text.toLowerCase(), quote] as const));
+    for (const quote of quoteMap.values()) {
+      const key = quote.text.toLowerCase();
+      if (existingQuotes.has(key)) continue;
+      if (existingQuotes.size >= 8) break;
+      existingQuotes.set(key, quote);
+    }
+    existing.quotes = Array.from(existingQuotes.values()).slice(0, 8);
+  }
+
+  return {
+    characters: Array.from(byName.values()).slice(0, 64),
+  };
+}
+
+function normalizeBookChapterLocationsPayload(raw: unknown): BookChapterLocationsResult {
+  const root = asRecord(raw) || {};
+  const items = Array.isArray(root.locations)
+    ? root.locations
+    : Array.isArray(root.items)
+      ? root.items
+      : Array.isArray(root.places)
+        ? root.places
+        : Array.isArray(root.entities)
+          ? root.entities
+          : [];
+
+  const byName = new Map<string, BookChapterLocationsResult["locations"][number]>();
+
+  for (const item of items) {
+    const record = asRecord(item);
+    if (!record) continue;
+
+    const nameCandidate =
+      asString(record.name) ||
+      asString(record.locationName) ||
+      asString(record.placeName) ||
+      asString(record.canonicalName) ||
+      asString(record.title) ||
+      "";
+    const name = truncateText(collapseWhitespace(nameCandidate), 140);
+    if (!name) continue;
+
+    const normalizedName = normalizeEntityName(name);
+    if (!normalizedName) continue;
+
+    const aliases = normalizeStringList(
+      Array.isArray(record.aliases)
+        ? record.aliases
+        : Array.isArray(record.alias)
+          ? record.alias
+          : [],
+      16,
+      140
+    ).filter((alias) => normalizeEntityName(alias) !== normalizedName);
+    const functionInChapter = truncateText(
+      collapseWhitespace(
+        asString(record.functionInChapter) ||
+          asString(record.roleInChapter) ||
+          asString(record.function) ||
+          asString(record.role) ||
+          "Важная локация главы"
+      ),
+      220
+    );
+    const mentionCountRaw = asOptionalNumber(record.mentionCount);
+    const mentionCount = Math.max(1, Math.min(500, Math.round(mentionCountRaw ?? 1)));
+    const rawQuotes = Array.isArray(record.quotes)
+      ? record.quotes
+      : Array.isArray(record.citations)
+        ? record.citations
+        : Array.isArray(record.examples)
+          ? record.examples
+          : [];
+
+    const quoteMap = new Map<string, { text: string; context: string }>();
+    for (const quoteValue of rawQuotes) {
+      const quoteRecord = asRecord(quoteValue);
+      const quoteTextRaw =
+        (quoteRecord ? asString(quoteRecord.text) || asString(quoteRecord.quote) : null) ||
+        (typeof quoteValue === "string" ? quoteValue : null) ||
+        "";
+      const contextRaw =
+        (quoteRecord ? asString(quoteRecord.context) || asString(quoteRecord.note) : null) || "Эпизод главы";
+      const text = truncateText(collapseWhitespace(quoteTextRaw), 320);
+      const context = truncateText(collapseWhitespace(contextRaw), 320);
+      if (!text || !context) continue;
+      const quoteKey = text.toLowerCase();
+      if (quoteMap.has(quoteKey)) continue;
+      quoteMap.set(quoteKey, { text, context });
+      if (quoteMap.size >= 8) break;
+    }
+
+    const existing = byName.get(normalizedName);
+    if (!existing) {
+      byName.set(normalizedName, {
+        name,
+        aliases,
+        functionInChapter: functionInChapter || "Важная локация главы",
+        mentionCount,
+        quotes: Array.from(quoteMap.values()).slice(0, 8),
+      });
+      continue;
+    }
+
+    existing.mentionCount = Math.min(500, existing.mentionCount + mentionCount);
+    if (!existing.functionInChapter || existing.functionInChapter === "Важная локация главы") {
+      existing.functionInChapter = functionInChapter || existing.functionInChapter;
+    }
+
+    const aliasUnion = normalizeStringList([...existing.aliases, ...aliases], 16, 140).filter(
+      (alias) => normalizeEntityName(alias) !== normalizedName
+    );
+    existing.aliases = aliasUnion;
+
+    const existingQuotes = new Map(existing.quotes.map((quote) => [quote.text.toLowerCase(), quote] as const));
+    for (const quote of quoteMap.values()) {
+      const key = quote.text.toLowerCase();
+      if (existingQuotes.has(key)) continue;
+      if (existingQuotes.size >= 8) break;
+      existingQuotes.set(key, quote);
+    }
+    existing.quotes = Array.from(existingQuotes.values()).slice(0, 8);
+  }
+
+  return {
+    locations: Array.from(byName.values()).slice(0, 64),
+  };
+}
+
+function normalizeBookChapterThemesPayload(raw: unknown): BookChapterThemesResult {
+  const root = asRecord(raw) || {};
+  const items = Array.isArray(root.themes)
+    ? root.themes
+    : Array.isArray(root.items)
+      ? root.items
+      : Array.isArray(root.topics)
+        ? root.topics
+        : Array.isArray(root.entities)
+          ? root.entities
+          : [];
+
+  const byName = new Map<string, BookChapterThemesResult["themes"][number]>();
+
+  for (const item of items) {
+    const record = asRecord(item);
+    if (!record) continue;
+
+    const nameCandidate =
+      asString(record.name) ||
+      asString(record.themeName) ||
+      asString(record.topicName) ||
+      asString(record.canonicalName) ||
+      asString(record.title) ||
+      "";
+    const name = truncateText(collapseWhitespace(nameCandidate), 140);
+    if (!name) continue;
+
+    const normalizedName = normalizeEntityName(name);
+    if (!normalizedName) continue;
+
+    const aliases = normalizeStringList(
+      Array.isArray(record.aliases)
+        ? record.aliases
+        : Array.isArray(record.alias)
+          ? record.alias
+          : [],
+      16,
+      140
+    ).filter((alias) => normalizeEntityName(alias) !== normalizedName);
+    const manifestationInChapter = truncateText(
+      collapseWhitespace(
+        asString(record.manifestationInChapter) ||
+          asString(record.roleInChapter) ||
+          asString(record.functionInChapter) ||
+          asString(record.manifestation) ||
+          asString(record.role) ||
+          "Ключевая тема главы"
+      ),
+      220
+    );
+    const mentionCountRaw = asOptionalNumber(record.mentionCount);
+    const mentionCount = Math.max(1, Math.min(500, Math.round(mentionCountRaw ?? 1)));
+    const rawQuotes = Array.isArray(record.quotes)
+      ? record.quotes
+      : Array.isArray(record.citations)
+        ? record.citations
+        : Array.isArray(record.examples)
+          ? record.examples
+          : [];
+
+    const quoteMap = new Map<string, { text: string; context: string }>();
+    for (const quoteValue of rawQuotes) {
+      const quoteRecord = asRecord(quoteValue);
+      const quoteTextRaw =
+        (quoteRecord ? asString(quoteRecord.text) || asString(quoteRecord.quote) : null) ||
+        (typeof quoteValue === "string" ? quoteValue : null) ||
+        "";
+      const contextRaw =
+        (quoteRecord ? asString(quoteRecord.context) || asString(quoteRecord.note) : null) || "Эпизод главы";
+      const text = truncateText(collapseWhitespace(quoteTextRaw), 320);
+      const context = truncateText(collapseWhitespace(contextRaw), 320);
+      if (!text || !context) continue;
+      const quoteKey = text.toLowerCase();
+      if (quoteMap.has(quoteKey)) continue;
+      quoteMap.set(quoteKey, { text, context });
+      if (quoteMap.size >= 8) break;
+    }
+
+    const existing = byName.get(normalizedName);
+    if (!existing) {
+      byName.set(normalizedName, {
+        name,
+        aliases,
+        manifestationInChapter: manifestationInChapter || "Ключевая тема главы",
+        mentionCount,
+        quotes: Array.from(quoteMap.values()).slice(0, 8),
+      });
+      continue;
+    }
+
+    existing.mentionCount = Math.min(500, existing.mentionCount + mentionCount);
+    if (!existing.manifestationInChapter || existing.manifestationInChapter === "Ключевая тема главы") {
+      existing.manifestationInChapter = manifestationInChapter || existing.manifestationInChapter;
+    }
+
+    const aliasUnion = normalizeStringList([...existing.aliases, ...aliases], 16, 140).filter(
+      (alias) => normalizeEntityName(alias) !== normalizedName
+    );
+    existing.aliases = aliasUnion;
+
+    const existingQuotes = new Map(existing.quotes.map((quote) => [quote.text.toLowerCase(), quote] as const));
+    for (const quote of quoteMap.values()) {
+      const key = quote.text.toLowerCase();
+      if (existingQuotes.has(key)) continue;
+      if (existingQuotes.size >= 8) break;
+      existingQuotes.set(key, quote);
+    }
+    existing.quotes = Array.from(existingQuotes.values()).slice(0, 8);
+  }
+
+  return {
+    themes: Array.from(byName.values()).slice(0, 64),
+  };
+}
+
+function normalizeBookCharacterProfileSynthesisPayload(raw: unknown, input: BookCharacterProfileSynthesisInput): BookCharacterProfileSynthesisResult {
+  const root = asRecord(raw) || {};
+  const role = truncateText(
+    collapseWhitespace(
+      asString(root.role) ||
+        asString(root.characterRole) ||
+        "Персонаж"
+    ),
+    140
+  );
+  const description = truncateText(
+    collapseWhitespace(
+      asString(root.description) ||
+        asString(root.summary) ||
+        `${input.characterName} — заметный персонаж книги.`
+    ),
+    360
+  );
+  const arc = truncateText(
+    collapseWhitespace(
+      asString(root.arc) ||
+        asString(root.development) ||
+        asString(root.progression) ||
+        "Динамика персонажа в тексте пока выражена кратко."
+    ),
+    360
+  );
+
+  return {
+    role: role || "Персонаж",
+    description: description || `${input.characterName} — заметный персонаж книги.`,
+    arc: arc || "Динамика персонажа в тексте пока выражена кратко.",
+  };
+}
+
+function normalizeBookLocationProfileSynthesisPayload(
+  raw: unknown,
+  input: BookLocationProfileSynthesisInput
+): BookLocationProfileSynthesisResult {
+  const root = asRecord(raw) || {};
+  const description = truncateText(
+    collapseWhitespace(
+      asString(root.description) ||
+        asString(root.summary) ||
+        `${input.locationName} — локация книги, важная для развития действий.`
+    ),
+    360
+  );
+  const significance = truncateText(
+    collapseWhitespace(
+      asString(root.significance) ||
+        asString(root.importance) ||
+        asString(root.narrativeFunction) ||
+        "Локация влияет на атмосферу и ход событий произведения."
+    ),
+    360
+  );
+
+  return {
+    description: description || `${input.locationName} — локация книги, важная для развития действий.`,
+    significance: significance || "Локация влияет на атмосферу и ход событий произведения.",
+  };
+}
+
+function normalizeBookThemeProfileSynthesisPayload(
+  raw: unknown,
+  input: BookThemeProfileSynthesisInput
+): BookThemeProfileSynthesisResult {
+  const root = asRecord(raw) || {};
+  const description = truncateText(
+    collapseWhitespace(
+      asString(root.description) ||
+        asString(root.summary) ||
+        `${input.themeName} — тема книги, проявляющаяся в ключевых эпизодах.`
+    ),
+    360
+  );
+  const development = truncateText(
+    collapseWhitespace(
+      asString(root.development) ||
+        asString(root.progression) ||
+        asString(root.evolution) ||
+        "Тема развивается по мере хода сюжета и раскрытия персонажей."
+    ),
+    360
+  );
+
+  return {
+    description: description || `${input.themeName} — тема книги, проявляющаяся в ключевых эпизодах.`,
+    development: development || "Тема развивается по мере хода сюжета и раскрытия персонажей.",
+  };
+}
+
+function normalizeBookQuoteType(value: unknown): BookQuoteType {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "dialogue" || normalized === "диалог" || normalized === "speech") return "dialogue";
+  if (normalized === "monologue" || normalized === "монолог") return "monologue";
+  if (normalized === "description" || normalized === "описание") return "description";
+  if (normalized === "reflection" || normalized === "размышление" || normalized === "thought") return "reflection";
+  if (normalized === "action" || normalized === "действие" || normalized === "event") return "action";
+  return "narration";
+}
+
+const BOOK_QUOTE_TAG_ALIASES: Record<string, BookQuoteTag> = {
+  conflict: "conflict",
+  конфликт: "conflict",
+  relationship: "relationship",
+  отношения: "relationship",
+  identity: "identity",
+  идентичность: "identity",
+  morality: "morality",
+  мораль: "morality",
+  power: "power",
+  власть: "power",
+  freedom: "freedom",
+  свобода: "freedom",
+  fear: "fear",
+  страх: "fear",
+  guilt: "guilt",
+  вина: "guilt",
+  hope: "hope",
+  надежда: "hope",
+  fate: "fate",
+  судьба: "fate",
+  society: "society",
+  общество: "society",
+  violence: "violence",
+  насилие: "violence",
+  love: "love",
+  любовь: "love",
+  death: "death",
+  смерть: "death",
+  faith: "faith",
+  вера: "faith",
+};
+
+function normalizeBookQuoteTag(value: unknown): BookQuoteTag | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return null;
+  return BOOK_QUOTE_TAG_ALIASES[normalized] || null;
+}
+
+function normalizeBookQuoteMentionKind(value: unknown): BookQuoteMentionKind | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return null;
+  if (normalized === "character" || normalized === "персонаж") return "character";
+  if (normalized === "theme" || normalized === "тема") return "theme";
+  if (normalized === "location" || normalized === "локация" || normalized === "place") return "location";
+  return null;
+}
+
+function normalizeBookChapterQuotesPayload(
+  raw: unknown,
+  chapterText: string
+): BookChapterQuotesResult {
+  const root = asRecord(raw) || {};
+  const chapterLength = String(chapterText || "").length;
+  const items = Array.isArray(root.quotes)
+    ? root.quotes
+    : Array.isArray(root.items)
+      ? root.items
+      : Array.isArray(root.fragments)
+        ? root.fragments
+        : Array.isArray(root.citations)
+          ? root.citations
+          : [];
+
+  const results: BookChapterQuotesResult["quotes"] = [];
+
+  for (const item of items) {
+    const record = asRecord(item);
+    if (!record) continue;
+
+    const text = truncateText(
+      collapseWhitespace(
+        asString(record.text) ||
+          asString(record.quote) ||
+          asString(record.fragment) ||
+          ""
+      ),
+      1200
+    );
+    if (!text) continue;
+
+    const startCandidate = asOptionalNumber(record.startChar ?? record.start ?? record.offsetStart);
+    const endCandidate = asOptionalNumber(record.endChar ?? record.end ?? record.offsetEnd);
+    let startChar =
+      startCandidate !== null && Number.isFinite(startCandidate)
+        ? Math.max(0, Math.floor(startCandidate))
+        : 0;
+    let endChar =
+      endCandidate !== null && Number.isFinite(endCandidate)
+        ? Math.max(startChar + 1, Math.floor(endCandidate))
+        : startChar + text.length;
+
+    if (chapterLength > 0) {
+      startChar = Math.min(startChar, Math.max(0, chapterLength - 1));
+      endChar = Math.min(Math.max(startChar + 1, endChar), chapterLength);
+    }
+
+    const type = normalizeBookQuoteType(record.type ?? record.quoteType);
+    const tagsSource = Array.isArray(record.tags) ? record.tags : Array.isArray(record.labels) ? record.labels : [];
+    const tags: BookQuoteTag[] = [];
+    const tagSeen = new Set<BookQuoteTag>();
+    for (const rawTag of tagsSource) {
+      const normalizedTag = normalizeBookQuoteTag(rawTag);
+      if (!normalizedTag || tagSeen.has(normalizedTag)) continue;
+      tags.push(normalizedTag);
+      tagSeen.add(normalizedTag);
+      if (tags.length >= 8) break;
+    }
+
+    const confidence = clamp01(asOptionalNumber(record.confidence) ?? 0.65);
+    const commentary = truncateText(
+      collapseWhitespace(
+        asString(record.commentary) ||
+          asString(record.note) ||
+          asString(record.context) ||
+          ""
+      ),
+      420
+    );
+
+    const rawMentions = Array.isArray(record.mentions)
+      ? record.mentions
+      : Array.isArray(record.entities)
+        ? record.entities
+        : [];
+    const mentions: BookChapterQuotesResult["quotes"][number]["mentions"] = [];
+    const mentionSeen = new Set<string>();
+    for (const mentionValue of rawMentions) {
+      const mentionRecord = asRecord(mentionValue);
+      if (!mentionRecord) continue;
+
+      const kind = normalizeBookQuoteMentionKind(mentionRecord.kind ?? mentionRecord.type);
+      if (!kind) continue;
+
+      const mentionText = truncateText(
+        collapseWhitespace(
+          asString(mentionRecord.value) ||
+            asString(mentionRecord.name) ||
+            asString(mentionRecord.text) ||
+            ""
+        ),
+        140
+      );
+      if (!mentionText) continue;
+
+      const normalizedValue =
+        truncateText(
+          collapseWhitespace(
+            asString(mentionRecord.normalizedValue) || normalizeEntityName(mentionText) || ""
+          ),
+          140
+        ) || "";
+      if (!normalizedValue) continue;
+
+      const mentionStartRaw = asOptionalNumber(
+        mentionRecord.startChar ?? mentionRecord.start ?? mentionRecord.offsetStart
+      );
+      const mentionEndRaw = asOptionalNumber(
+        mentionRecord.endChar ?? mentionRecord.end ?? mentionRecord.offsetEnd
+      );
+      let mentionStart =
+        mentionStartRaw !== null && Number.isFinite(mentionStartRaw)
+          ? Math.max(0, Math.floor(mentionStartRaw))
+          : 0;
+      let mentionEnd =
+        mentionEndRaw !== null && Number.isFinite(mentionEndRaw)
+          ? Math.max(mentionStart + 1, Math.floor(mentionEndRaw))
+          : mentionStart + mentionText.length;
+      mentionStart = Math.min(mentionStart, Math.max(0, text.length - 1));
+      mentionEnd = Math.min(Math.max(mentionStart + 1, mentionEnd), text.length);
+
+      const key = `${kind}:${normalizedValue}:${mentionStart}:${mentionEnd}`;
+      if (mentionSeen.has(key)) continue;
+      mentionSeen.add(key);
+      mentions.push({
+        kind,
+        value: mentionText,
+        normalizedValue,
+        startChar: mentionStart,
+        endChar: mentionEnd,
+        confidence: clamp01(asOptionalNumber(mentionRecord.confidence) ?? confidence),
+      });
+      if (mentions.length >= 16) break;
+    }
+
+    results.push({
+      text,
+      startChar,
+      endChar,
+      type,
+      tags,
+      confidence,
+      commentary,
+      mentions,
+    });
+    if (results.length >= 320) break;
+  }
+
+  return { quotes: results };
+}
+
+const BOOK_LITERARY_SECTION_TITLE_BY_KEY: Record<BookLiterarySectionKey, string> = {
+  what_is_really_going_on: "Что на самом деле происходит",
+  main_idea: "Главная идея",
+  how_it_works: "Как это работает",
+  hidden_details: "Скрытые детали",
+  characters: "Персонажи",
+  conflicts: "Конфликты",
+  structure: "Структура",
+  important_turns: "Важные повороты",
+  takeaways: "Что важно вынести",
+  conclusion: "Вывод",
+};
+
+function normalizeBookLiterarySynthesisPayload(raw: unknown): BookLiterarySynthesisResult {
+  const root = asRecord(raw) || {};
+  const sectionsRecord = asRecord(root.sections) || {};
+  if (!asRecord(root.sections)) {
+    throw new Error("book_literary_synthesis: sections object is required");
+  }
+
+  const sections = Object.fromEntries(
+    BOOK_LITERARY_SECTION_KEYS.map((key) => {
+      const record = asRecord(sectionsRecord[key]);
+      if (!record) {
+        throw new Error(`book_literary_synthesis: missing section ${key}`);
+      }
+      const title =
+        truncateText(
+          collapseWhitespace(asString(record.title) || BOOK_LITERARY_SECTION_TITLE_BY_KEY[key]),
+          120
+        ) || BOOK_LITERARY_SECTION_TITLE_BY_KEY[key];
+
+      const summary =
+        truncateText(
+          collapseWhitespace(
+            asString(record.summary) || ""
+          ),
+          360
+        );
+      if (!summary) {
+        throw new Error(`book_literary_synthesis: section ${key} summary is required`);
+      }
+
+      const bodyMarkdown =
+        truncateText(
+          String(asString(record.bodyMarkdown) || "")
+            .replace(/\r\n/g, "\n")
+            .replace(/[ \t]+\n/g, "\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim(),
+          4000
+        );
+      if (!bodyMarkdown) {
+        throw new Error(`book_literary_synthesis: section ${key} bodyMarkdown is required`);
+      }
+
+      const bullets = normalizeStringList(record.bullets, 7, 240);
+      const evidenceSource = Array.isArray(record.evidenceQuoteIds) ? record.evidenceQuoteIds : [];
+      const evidenceQuoteIds: string[] = [];
+      const evidenceSeen = new Set<string>();
+      for (const entry of evidenceSource) {
+        const id = truncateText(collapseWhitespace(asString(entry) || ""), 120);
+        if (!id || evidenceSeen.has(id)) continue;
+        evidenceSeen.add(id);
+        evidenceQuoteIds.push(id);
+        if (evidenceQuoteIds.length >= 24) break;
+      }
+
+      const confidenceRaw = asOptionalNumber(record.confidence);
+      if (confidenceRaw === null) {
+        throw new Error(`book_literary_synthesis: section ${key} confidence is required`);
+      }
+      const confidence = clamp01(confidenceRaw);
+      return [
+        key,
+        {
+          title,
+          summary,
+          bodyMarkdown,
+          bullets,
+          evidenceQuoteIds,
+          confidence,
+        } satisfies BookLiterarySynthesisSection,
+      ] as const;
+    })
+  ) as Record<BookLiterarySectionKey, BookLiterarySynthesisSection>;
+
+  return { sections };
+}
+
+function normalizeConflictType(value: unknown): "external" | "internal" {
+  const normalized = String(value || "").trim().toLowerCase();
+  return normalized === "internal" ? "internal" : "external";
+}
+
+function normalizeBookChapterStructuralFactsPayload(raw: unknown): BookChapterStructuralFactsResult {
+  const root = asRecord(raw) || {};
+
+  const eventsSource = Array.isArray(root.events) ? root.events : [];
+  const events: BookChapterStructuralFactsResult["events"] = [];
+  for (let index = 0; index < eventsSource.length; index += 1) {
+    const record = asRecord(eventsSource[index]);
+    if (!record) continue;
+
+    const description = truncateText(
+      collapseWhitespace(asString(record.description) || ""),
+      360
+    );
+    if (!description) continue;
+
+    const idRaw = truncateText(
+      collapseWhitespace(
+        asString(record.id) || `event_${index + 1}`
+      ),
+      80
+    );
+    const id = idRaw || `event_${index + 1}`;
+    const characters = normalizeStringList(record.characters, 16, 140);
+    const importance = clamp01(asOptionalNumber(record.importance) ?? 0.5);
+
+    events.push({
+      id,
+      description,
+      characters,
+      importance,
+    });
+    if (events.length >= 10) break;
+  }
+
+  const changesSource = Array.isArray(root.characterChanges) ? root.characterChanges : [];
+  const characterChanges: BookChapterStructuralFactsResult["characterChanges"] = [];
+  for (const item of changesSource) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const character = truncateText(
+      collapseWhitespace(asString(record.character) || ""),
+      140
+    );
+    const before = truncateText(
+      collapseWhitespace(asString(record.before) || ""),
+      320
+    );
+    const after = truncateText(
+      collapseWhitespace(asString(record.after) || ""),
+      320
+    );
+    const reason = truncateText(
+      collapseWhitespace(asString(record.reason) || ""),
+      360
+    );
+    if (!character || !before || !after || !reason) continue;
+    characterChanges.push({
+      character,
+      before,
+      after,
+      reason,
+    });
+    if (characterChanges.length >= 3) break;
+  }
+
+  const conflictsSource = Array.isArray(root.conflicts) ? root.conflicts : [];
+  const conflicts: BookChapterStructuralFactsResult["conflicts"] = [];
+  for (const item of conflictsSource) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const description = truncateText(
+      collapseWhitespace(asString(record.description) || ""),
+      360
+    );
+    if (!description) continue;
+    const type = normalizeConflictType(record.type);
+    const participants = normalizeStringList(record.participants, 16, 140);
+    conflicts.push({
+      type,
+      description,
+      participants,
+    });
+    if (conflicts.length >= 4) break;
+  }
+
+  const symbolsSource = Array.isArray(root.symbols) ? root.symbols : [];
+  const symbols: BookChapterStructuralFactsResult["symbols"] = [];
+  for (const item of symbolsSource) {
+    const record = asRecord(item);
+    if (!record) continue;
+    const entity = truncateText(
+      collapseWhitespace(asString(record.entity) || ""),
+      140
+    );
+    const description = truncateText(
+      collapseWhitespace(asString(record.description) || ""),
+      320
+    );
+    const context = truncateText(
+      collapseWhitespace(asString(record.context) || ""),
+      360
+    );
+    if (!entity || !description || !context) continue;
+    symbols.push({
+      entity,
+      description,
+      context,
+    });
+    if (symbols.length >= 3) break;
+  }
+
+  const facts = normalizeStringList(root.facts, 8, 420);
+
+  return {
+    events,
+    characterChanges,
+    conflicts,
+    symbols,
+    facts,
+  };
+}
+
+function normalizePatternEvidenceType(value: unknown): BookLiteraryPatternEvidenceType | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "event") return "event";
+  if (normalized === "characterchange") return "characterChange";
+  if (normalized === "conflict") return "conflict";
+  if (normalized === "symbol") return "symbol";
+  if (normalized === "fact") return "fact";
+  return null;
+}
+
+function normalizeBookLiteraryPatternPassPayload(raw: unknown): BookLiteraryPatternPassResult {
+  const root = asRecord(raw) || {};
+  const source = Array.isArray(root.patterns) ? root.patterns : [];
+  const patterns: BookLiteraryPattern[] = [];
+  const seen = new Set<string>();
+
+  for (let index = 0; index < source.length; index += 1) {
+    const item = source[index];
+    const record = asRecord(item);
+    if (!record) continue;
+
+    const id =
+      truncateText(collapseWhitespace(asString(record.id) || ""), 80) ||
+      `p${index + 1}`;
+    const name = truncateText(collapseWhitespace(asString(record.name) || ""), 160);
+    const core = truncateText(collapseWhitespace(asString(record.core) || ""), 220);
+    const whyItMatters = truncateText(
+      collapseWhitespace(asString(record.whyItMatters) || ""),
+      420
+    );
+    const evolution = truncateText(
+      collapseWhitespace(asString(record.evolution) || ""),
+      720
+    );
+    const strength = clamp01(asOptionalNumber(record.strength) ?? 0.5);
+    const evidenceSource = Array.isArray(record.evidence) ? record.evidence : [];
+    const evidence: BookLiteraryPatternEvidence[] = [];
+    const evidenceSeen = new Set<string>();
+
+    for (const evidenceItem of evidenceSource) {
+      const evidenceRecord = asRecord(evidenceItem);
+      if (!evidenceRecord) continue;
+      const ref = truncateText(
+        collapseWhitespace(
+          asString(evidenceRecord.ref) || ""
+        ),
+        260
+      );
+      if (!ref) continue;
+
+      const type = normalizePatternEvidenceType(evidenceRecord.type);
+      if (!type) continue;
+
+      const chapterValue = asOptionalNumber(evidenceRecord.chapter);
+      if (chapterValue === null) continue;
+      const chapter = Math.min(5000, Math.max(1, Math.floor(chapterValue)));
+      const evidenceKey = `${type}|${chapter}|${ref.toLowerCase()}`;
+      if (evidenceSeen.has(evidenceKey)) continue;
+      evidenceSeen.add(evidenceKey);
+      evidence.push({ type, chapter, ref });
+      if (evidence.length >= 6) break;
+    }
+
+    if (!name || !core || !whyItMatters || !evolution || evidence.length < 3) continue;
+    const dedupeKey = `${id.toLowerCase()}|${name.toLowerCase()}|${core.toLowerCase()}`;
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+
+    patterns.push({
+      id,
+      name,
+      core,
+      whyItMatters,
+      evidence,
+      evolution,
+      strength,
+    });
+    if (patterns.length >= 7) break;
+  }
+
+  return {
+    patterns,
+  };
 }
 
 function normalizeEntityType(rawType: unknown, fallback: EntityType): EntityType {
@@ -1380,6 +3076,1329 @@ function normalizeEntityPassPayload(raw: unknown, input: EntityPassInput): Entit
   return {
     contentVersion,
     entities: Array.from(deduped.values()).slice(0, 256),
+  };
+}
+
+export async function runBookChapterSummary(
+  input: BookChapterSummaryInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookChapterSummaryResult>> {
+  const chapterTitle = truncateText(collapseWhitespace(input.chapterTitle), 180) || "Без названия главы";
+  const chapterText = truncateText(collapseWhitespace(input.chapterText), 6000);
+
+  const prompt = [
+    "Ты формируешь краткое summary главы художественной книги.",
+    "",
+    "Задача:",
+    "- Напиши РОВНО 1 предложение на русском языке.",
+    "- Максимум 200 символов.",
+    "- Только факты из текста главы, без домыслов и оценок.",
+    "- Без цитат и без спойлерных формулировок уровня финала книги.",
+    "",
+    "Формат ответа:",
+    'Верни только строгий JSON-объект вида {"summary":"..."}',
+    "",
+    `chapterTitle: ${JSON.stringify(chapterTitle)}`,
+    `chapterText: ${JSON.stringify(chapterText)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_chapter_summary",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeBookChapterSummaryPayload(raw.result);
+  return {
+    result: BookChapterSummaryResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookSummaryFromChapterSummaries(
+  input: BookSummaryFromChapterSummariesInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookSummaryFromChapterSummariesResult>> {
+  const bookTitle = truncateText(collapseWhitespace(input.bookTitle), 220) || "Без названия";
+  const author = truncateText(collapseWhitespace(String(input.author || "")), 180) || null;
+  const chapterSummaries = input.chapterSummaries
+    .map((chapter) => ({
+      orderIndex: chapter.orderIndex,
+      title: truncateText(collapseWhitespace(chapter.title), 160) || `Глава ${chapter.orderIndex}`,
+      summary: truncateText(collapseWhitespace(chapter.summary), 220),
+    }))
+    .filter((chapter) => chapter.summary.length > 0)
+    .slice(0, 240);
+
+  if (!chapterSummaries.length) {
+    throw new Error("book_summary requires non-empty chapter summaries");
+  }
+
+  const prompt = [
+    "Ты формируешь общее краткое summary книги по summary глав.",
+    "",
+    "Задача:",
+    "- Напиши 1-2 предложения на русском языке.",
+    "- Максимум 280 символов суммарно.",
+    "- Сконцентрируйся на главной сути и динамике книги.",
+    "- Только факты из входных summary глав, без домыслов.",
+    "",
+    "Формат ответа:",
+    'Верни только строгий JSON-объект вида {"summary":"..."}',
+    "",
+    `bookTitle: ${JSON.stringify(bookTitle)}`,
+    `author: ${JSON.stringify(author)}`,
+    `chapterSummaries: ${JSON.stringify(chapterSummaries)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_summary",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeBookSummaryPayload(raw.result);
+  return {
+    result: BookSummaryFromChapterSummariesResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookChapterCharacters(
+  input: BookChapterCharactersInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookChapterCharactersResult>> {
+  const chapterTitle = truncateText(collapseWhitespace(input.chapterTitle), 180) || "Без названия главы";
+  const chapterText = truncateText(collapseWhitespace(input.chapterText), 6000);
+
+  const prompt = [
+    "Ты извлекаешь персонажей из одной главы художественной книги.",
+    "",
+    "Задача:",
+    "- Верни список персонажей, явно присутствующих в тексте главы.",
+    "- Для каждого персонажа укажи роль в этой главе.",
+    "- mentionCount должен быть целым положительным числом.",
+    "- Добавь короткие цитаты/фрагменты только из текста главы (с кратким контекстом).",
+    "- Максимум 12 персонажей на главу.",
+    "- Максимум 3 цитаты на персонажа.",
+    "- Не добавляй домыслы и информацию вне главы.",
+    "",
+    "Формат ответа:",
+    'Верни только строгий JSON-объект вида {"characters":[{"name":"...","aliases":["..."],"roleInChapter":"...","mentionCount":1,"quotes":[{"text":"...","context":"..."}]}]}',
+    "",
+    `chapterTitle: ${JSON.stringify(chapterTitle)}`,
+    `chapterText: ${JSON.stringify(chapterText)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_chapter_characters",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeBookChapterCharactersPayload(raw.result);
+  return {
+    result: BookChapterCharactersResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookCharacterProfileSynthesis(
+  input: BookCharacterProfileSynthesisInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookCharacterProfileSynthesisResult>> {
+  const chapterSignals = input.chapterSignals
+    .map((signal) => ({
+      chapterOrderIndex: signal.chapterOrderIndex,
+      chapterTitle: truncateText(collapseWhitespace(signal.chapterTitle), 160) || `Глава ${signal.chapterOrderIndex}`,
+      roleInChapter: truncateText(collapseWhitespace(signal.roleInChapter), 180) || "Участник событий",
+      quotes: signal.quotes
+        .map((quote) => ({
+          text: truncateText(collapseWhitespace(quote.text), 220),
+          context: truncateText(collapseWhitespace(quote.context), 220),
+        }))
+        .filter((quote) => quote.text && quote.context)
+        .slice(0, 3),
+    }))
+    .slice(0, 18);
+
+  const payload = {
+    bookTitle: truncateText(collapseWhitespace(input.bookTitle), 220) || "Без названия",
+    bookAuthor: truncateText(collapseWhitespace(String(input.bookAuthor || "")), 180) || null,
+    characterName: truncateText(collapseWhitespace(input.characterName), 140) || "Персонаж",
+    aliases: normalizeStringList(input.aliases, 16, 140),
+    mentionCount: Math.max(1, Math.round(input.mentionCount || 1)),
+    firstAppearanceChapterOrder:
+      input.firstAppearanceChapterOrder && Number.isFinite(input.firstAppearanceChapterOrder)
+        ? Math.max(1, Math.round(input.firstAppearanceChapterOrder))
+        : null,
+    chapterSignals,
+  };
+
+  const prompt = [
+    "Ты формируешь профиль персонажа по агрегированным данным из нескольких глав.",
+    "",
+    "Нужно вернуть 3 поля:",
+    "- role: краткая роль персонажа в книге (до 140 символов).",
+    "- description: фактическая характеристика персонажа (1-2 предложения, до 360 символов).",
+    "- arc: как меняется/раскрывается персонаж по главам (1-2 предложения, до 360 символов).",
+    "",
+    "Правила:",
+    "- Только по входным данным.",
+    "- Без домыслов и новых фактов.",
+    "- Текст на русском языке.",
+    "",
+    "Формат ответа:",
+    'Верни только строгий JSON-объект вида {"role":"...","description":"...","arc":"..."}',
+    "",
+    `input: ${JSON.stringify(payload)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_character_profile",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeBookCharacterProfileSynthesisPayload(raw.result, payload);
+  return {
+    result: BookCharacterProfileSynthesisResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookChapterLocations(
+  input: BookChapterLocationsInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookChapterLocationsResult>> {
+  const chapterTitle = truncateText(collapseWhitespace(input.chapterTitle), 180) || "Без названия главы";
+  const chapterText = truncateText(collapseWhitespace(input.chapterText), 6000);
+
+  const prompt = [
+    "Ты извлекаешь локации из одной главы художественной книги.",
+    "",
+    "Задача:",
+    "- Верни список локаций, явно присутствующих в тексте главы.",
+    "- Для каждой локации укажи функцию в этой главе.",
+    "- mentionCount должен быть целым положительным числом.",
+    "- Добавь короткие цитаты/фрагменты только из текста главы (с кратким контекстом).",
+    "- Максимум 12 локаций на главу.",
+    "- Максимум 3 цитаты на локацию.",
+    "- Не добавляй домыслы и информацию вне главы.",
+    "",
+    "Формат ответа:",
+    'Верни только строгий JSON-объект вида {"locations":[{"name":"...","aliases":["..."],"functionInChapter":"...","mentionCount":1,"quotes":[{"text":"...","context":"..."}]}]}',
+    "",
+    `chapterTitle: ${JSON.stringify(chapterTitle)}`,
+    `chapterText: ${JSON.stringify(chapterText)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_chapter_locations",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeBookChapterLocationsPayload(raw.result);
+  return {
+    result: BookChapterLocationsResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookLocationProfileSynthesis(
+  input: BookLocationProfileSynthesisInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookLocationProfileSynthesisResult>> {
+  const chapterSignals = input.chapterSignals
+    .map((signal) => ({
+      chapterOrderIndex: signal.chapterOrderIndex,
+      chapterTitle: truncateText(collapseWhitespace(signal.chapterTitle), 160) || `Глава ${signal.chapterOrderIndex}`,
+      functionInChapter: truncateText(collapseWhitespace(signal.functionInChapter), 220) || "Важная локация главы",
+      quotes: signal.quotes
+        .map((quote) => ({
+          text: truncateText(collapseWhitespace(quote.text), 220),
+          context: truncateText(collapseWhitespace(quote.context), 220),
+        }))
+        .filter((quote) => quote.text && quote.context)
+        .slice(0, 3),
+    }))
+    .slice(0, 18);
+
+  const payload = {
+    bookTitle: truncateText(collapseWhitespace(input.bookTitle), 220) || "Без названия",
+    bookAuthor: truncateText(collapseWhitespace(String(input.bookAuthor || "")), 180) || null,
+    locationName: truncateText(collapseWhitespace(input.locationName), 140) || "Локация",
+    aliases: normalizeStringList(input.aliases, 16, 140),
+    mentionCount: Math.max(1, Math.round(input.mentionCount || 1)),
+    firstAppearanceChapterOrder:
+      input.firstAppearanceChapterOrder && Number.isFinite(input.firstAppearanceChapterOrder)
+        ? Math.max(1, Math.round(input.firstAppearanceChapterOrder))
+        : null,
+    chapterSignals,
+  };
+
+  const prompt = [
+    "Ты формируешь профиль локации по агрегированным данным из нескольких глав.",
+    "",
+    "Нужно вернуть 2 поля:",
+    "- description: фактическое описание локации (1-2 предложения, до 360 символов).",
+    "- significance: значение локации в произведении (1-2 предложения, до 360 символов).",
+    "",
+    "Правила:",
+    "- Только по входным данным.",
+    "- Без домыслов и новых фактов.",
+    "- Текст на русском языке.",
+    "",
+    "Формат ответа:",
+    'Верни только строгий JSON-объект вида {"description":"...","significance":"..."}',
+    "",
+    `input: ${JSON.stringify(payload)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_location_profile",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeBookLocationProfileSynthesisPayload(raw.result, payload);
+  return {
+    result: BookLocationProfileSynthesisResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookChapterThemes(
+  input: BookChapterThemesInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookChapterThemesResult>> {
+  const chapterTitle = truncateText(collapseWhitespace(input.chapterTitle), 180) || "Без названия главы";
+  const chapterText = truncateText(collapseWhitespace(input.chapterText), 6000);
+
+  const prompt = [
+    "Ты извлекаешь ключевые темы из одной главы художественной книги.",
+    "",
+    "Задача:",
+    "- Верни список тем, явно проявляющихся в тексте главы.",
+    "- Для каждой темы укажи, как она проявляется в этой главе.",
+    "- mentionCount должен быть целым положительным числом.",
+    "- Добавь короткие цитаты/фрагменты только из текста главы (с кратким контекстом).",
+    "- Максимум 12 тем на главу.",
+    "- Максимум 3 цитаты на тему.",
+    "- Не добавляй домыслы и информацию вне главы.",
+    "",
+    "Формат ответа:",
+    'Верни только строгий JSON-объект вида {"themes":[{"name":"...","aliases":["..."],"manifestationInChapter":"...","mentionCount":1,"quotes":[{"text":"...","context":"..."}]}]}',
+    "",
+    `chapterTitle: ${JSON.stringify(chapterTitle)}`,
+    `chapterText: ${JSON.stringify(chapterText)}`,
+  ].join("\\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_chapter_themes",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeBookChapterThemesPayload(raw.result);
+  return {
+    result: BookChapterThemesResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookThemeProfileSynthesis(
+  input: BookThemeProfileSynthesisInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookThemeProfileSynthesisResult>> {
+  const chapterSignals = input.chapterSignals
+    .map((signal) => ({
+      chapterOrderIndex: signal.chapterOrderIndex,
+      chapterTitle: truncateText(collapseWhitespace(signal.chapterTitle), 160) || `Глава ${signal.chapterOrderIndex}`,
+      manifestationInChapter:
+        truncateText(collapseWhitespace(signal.manifestationInChapter), 220) || "Ключевая тема главы",
+      quotes: signal.quotes
+        .map((quote) => ({
+          text: truncateText(collapseWhitespace(quote.text), 220),
+          context: truncateText(collapseWhitespace(quote.context), 220),
+        }))
+        .filter((quote) => quote.text && quote.context)
+        .slice(0, 3),
+    }))
+    .slice(0, 18);
+
+  const payload = {
+    bookTitle: truncateText(collapseWhitespace(input.bookTitle), 220) || "Без названия",
+    bookAuthor: truncateText(collapseWhitespace(String(input.bookAuthor || "")), 180) || null,
+    themeName: truncateText(collapseWhitespace(input.themeName), 140) || "Тема",
+    aliases: normalizeStringList(input.aliases, 16, 140),
+    mentionCount: Math.max(1, Math.round(input.mentionCount || 1)),
+    firstAppearanceChapterOrder:
+      input.firstAppearanceChapterOrder && Number.isFinite(input.firstAppearanceChapterOrder)
+        ? Math.max(1, Math.round(input.firstAppearanceChapterOrder))
+        : null,
+    chapterSignals,
+  };
+
+  const prompt = [
+    "Ты формируешь профиль темы по агрегированным данным из нескольких глав.",
+    "",
+    "Нужно вернуть 2 поля:",
+    "- description: фактическое описание темы (1-2 предложения, до 360 символов).",
+    "- development: как тема развивается в произведении (1-2 предложения, до 360 символов).",
+    "",
+    "Правила:",
+    "- Только по входным данным.",
+    "- Без домыслов и новых фактов.",
+    "- Текст на русском языке.",
+    "",
+    "Формат ответа:",
+    'Верни только строгий JSON-объект вида {"description":"...","development":"..."}',
+    "",
+    `input: ${JSON.stringify(payload)}`,
+  ].join("\\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_theme_profile",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeBookThemeProfileSynthesisPayload(raw.result, payload);
+  return {
+    result: BookThemeProfileSynthesisResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookChapterQuotes(
+  input: BookChapterQuotesInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookChapterQuotesResult>> {
+  const chapterTitle = truncateText(collapseWhitespace(input.chapterTitle), 180) || "Без названия главы";
+  const chapterText = truncateText(String(input.chapterText || ""), 16000);
+
+  const prompt = [
+    "Ты извлекаешь цитаты из одной главы художественной книги.",
+    "",
+    "Задача:",
+    "- Верни плотную, но чистую сегментацию цитат по тексту главы.",
+    "- Цитата должна быть точным фрагментом главы, без перефразирования.",
+    "- Для каждой цитаты укажи startChar/endChar в координатах chapterText.",
+    "- type выбирай только из: dialogue, monologue, narration, description, reflection, action.",
+    "- tags выбирай только из: conflict, relationship, identity, morality, power, freedom, fear, guilt, hope, fate, society, violence, love, death, faith.",
+    "- confidence от 0 до 1.",
+    "- mentions: кандидаты weak-label (kind только character/theme/location) со span в координатах текста цитаты.",
+    "- commentary: короткая фактическая пометка о смысле цитаты.",
+    "- Максимум 48 цитат на главу.",
+    "- Не добавляй фактов вне текста главы.",
+    "",
+    "Формат ответа:",
+    'Верни только строгий JSON-объект вида {"quotes":[{"text":"...","startChar":0,"endChar":10,"type":"narration","tags":["conflict"],"confidence":0.8,"commentary":"...","mentions":[{"kind":"character","value":"...","normalizedValue":"...","startChar":0,"endChar":4,"confidence":0.8}]}]}',
+    "",
+    `chapterTitle: ${JSON.stringify(chapterTitle)}`,
+    `chapterText: ${JSON.stringify(chapterText)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_chapter_quotes",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeBookChapterQuotesPayload(raw.result, chapterText);
+  return {
+    result: BookChapterQuotesResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookChapterLiterarySynthesis(
+  input: BookChapterLiterarySynthesisInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookLiterarySynthesisResult>> {
+  const bookTitle = truncateText(collapseWhitespace(input.bookTitle), 220) || "Без названия";
+  const bookAuthor = truncateText(collapseWhitespace(String(input.bookAuthor || "")), 180) || null;
+  const chapterTitle = truncateText(collapseWhitespace(input.chapterTitle), 180) || `Глава ${Math.max(1, Math.floor(input.chapterOrderIndex || 1))}`;
+  const chapterOrderIndex = Math.max(1, Math.floor(input.chapterOrderIndex || 1));
+  const chapterText = truncateText(String(input.chapterText || ""), 12000);
+
+  const sectionKeys = BOOK_LITERARY_SECTION_KEYS.join(", ");
+  const prompt = [
+    "Ты формируешь литературный анализ только по одной главе художественной книги.",
+    "Нельзя использовать знания вне chapterText.",
+    "",
+    "Нужно вернуть РОВНО 10 разделов с ключами:",
+    sectionKeys,
+    "",
+    "Для каждого раздела верни поля:",
+    "- title: название раздела по смыслу ключа.",
+    "- summary: 1-2 предложения, до 360 символов.",
+    "- bodyMarkdown: 2-5 абзацев анализа по этой главе.",
+    "- bullets: 2-6 коротких тезисов.",
+    "- evidenceQuoteIds: пустой массив [].",
+    "- confidence: число 0..1.",
+    "",
+    "Критические правила:",
+    "1) Только строгий JSON-объект.",
+    "2) Корневой ключ sections обязателен.",
+    "3) sections должен содержать все 10 ключей.",
+    "4) Никаких фактов вне chapterText.",
+    "",
+    `bookTitle: ${JSON.stringify(bookTitle)}`,
+    `bookAuthor: ${JSON.stringify(bookAuthor)}`,
+    `chapterOrderIndex: ${chapterOrderIndex}`,
+    `chapterTitle: ${JSON.stringify(chapterTitle)}`,
+    `chapterText: ${JSON.stringify(chapterText)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_literary",
+    timewebModelId: options?.timewebModelId || null,
+    maxTokens: resolveBookLiteraryMaxTokens(),
+  });
+
+  const normalized = normalizeBookLiterarySynthesisPayload(raw.result);
+  return {
+    result: BookLiterarySynthesisResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+const BOOK_LITERARY_CHAPTER_FACTS_VERTEX_PROFILE = {
+  model: "gemini-3.1-flash-lite-preview",
+  thinkingLevel: "MINIMAL" as const,
+};
+
+const BOOK_LITERARY_PATTERN_PASS_VERTEX_PROFILE = {
+  model: "gemini-3.1-pro-preview",
+  thinkingLevel: "LOW" as const,
+};
+
+const BOOK_LITERARY_FINAL_VERTEX_PROFILE = {
+  model: "gemini-3.1-flash-lite-preview",
+  thinkingLevel: "MINIMAL" as const,
+};
+
+export async function runBookChapterStructuralFacts(
+  input: BookChapterStructuralFactsInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookChapterStructuralFactsResult>> {
+  const chapterText = truncateText(String(input.chapterText || ""), 12000);
+
+  const prompt = [
+    "Ты извлекаешь СТРУКТУРНЫЕ ФАКТЫ из одной главы художественного произведения.",
+    "",
+    "Это не анализ.",
+    "Это не интерпретация.",
+    "Это не пересказ всей главы подряд.",
+    "Это не попытка объяснить смысл книги.",
+    "",
+    "Твоя задача — собрать только такие факты, которые потом помогут объяснить книгу на уровне всей истории.",
+    "",
+    "Можно использовать ТОЛЬКО:",
+    "- chapterText",
+    "",
+    "НЕЛЬЗЯ:",
+    "- использовать знания вне chapterText",
+    "- придумывать",
+    "- подмешивать события из других глав",
+    "- писать темы, идеи, мораль, авторскую позицию",
+    "- делать \"красивые\" или слишком умные формулировки",
+    "- интерпретировать предметы и образы",
+    "- использовать слова:",
+    "  - \"символизирует\"",
+    "  - \"подчеркивает\"",
+    "  - \"отражает\"",
+    "  - \"демонстрирует\"",
+    "  - \"метафора\"",
+    "  - \"аллегория\"",
+    "  - \"указывает на тему\"",
+    "  - \"раскрывает идею\"",
+    "",
+    "НУЖНО ВЕРНУТЬ ТОЛЬКО СТРОГИЙ JSON:",
+    "",
+    "{",
+    '  "events": [',
+    "    {",
+    '      "id": "",',
+    '      "description": "",',
+    '      "characters": [],',
+    '      "importance": 0',
+    "    }",
+    "  ],",
+    '  "characterChanges": [',
+    "    {",
+    '      "character": "",',
+    '      "before": "",',
+    '      "after": "",',
+    '      "reason": ""',
+    "    }",
+    "  ],",
+    '  "conflicts": [',
+    "    {",
+    '      "type": "external|internal",',
+    '      "description": "",',
+    '      "participants": []',
+    "    }",
+    "  ],",
+    '  "symbols": [',
+    "    {",
+    '      "entity": "",',
+    '      "description": "",',
+    '      "context": ""',
+    "    }",
+    "  ],",
+    '  "facts": []',
+    "}",
+    "",
+    "ПРАВИЛА:",
+    "",
+    "1. events",
+    "- 4–10 событий",
+    "- бери только реально важные события главы",
+    "- description = коротко, конкретно, только что произошло",
+    "- без выводов и без объяснения значения события",
+    "- importance = число от 0 до 1",
+    "- не дроби одну сцену на много микрособытий",
+    "- не добавляй бытовые действия, если они ничего не меняют",
+    "",
+    "2. characterChanges",
+    "- добавляй только если в главе реально меняется:",
+    "  - состояние",
+    "  - отношение",
+    "  - понимание",
+    "  - цель",
+    "  - уровень страха/уверенности",
+    "- before и after должны быть конкретными и наблюдаемыми",
+    "- reason должен указывать на конкретное событие внутри главы",
+    "- максимум 1–3 изменений",
+    "",
+    "3. conflicts",
+    "- 1–4 конфликта",
+    "- только те конфликты, которые явно проявлены в главе",
+    "- external = персонаж против персонажа / системы / угрозы",
+    "- internal = страх / сомнение / внутренний выбор / сдерживание",
+    "- не пиши общо вроде \"борьба добра и зла\"",
+    "",
+    "4. symbols",
+    "- 0–3 элемента",
+    "- добавляй только если объект, образ или существо заметно выделены внутри главы и могут пригодиться дальше",
+    "- description = что это такое в рамках главы",
+    "- context = где и как это появляется",
+    "- не объясняй \"что это значит\"",
+    "- если не уверен — не добавляй",
+    "",
+    "5. facts",
+    "- 4–8 фактов",
+    "- facts должен быть массивом строк",
+    "- каждый элемент facts = одна короткая строка с одним конкретным фактом",
+    "- без вложенных объектов",
+    "- без списков внутри строк",
+    "- без повторов событий слово в слово",
+    "- это могут быть:",
+    "  - новые сведения",
+    "  - ограничения",
+    "  - связи между персонажами",
+    "  - правила мира",
+    "  - даты",
+    "  - решения",
+    "  - статусы",
+    "  - обвинения",
+    "  - свойства предметов",
+    "",
+    "6. Стиль",
+    "- пиши просто",
+    "- пиши конкретно",
+    "- без литературоведческого языка",
+    "- без морали",
+    "- без метафор от себя",
+    "- без смешения языков: если вход на русском, весь ответ должен быть на русском",
+    "",
+    "7. Анти-шум",
+    "НЕ ДОБАВЛЯЙ:",
+    "- незначительные бытовые детали",
+    "- фоновые мелочи",
+    "- выводы о книге в целом",
+    "- слишком смелые трактовки",
+    "- \"символы\", если это просто предмет из сцены без заметной функции",
+    "- ничего, что нельзя прямо или почти прямо проверить по тексту главы",
+    "",
+    "8. Проверка перед ответом",
+    "Проверь, что:",
+    "- facts — это массив строк",
+    "- нигде нет \"[object Object]\"",
+    "- events[].description содержит только событие",
+    "- symbols не содержат интерпретации",
+    "- в ответе нет английского, если chapterText на русском",
+    "",
+    "Если сомневаешься — выбери более узкую и фактическую формулировку.",
+    "",
+    "9. Только JSON",
+    "- без markdown",
+    "- без комментариев",
+    "- без пояснений вне структуры",
+    "",
+    "Входные данные:",
+    `bookTitle: ${JSON.stringify(truncateText(collapseWhitespace(input.bookTitle), 220) || "Без названия")}`,
+    `bookAuthor: ${JSON.stringify(truncateText(collapseWhitespace(String(input.bookAuthor || "")), 180) || null)}`,
+    `chapterOrderIndex: ${Math.max(1, Math.floor(input.chapterOrderIndex || 1))}`,
+    `chapterTitle: ${JSON.stringify(truncateText(collapseWhitespace(input.chapterTitle), 220) || `Глава ${Math.max(1, Math.floor(input.chapterOrderIndex || 1))}`)}`,
+    `chapterText: ${JSON.stringify(chapterText)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_literary",
+    timewebModelId: options?.timewebModelId || null,
+    vertexModel: BOOK_LITERARY_CHAPTER_FACTS_VERTEX_PROFILE.model,
+    vertexThinkingLevel: BOOK_LITERARY_CHAPTER_FACTS_VERTEX_PROFILE.thinkingLevel,
+    maxTokens: resolveBookLiteraryMaxTokens(),
+  });
+
+  const normalized = normalizeBookChapterStructuralFactsPayload(raw.result);
+  return {
+    result: BookChapterStructuralFactsResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+function sanitizeBookChapterFactsForLiteraryPrompt(chapterFactsInput: BookLiteraryMergeFactsChapterInput[]) {
+  return chapterFactsInput.slice(0, 120).map((chapter) => ({
+    chapterOrderIndex: Math.max(1, Math.floor(chapter.chapterOrderIndex || 1)),
+    chapterTitle:
+      truncateText(collapseWhitespace(chapter.chapterTitle), 160) ||
+      `Глава ${Math.max(1, Math.floor(chapter.chapterOrderIndex || 1))}`,
+    events: chapter.facts.events
+      .slice(0, 10)
+      .map((item) => ({
+        id: truncateText(collapseWhitespace(item.id), 80),
+        description: truncateText(collapseWhitespace(item.description), 280),
+        characters: item.characters
+          .slice(0, 8)
+          .map((value) => truncateText(collapseWhitespace(value), 120))
+          .filter((value) => value.length > 0),
+        importance: clamp01(item.importance),
+      }))
+      .filter((item) => item.id.length > 0 && item.description.length > 0),
+    characterChanges: chapter.facts.characterChanges
+      .slice(0, 3)
+      .map((item) => ({
+        character: truncateText(collapseWhitespace(item.character), 120),
+        before: truncateText(collapseWhitespace(item.before), 220),
+        after: truncateText(collapseWhitespace(item.after), 220),
+        reason: truncateText(collapseWhitespace(item.reason), 260),
+      }))
+      .filter((item) => item.character && item.before && item.after && item.reason),
+    conflicts: chapter.facts.conflicts
+      .slice(0, 4)
+      .map((item) => ({
+        type: item.type === "internal" ? "internal" : "external",
+        description: truncateText(collapseWhitespace(item.description), 260),
+        participants: item.participants
+          .slice(0, 8)
+          .map((value) => truncateText(collapseWhitespace(value), 120))
+          .filter((value) => value.length > 0),
+      }))
+      .filter((item) => item.description.length > 0),
+    symbols: chapter.facts.symbols
+      .slice(0, 3)
+      .map((item) => ({
+        entity: truncateText(collapseWhitespace(item.entity), 120),
+        description: truncateText(collapseWhitespace(item.description), 220),
+        context: truncateText(collapseWhitespace(item.context), 260),
+      }))
+      .filter((item) => item.entity && item.description && item.context),
+    facts: chapter.facts.facts
+      .slice(0, 8)
+      .map((value) => truncateText(collapseWhitespace(value), 260))
+      .filter((value) => value.length > 0),
+  }));
+}
+
+export async function runBookLiteraryPatternPass(
+  input: BookLiteraryPatternPassInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookLiteraryPatternPassResult>> {
+  const chapterFacts = sanitizeBookChapterFactsForLiteraryPrompt(input.chapterFacts);
+  const prompt = [
+    "Ты извлекаешь ПАТТЕРНЫ книги из массива chapterFacts.",
+    "",
+    "Это не финальное объяснение книги.",
+    "Это не литературный анализ.",
+    "Это промежуточный слой между фактами глав и финальным объяснением.",
+    "",
+    "Твоя задача — найти не \"темы вообще\", а повторяющиеся смысловые ходы, которые проходят через несколько глав и реально объясняют, как устроена именно эта книга.",
+    "",
+    "Можно использовать ТОЛЬКО:",
+    "- chapterFacts",
+    "",
+    "НЕЛЬЗЯ:",
+    "- использовать знания вне chapterFacts",
+    "- придумывать",
+    "- писать слишком общо",
+    "- писать названия паттернов, которые подходят почти к любой книге",
+    "- использовать имена конкретных персонажей в name",
+    "- превращать паттерны в моральные выводы",
+    "",
+    "НУЖНО ВЕРНУТЬ ТОЛЬКО СТРОГИЙ JSON:",
+    "",
+    "{",
+    '  "patterns": [',
+    "    {",
+    '      "id": "",',
+    '      "name": "",',
+    '      "core": "",',
+    '      "whyItMatters": "",',
+    '      "evidence": [',
+      "        {",
+    '          "type": "event|characterChange|conflict|symbol|fact",',
+    '          "chapter": 0,',
+    '          "ref": ""',
+    "        }",
+    "      ],",
+    '      "evolution": "",',
+    '      "strength": 0',
+    "    }",
+    "  ]",
+    "}",
+    "",
+    "ПРАВИЛА:",
+    "",
+    "1. Количество",
+    "- 4–7 паттернов",
+    "- не меньше 4, если материала достаточно",
+    "- выбирай только реально несущие паттерны",
+    "",
+    "2. Что такое паттерн",
+    "Паттерн — это не тема вроде \"дружба\" или \"добро и зло\".",
+    "Паттерн — это повторяющийся смысловой ход или разворот, который:",
+    "- опирается на несколько глав",
+    "- имеет развитие",
+    "- помогает объяснить книгу лучше, чем просто пересказ",
+    "",
+    "Плохие паттерны:",
+    "- \"дружба\"",
+    "- \"предательство\"",
+    "- \"добро и зло\"",
+    "- \"страх\"",
+    "- \"взросление\"",
+    "",
+    "Хороший паттерн:",
+    "- показывает, ЧТО именно меняется",
+    "- имеет конкретную траекторию",
+    "- помогает объяснить ключевой механизм книги",
+    "",
+    "3. Поля",
+    "- id: p1, p2, p3 ...",
+    "- name: короткое понятное название паттерна без имен персонажей",
+    "- core: формула изменения в виде \"X -> Y\"",
+    "- whyItMatters: зачем этот паттерн важен для понимания книги",
+    "- evidence: конкретные опоры из chapterFacts",
+    "- evolution: как этот паттерн развивается по книге",
+    "- strength: число от 0 до 1, где 1 = один из центральных паттернов книги",
+    "",
+    "4. Требования к паттерну",
+    "Каждый паттерн должен:",
+    "- опираться минимум на 2 главы",
+    "- содержать изменение, сдвиг, накопление или разворот",
+    "- быть достаточно конкретным для финального объяснения",
+    "- объяснять книгу, а не просто красиво звучать",
+    "",
+    "5. Требования к evidence",
+    "- 3–6 опор на паттерн",
+    "- опоры должны быть распределены по книге, а не собраны из одного места",
+    "- ref = короткое и понятное описание конкретного факта из chapterFacts",
+    "- не дублируй один и тот же смысл разными словами",
+    "",
+    "6. Стиль",
+    "- просто",
+    "- конкретно",
+    "- без академического языка",
+    "- без канцелярита",
+    "- без морализации",
+    "",
+    "7. Анти-абстракция",
+    "Если паттерн можно вставить почти в любую книгу — он плохой.",
+    "Если из паттерна непонятно, ЧТО именно меняется — он плохой.",
+    "Если паттерн не объясняет один из ключевых механизмов книги — он слабый.",
+    "",
+    "8. Полезность для final",
+    "Выбирай такие паттерны, из которых потом можно построить понятные разделы:",
+    "- что реально происходит",
+    "- главный поворот",
+    "- как работает история",
+    "- важные скрытые детали",
+    "- ключевые развороты",
+    "",
+    "9. Только JSON",
+    "- без markdown",
+    "- без комментариев",
+    "- без пояснений вне структуры",
+    "",
+    "Вход:",
+    `bookTitle: ${JSON.stringify(truncateText(collapseWhitespace(input.bookTitle), 220) || "Без названия")}`,
+    `chapterCount: ${Math.max(0, Math.floor(input.chapterCount || 0))}`,
+    `chapterFacts: ${JSON.stringify(chapterFacts)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_literary",
+    timewebModelId: options?.timewebModelId || null,
+    vertexModel: BOOK_LITERARY_PATTERN_PASS_VERTEX_PROFILE.model,
+    vertexThinkingLevel: BOOK_LITERARY_PATTERN_PASS_VERTEX_PROFILE.thinkingLevel,
+    maxTokens: resolveBookLiteraryMaxTokens(),
+  });
+
+  const normalized = normalizeBookLiteraryPatternPassPayload(raw.result);
+  return {
+    result: BookLiteraryPatternPassResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookLiterarySynthesisFromChapterFacts(
+  input: BookLiteraryMergeFactsSynthesisInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookLiterarySynthesisResult>> {
+  const chapterFacts = sanitizeBookChapterFactsForLiteraryPrompt(input.chapterFacts);
+  const patterns = input.patterns
+    .slice(0, 7)
+    .map((pattern) => ({
+      id: truncateText(collapseWhitespace(pattern.id), 80),
+      name: truncateText(collapseWhitespace(pattern.name), 160),
+      core: truncateText(collapseWhitespace(pattern.core), 220),
+      whyItMatters: truncateText(collapseWhitespace(pattern.whyItMatters), 420),
+      evidence: pattern.evidence
+        .slice(0, 6)
+        .map((item) => ({
+          type: item.type,
+          chapter: Math.min(5000, Math.max(1, Math.floor(item.chapter || 1))),
+          ref: truncateText(collapseWhitespace(item.ref), 260),
+        }))
+        .filter((item) => item.ref.length > 0),
+      evolution: truncateText(collapseWhitespace(pattern.evolution), 720),
+      strength: clamp01(pattern.strength),
+    }))
+    .filter((pattern) => pattern.id && pattern.name && pattern.core && pattern.whyItMatters && pattern.evolution);
+
+  const prompt = [
+    "Ты объясняешь художественную книгу простым, живым и понятным языком.",
+    "",
+    "Это не академический анализ.",
+    "Это не школьное сочинение.",
+    "Это не пересказ по главам.",
+    "Это не набор \"уроков жизни\".",
+    "",
+    "Твоя задача — помочь обычному человеку быстро и ясно понять:",
+    "- что в книге на самом деле происходит",
+    "- в чем главный смысловой поворот",
+    "- почему эта история работает",
+    "- какие детали легко пропустить, хотя они очень важны",
+    "",
+    "Можно использовать ТОЛЬКО:",
+    "- chapterFacts",
+    "- patterns",
+    "",
+    "НЕЛЬЗЯ:",
+    "- использовать знания вне входных данных",
+    "- придумывать",
+    "- писать слишком общо",
+    "- писать мораль, поучения и универсальные выводы",
+    "- писать фразы, которые подойдут почти к любой книге",
+    "- использовать академический, сухой или канцелярский язык",
+    "- уходить в \"красивые формулировки\" без фактов",
+    "",
+    "НЕЛЬЗЯ писать такие формулировки:",
+    "- \"книга учит\"",
+    "- \"мир не делится на черное и белое\"",
+    "- \"не суди по внешнему виду\"",
+    "- \"истина скрыта\"",
+    "- \"герой взрослеет\"",
+    "- \"поднимается тема\"",
+    "- \"проблема доверия\"",
+    "- \"добро и зло\"",
+    "- \"моральный выбор\"",
+    "- \"смотреть глубже очевидного\"",
+    "",
+    "ОБЩИЙ ПРИНЦИП:",
+    "Не объясняй, какую мораль надо вынести.",
+    "Объясняй, что здесь реально происходит и почему это работает.",
+    "",
+    "ФОРМАТ ОТВЕТА:",
+    "Только строгий JSON.",
+    "",
+    "{",
+    '  "sections": {',
+    '    "what_is_really_going_on": {',
+    '      "title": "",',
+    '      "summary": "",',
+    '      "bodyMarkdown": "",',
+    '      "bullets": [],',
+    '      "confidence": 0',
+    "    },",
+    '    "main_idea": {',
+    '      "title": "",',
+    '      "summary": "",',
+    '      "bodyMarkdown": "",',
+    '      "bullets": [],',
+    '      "confidence": 0',
+    "    },",
+    '    "how_it_works": {',
+    '      "title": "",',
+    '      "summary": "",',
+    '      "bodyMarkdown": "",',
+    '      "bullets": [],',
+    '      "confidence": 0',
+    "    },",
+    '    "hidden_details": {',
+    '      "title": "",',
+    '      "summary": "",',
+    '      "bodyMarkdown": "",',
+    '      "bullets": [],',
+    '      "confidence": 0',
+    "    },",
+    '    "characters": {',
+    '      "title": "",',
+    '      "summary": "",',
+    '      "bodyMarkdown": "",',
+    '      "bullets": [],',
+    '      "confidence": 0',
+    "    },",
+    '    "conflicts": {',
+    '      "title": "",',
+    '      "summary": "",',
+    '      "bodyMarkdown": "",',
+    '      "bullets": [],',
+    '      "confidence": 0',
+    "    },",
+    '    "structure": {',
+    '      "title": "",',
+    '      "summary": "",',
+    '      "bodyMarkdown": "",',
+    '      "bullets": [],',
+    '      "confidence": 0',
+    "    },",
+    '    "important_turns": {',
+    '      "title": "",',
+    '      "summary": "",',
+    '      "bodyMarkdown": "",',
+    '      "bullets": [],',
+    '      "confidence": 0',
+    "    },",
+    '    "takeaways": {',
+    '      "title": "",',
+    '      "summary": "",',
+    '      "bodyMarkdown": "",',
+    '      "bullets": [],',
+    '      "confidence": 0',
+    "    },",
+    '    "conclusion": {',
+    '      "title": "",',
+    '      "summary": "",',
+    '      "bodyMarkdown": "",',
+    '      "bullets": [],',
+    '      "confidence": 0',
+    "    }",
+    "  }",
+    "}",
+    "",
+    "ТРЕБОВАНИЯ К КАЖДОМУ РАЗДЕЛУ:",
+    "- title: короткий и понятный заголовок",
+    "- summary: 1–2 предложения, ясно и без абстракций",
+    "- bodyMarkdown: 3–6 коротких абзацев",
+    "- bullets: 4–7 тезисов",
+    "- confidence: число от 0 до 1",
+    "",
+    "КРИТИЧЕСКИЕ ПРАВИЛА:",
+    "",
+    "1. Основа ответа — patterns.",
+    "Каждый раздел должен строиться на 1–3 patterns и подтверждаться chapterFacts.",
+    "",
+    "2. Каждый абзац должен содержать:",
+    "- конкретное событие, факт, разворот, объект или связь",
+    "- что это меняет в понимании книги",
+    "- почему это важно для общей картины",
+    "",
+    "3. Если фразу можно вставить почти в любую книгу — она плохая, перепиши.",
+    "",
+    "4. Если убрать из абзаца конкретные события, персонажей, предметы или повороты, и текст все равно выглядит \"умным\" — абзац плохой, перепиши.",
+    "",
+    "5. Не упрощай patterns до пустых слов.",
+    "Не:",
+    "- \"скрытая угроза\"",
+    "- \"сложность истины\"",
+    "- \"проблема доверия\"",
+    "А:",
+    "- кто считался опасным",
+    "- кто оказался опасным на самом деле",
+    "- какая деталь сначала казалась фоном, а потом стала ключом",
+    "",
+    "6. Пиши естественно.",
+    "Плохой стиль:",
+    "- \"персонаж, которого считают опасным\"",
+    "- \"объект, воспринимаемый как угрозу\"",
+    "Хороший стиль:",
+    "- \"все думают, что он опасен\"",
+    "- \"с виду это обычная вещь, но позже она оказывается ключевой\"",
+    "",
+    "7. Не пересказывай книгу подряд.",
+    "Бери только те события, которые реально объясняют книгу.",
+    "",
+    "8. hidden_details",
+    "Обязательно включай детали, которые сначала кажутся фоном, но потом оказываются важными.",
+    "",
+    "9. important_turns",
+    "Выделяй только моменты, после которых понимание книги реально меняется.",
+    "",
+    "10. takeaways",
+    "Это не мораль и не \"чему учит книга\".",
+    "Это конкретные выводы о том, как устроена именно эта история.",
+    "",
+    "Плохо:",
+    "- \"нужно смотреть глубже\"",
+    "- \"нельзя судить по внешности\"",
+    "- \"герой взрослеет\"",
+    "Хорошо:",
+    "- \"главный враг долго оставался рядом и выглядел безобидно\"",
+    "- \"официальная версия событий скрывала настоящего предателя\"",
+    "- \"герою пришлось самому действовать, потому что взрослые не смогли исправить ситуацию\"",
+    "",
+    "11. conclusion",
+    "Не пиши философский итог и не подводи мораль.",
+    "Пиши только:",
+    "- что герой понял",
+    "- что на самом деле оказалось правдой",
+    "- что изменилось к финалу",
+    "- чем заканчивается книга на уровне смысла",
+    "",
+    "12. Не повторяй одну и ту же мысль в разных разделах разными словами.",
+    "Если разделы начинают дублировать друг друга — сделай их короче и конкретнее.",
+    "",
+    "13. Лучше подробнее, чем слишком коротко, но каждый абзац должен оставаться конкретным.",
+    "Не раздувай текст ради объема.",
+    "",
+    "14. Если данных недостаточно для сильного вывода — скажи это прямо, не выдумывай.",
+    "",
+    "15. Никакого текста вне JSON.",
+    "",
+    "Вход:",
+    `bookTitle: ${JSON.stringify(truncateText(collapseWhitespace(input.bookTitle), 220) || "Без названия")}`,
+    `chapterFacts: ${JSON.stringify(chapterFacts)}`,
+    `patterns: ${JSON.stringify(patterns)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_literary",
+    timewebModelId: options?.timewebModelId || null,
+    vertexModel: BOOK_LITERARY_FINAL_VERTEX_PROFILE.model,
+    vertexThinkingLevel: BOOK_LITERARY_FINAL_VERTEX_PROFILE.thinkingLevel,
+  });
+
+  const normalized = normalizeBookLiterarySynthesisPayload(raw.result);
+  return {
+    result: BookLiterarySynthesisResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookLiterarySynthesisFromChapterAnalyses(
+  input: BookLiteraryMergeSynthesisInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookLiterarySynthesisResult>> {
+  const chapterAnalyses = input.chapterAnalyses
+    .slice(0, 120)
+    .map((chapter) => ({
+      chapterOrderIndex: Math.max(1, Math.floor(chapter.chapterOrderIndex || 1)),
+      chapterTitle:
+        truncateText(collapseWhitespace(chapter.chapterTitle), 160) ||
+        `Глава ${Math.max(1, Math.floor(chapter.chapterOrderIndex || 1))}`,
+      sections: Object.fromEntries(
+        BOOK_LITERARY_SECTION_KEYS.map((key) => {
+          const section = chapter.sections[key];
+          const title =
+            truncateText(collapseWhitespace(section?.title || BOOK_LITERARY_SECTION_TITLE_BY_KEY[key]), 120) ||
+            BOOK_LITERARY_SECTION_TITLE_BY_KEY[key];
+          const summary = truncateText(
+            collapseWhitespace(section?.summary || ""),
+            260
+          );
+          const bodyMarkdown = truncateText(
+            collapseWhitespace(section?.bodyMarkdown || ""),
+            520
+          );
+          const bullets = (section?.bullets || [])
+            .slice(0, 3)
+            .map((item) => truncateText(collapseWhitespace(item), 140))
+            .filter((item) => item.length > 0);
+          const confidence = clamp01(Number(section?.confidence || 0.65));
+          return [
+            key,
+            {
+              title,
+              summary,
+              bodyMarkdown,
+              bullets,
+              confidence,
+            },
+          ] as const;
+        })
+      ) as Record<
+        BookLiterarySectionKey,
+        {
+          title: string;
+          summary: string;
+          bodyMarkdown: string;
+          bullets: string[];
+          confidence: number;
+        }
+      >,
+    }));
+
+  const sectionKeys = BOOK_LITERARY_SECTION_KEYS.join(", ");
+  const prompt = [
+    "Ты объединяешь покапитульный литературный анализ в единый итоговый анализ книги.",
+    "Работай только по входным chapterAnalyses, без внешних знаний.",
+    "",
+    "Нужно вернуть РОВНО 10 разделов с ключами:",
+    sectionKeys,
+    "",
+    "Для каждого раздела верни поля:",
+    "- title: название раздела по смыслу ключа.",
+    "- summary: 1-2 предложения, до 360 символов.",
+    "- bodyMarkdown: 3-8 абзацев, где отражена динамика по книге.",
+    "- bullets: 3-8 ключевых тезисов.",
+    "- evidenceQuoteIds: пустой массив [].",
+    "- confidence: число 0..1.",
+    "",
+    "Критические правила:",
+    "1) Только строгий JSON-объект.",
+    "2) Корневой ключ sections обязателен.",
+    "3) sections должен содержать все 10 ключей.",
+    "4) Не теряй важные различия между главами, если они есть.",
+    "",
+    `bookTitle: ${JSON.stringify(truncateText(collapseWhitespace(input.bookTitle), 220) || "Без названия")}`,
+    `bookAuthor: ${JSON.stringify(truncateText(collapseWhitespace(String(input.bookAuthor || "")), 180) || null)}`,
+    `chapterCount: ${Math.max(0, Math.floor(input.chapterCount || 0))}`,
+    `chapterAnalyses: ${JSON.stringify(chapterAnalyses)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_literary",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeBookLiterarySynthesisPayload(raw.result);
+  return {
+    result: BookLiterarySynthesisResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
+  };
+}
+
+export async function runBookLiterarySynthesis(
+  input: BookLiterarySynthesisInput,
+  options?: { timewebModelId?: string | null }
+): Promise<StrictJsonCallResult<BookLiterarySynthesisResult>> {
+  const quotes = input.quotes
+    .slice(0, 220)
+    .map((quote) => ({
+      quoteId: quote.quoteId,
+      chapterOrderIndex: quote.chapterOrderIndex,
+      type: quote.type,
+      tags: quote.tags.slice(0, 6),
+      confidence: clamp01(quote.confidence),
+      text: truncateText(collapseWhitespace(quote.text), 420),
+      commentary: truncateText(collapseWhitespace(String(quote.commentary || "")), 220) || null,
+      mentions: quote.mentions
+        .slice(0, 8)
+        .map((mention) => ({
+          kind: mention.kind,
+          value: truncateText(collapseWhitespace(mention.value), 120),
+          confidence: clamp01(mention.confidence),
+        }))
+        .filter((mention) => mention.value.length > 0),
+    }))
+    .filter((quote) => quote.text.length > 0);
+
+  if (!quotes.length) {
+    throw new Error("book_literary requires non-empty quotes");
+  }
+
+  const sectionKeys = BOOK_LITERARY_SECTION_KEYS.join(", ");
+  const prompt = [
+    "Ты формируешь целостный литературный анализ произведения на русском языке.",
+    "Работай строго в режиме quote-only: используй ТОЛЬКО переданные цитаты и метаданные.",
+    "Нельзя добавлять факты, которых нет в цитатах.",
+    "",
+    "Нужно сформировать РОВНО 10 разделов с ключами:",
+    sectionKeys,
+    "",
+    "Для каждого раздела верни объект полей:",
+    '- title: человекочитаемый заголовок раздела (по смыслу ключа).',
+    '- summary: 1-2 предложения, до 360 символов.',
+    '- bodyMarkdown: связный анализ (2-6 абзацев) только по цитатам.',
+    '- bullets: 2-6 кратких тезисов (массив строк).',
+    '- evidenceQuoteIds: массив quoteId, только из входного списка.',
+    '- confidence: число 0..1.',
+    "",
+    "Критические правила:",
+    "1) Верни только строгий JSON-объект.",
+    "2) Корневой объект должен иметь ключ sections.",
+    "3) sections должен содержать ВСЕ 10 ключей, без пропусков.",
+    "4) evidenceQuoteIds не могут содержать неизвестные quoteId.",
+    "5) Никаких дополнительных полей вне оговоренного контракта.",
+    "",
+    `bookTitle: ${JSON.stringify(truncateText(collapseWhitespace(input.bookTitle), 220) || "Без названия")}`,
+    `bookAuthor: ${JSON.stringify(truncateText(collapseWhitespace(String(input.bookAuthor || "")), 180) || null)}`,
+    `chapterCount: ${Math.max(0, Math.floor(input.chapterCount || 0))}`,
+    `quotes: ${JSON.stringify(quotes)}`,
+  ].join("\n");
+
+  const raw = await callStrictJson<unknown>({
+    prompt,
+    schema: z.any(),
+    phase: "book_literary",
+    timewebModelId: options?.timewebModelId || null,
+  });
+
+  const normalized = normalizeBookLiterarySynthesisPayload(raw.result);
+  return {
+    result: BookLiterarySynthesisResultSchema.parse(normalized),
+    meta: raw.meta,
+    debug: raw.debug,
   };
 }
 

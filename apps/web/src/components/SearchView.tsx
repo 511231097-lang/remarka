@@ -4,14 +4,13 @@ import { motion } from "motion/react";
 import { Search, Users, Lightbulb, Quote, X, MapPin } from "lucide-react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
-import { mockCharacters, mockThemes, mockQuotes, mockBooks, mockLocations } from "@/lib/mockData";
+import { mockCharacters, mockThemes, mockQuotes, mockLocations } from "@/lib/mockData";
 import { BookNavigation } from "./BookNavigation";
 import { useState } from "react";
 
 export function SearchView() {
   const params = useParams<{ bookId: string }>();
   const bookId = String(params.bookId || "");
-  const book = mockBooks.find((b) => b.id === bookId);
   const [searchQuery, setSearchQuery] = useState("");
 
   const allCharacters = mockCharacters.filter((c) => c.bookId === bookId);
@@ -46,8 +45,6 @@ export function SearchView() {
   );
 
   const totalResults = filteredCharacters.length + filteredThemes.length + filteredLocations.length + filteredQuotes.length;
-
-  if (!book) return null;
 
   return (
     <div className="min-h-screen bg-background">
