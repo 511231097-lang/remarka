@@ -1,5 +1,5 @@
-import { BookPlot } from "@/components/BookPlot";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function BookHiddenDetailsPage() {
-  return <BookPlot />;
+  return <BookAnalysisPlaceholder title="Скрытые детали" />;
 }

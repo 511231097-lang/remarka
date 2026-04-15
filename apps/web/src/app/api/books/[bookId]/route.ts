@@ -88,15 +88,6 @@ async function resolveBook(context: RouteContext) {
           image: true,
         },
       },
-      analyzerTasks: {
-        where: {
-          analyzerType: "literary",
-        },
-        select: {
-          state: true,
-        },
-        take: 1,
-      },
     },
   });
 
@@ -122,7 +113,6 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 
   const dto = toBookCoreDTO(book);
-  dto.analysisState = book.analyzerTasks[0]?.state || dto.analysisState;
   dto.canManage = book.ownerUserId === authUser.id;
   return NextResponse.json(dto);
 }
@@ -165,20 +155,10 @@ export async function PATCH(request: Request, context: RouteContext) {
           image: true,
         },
       },
-      analyzerTasks: {
-        where: {
-          analyzerType: "literary",
-        },
-        select: {
-          state: true,
-        },
-        take: 1,
-      },
     },
   });
 
   const dto = toBookCoreDTO(updated);
-  dto.analysisState = updated.analyzerTasks[0]?.state || dto.analysisState;
   dto.canManage = true;
   return NextResponse.json(dto);
 }

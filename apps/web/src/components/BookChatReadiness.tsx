@@ -55,20 +55,65 @@ function resolveConfidenceLabel(confidence: "high" | "medium" | "low" | null | u
   return null;
 }
 
-export function ChatReadinessGate({ readiness, compact = false }: ChatReadinessGateProps) {
+function getAggregateStatus(readiness: BookChatReadinessDTO) {
+  const failedStages = readiness.stages.filter((stage) => stage.state === "failed").length;
+  const runningStages = readiness.stages.filter((stage) => stage.state === "running").length;
+  const waitingStages = readiness.stages.filter((stage) => stage.state === "queued" || stage.state === "not_requested").length;
   const completedStages = readiness.stages.filter((stage) => stage.state === "completed").length;
+
+  if (failedStages > 0) {
+    return {
+      title: "Есть проблемы в анализаторах",
+      subtitle: readiness.summary,
+      icon: <AlertTriangle className="w-5 h-5 text-amber-500" />,
+      compactIcon: <AlertTriangle className="w-4 h-4 text-amber-500" />,
+      completedStages,
+    };
+  }
+
+  if (runningStages > 0) {
+    return {
+      title: readiness.canChat ? "Чат доступен, анализ продолжается" : "Чат подготавливается",
+      subtitle: readiness.summary,
+      icon: <Loader2 className="w-5 h-5 text-primary animate-spin" />,
+      compactIcon: <Loader2 className="w-4 h-4 text-primary animate-spin" />,
+      completedStages,
+    };
+  }
+
+  if (waitingStages > 0) {
+    return {
+      title: readiness.canChat ? "Чат доступен, этапы ждут очередь" : "Анализаторы ждут очередь",
+      subtitle: readiness.summary,
+      icon: <Clock3 className="w-5 h-5 text-primary" />,
+      compactIcon: <Clock3 className="w-4 h-4 text-primary" />,
+      completedStages,
+    };
+  }
+
+  return {
+    title: "Анализ завершен",
+    subtitle: readiness.summary,
+    icon: <CheckCircle2 className="w-5 h-5 text-emerald-500" />,
+    compactIcon: <CheckCircle2 className="w-4 h-4 text-emerald-500" />,
+    completedStages,
+  };
+}
+
+export function ChatReadinessGate({ readiness, compact = false }: ChatReadinessGateProps) {
+  const aggregateStatus = getAggregateStatus(readiness);
 
   return (
     <div className={`rounded-2xl border border-border bg-card ${compact ? "p-4" : "p-6 lg:p-8"}`}>
       <div className="flex items-start gap-3">
         <div className="mt-0.5 rounded-full bg-primary/10 p-2">
-          <Loader2 className={`text-primary animate-spin ${compact ? "w-4 h-4" : "w-5 h-5"}`} />
+          {compact ? aggregateStatus.compactIcon : aggregateStatus.icon}
         </div>
         <div className="min-w-0 flex-1">
-          <div className={`text-foreground ${compact ? "text-sm" : "text-lg"}`}>Чат подготавливается</div>
-          <p className={`mt-1 text-muted-foreground ${compact ? "text-xs leading-5" : "text-sm leading-6"}`}>{readiness.summary}</p>
+          <div className={`text-foreground ${compact ? "text-sm" : "text-lg"}`}>{aggregateStatus.title}</div>
+          <p className={`mt-1 text-muted-foreground ${compact ? "text-xs leading-5" : "text-sm leading-6"}`}>{aggregateStatus.subtitle}</p>
           <div className={`mt-2 text-muted-foreground ${compact ? "text-[11px]" : "text-xs"}`}>
-            Готово {completedStages} из {readiness.stages.length}
+            Готово {aggregateStatus.completedStages} из {readiness.stages.length}
           </div>
         </div>
       </div>

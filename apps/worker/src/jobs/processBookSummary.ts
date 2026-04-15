@@ -9,6 +9,11 @@ import {
 } from "@remarka/contracts";
 import { workerConfig } from "../config";
 import {
+  completedExecution,
+  deferredLockExecution,
+  type AnalyzerExecutionResult,
+} from "../analyzerExecution";
+import {
   runBookChapterSummary,
   runBookSummaryFromChapterSummaries,
 } from "../extractionV2";
@@ -82,7 +87,7 @@ function resolveBooksBlobStore(storageProviderRaw: string): BlobStore {
   });
 }
 
-export async function processBookSummary(payload: ProcessBookSummaryPayload) {
+export async function processBookSummary(payload: ProcessBookSummaryPayload): Promise<AnalyzerExecutionResult> {
   const bookId = String(payload.bookId || "").trim();
   if (!bookId) {
     throw new Error("Invalid book summary payload: bookId is required");
@@ -92,7 +97,12 @@ export async function processBookSummary(payload: ProcessBookSummaryPayload) {
   const lockRows =
     await prisma.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_lock(hashtext(${lockKey})::bigint) AS locked`;
   const locked = Boolean(lockRows?.[0]?.locked);
-  if (!locked) return;
+  if (!locked) {
+    return deferredLockExecution(
+      `Book summary stage deferred because advisory lock is busy for ${bookId}`,
+      workerConfig.outbox.deferredLockDelayMs
+    );
+  }
 
   try {
     const existingBook = await prisma.book.findUnique({
@@ -118,15 +128,13 @@ export async function processBookSummary(payload: ProcessBookSummaryPayload) {
       },
     });
 
-    if (!existingBook) {
-      return;
-    }
+    if (!existingBook) return completedExecution(`book ${bookId} not found for summary stage`);
 
     const hasBookSummary = compactWhitespace(existingBook.summary || "").length > 0;
     const chaptersHaveSummaries = existingBook.chapters.every((chapter) => compactWhitespace(chapter.summary || "").length > 0);
     const summaryTaskState = existingBook.analyzerTasks[0]?.state || null;
     if (summaryTaskState === "completed" && hasBookSummary && chaptersHaveSummaries) {
-      return;
+      return completedExecution("book summary already built");
     }
 
     const analysisStartedAt = new Date();
@@ -306,6 +314,7 @@ export async function processBookSummary(payload: ProcessBookSummaryPayload) {
       },
       "Book summary analysis completed"
     );
+    return completedExecution();
   } catch (error) {
     const message = safeErrorMessage(error);
     await prisma.$transaction(async (tx: any) => {

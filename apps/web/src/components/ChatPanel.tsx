@@ -4,8 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { Bot, Maximize2, MessageSquare, Plus, Send, Trash2, User } from "lucide-react";
-import { ChatModePill, ChatReadinessBanner, ChatReadinessGate } from "./BookChatReadiness";
-import { ChatEvidence } from "./ChatEvidence";
+import { ChatModePill, ChatReadinessGate } from "./BookChatReadiness";
 import { ChatMessageMarkdown } from "./ChatMessageMarkdown";
 import {
   createBookChatSession,
@@ -44,11 +43,15 @@ function buildAssistantGreeting(bookTitle: string | null, sectionKey?: LiteraryS
     id: `msg:greeting:${Date.now()}`,
     role: "assistant",
     content: `Здравствуйте. Я ваш собеседник по книге${bookTitle ? ` «${bookTitle}»` : ""}. ${focusText}`,
+    rawAnswer: null,
     evidence: [],
     usedSources: [],
     confidence: null,
     mode: null,
     citations: [],
+    inlineCitations: [],
+    answerItems: [],
+    referenceResolution: null,
     createdAt: new Date().toISOString(),
   };
 }
@@ -119,6 +122,7 @@ export function ChatPanel({ bookTitle, sectionKey }: ChatPanelProps) {
     [sessions, currentSessionId]
   );
   const suggestedPrompts = useMemo(() => buildSectionPrompts(sectionKey), [sectionKey]);
+  const fullChatHref = currentSessionId ? `/book/${bookId}/chat/${currentSessionId}` : `/book/${bookId}/chat`;
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -200,11 +204,15 @@ export function ChatPanel({ bookTitle, sectionKey }: ChatPanelProps) {
             id: `msg:error:${Date.now()}`,
             role: "assistant",
             content: `Ошибка загрузки сообщений: ${error instanceof Error ? error.message : "unknown"}`,
+            rawAnswer: null,
             evidence: [],
             usedSources: [],
             confidence: null,
             mode: null,
             citations: [],
+            inlineCitations: [],
+            answerItems: [],
+            referenceResolution: null,
             createdAt: new Date().toISOString(),
           },
         ]);
@@ -258,11 +266,15 @@ export function ChatPanel({ bookTitle, sectionKey }: ChatPanelProps) {
         id: `msg:user:${Date.now()}`,
         role: "user",
         content: question,
+        rawAnswer: null,
         evidence: [],
         usedSources: [],
         confidence: null,
         mode: null,
         citations: [],
+        inlineCitations: [],
+        answerItems: [],
+        referenceResolution: null,
         createdAt: new Date().toISOString(),
       };
       const assistantDraftId = `msg:assistant:${Date.now() + 1}`;
@@ -274,11 +286,15 @@ export function ChatPanel({ bookTitle, sectionKey }: ChatPanelProps) {
           id: assistantDraftId,
           role: "assistant",
           content: "",
+          rawAnswer: null,
           evidence: [],
           usedSources: [],
           confidence: null,
           mode: null,
           citations: [],
+          inlineCitations: [],
+          answerItems: [],
+          referenceResolution: null,
           createdAt: new Date().toISOString(),
           pending: true,
         },
@@ -318,11 +334,15 @@ export function ChatPanel({ bookTitle, sectionKey }: ChatPanelProps) {
                       id: event.final?.messageId || message.id,
                       role: "assistant",
                       content: String(event.final?.answer || ""),
+                      rawAnswer: event.final?.rawAnswer || null,
                       evidence: Array.isArray(event.final?.evidence) ? event.final.evidence : [],
                       usedSources: Array.isArray(event.final?.usedSources) ? event.final.usedSources : [],
                       confidence: event.final?.confidence || null,
                       mode: event.final?.mode || null,
                       citations: Array.isArray(event.final?.citations) ? event.final.citations : [],
+                      inlineCitations: Array.isArray(event.final?.inlineCitations) ? event.final.inlineCitations : [],
+                      answerItems: Array.isArray(event.final?.answerItems) ? event.final.answerItems : [],
+                      referenceResolution: event.final?.referenceResolution || null,
                       createdAt: new Date().toISOString(),
                     }
                   : message
@@ -342,11 +362,15 @@ export function ChatPanel({ bookTitle, sectionKey }: ChatPanelProps) {
           id: `msg:error:${Date.now() + 1}`,
           role: "assistant",
           content: `Ошибка: ${message}`,
+          rawAnswer: null,
           evidence: [],
           usedSources: [],
           confidence: null,
           mode: null,
           citations: [],
+          inlineCitations: [],
+          answerItems: [],
+          referenceResolution: null,
           createdAt: new Date().toISOString(),
         },
       ]);
@@ -365,7 +389,7 @@ export function ChatPanel({ bookTitle, sectionKey }: ChatPanelProps) {
           </h3>
           <div className="flex items-center gap-1">
             <Link
-              href={`/book/${bookId}/chat`}
+              href={fullChatHref}
               className="p-1.5 hover:bg-secondary rounded-lg transition-colors"
               title="Открыть в полном режиме"
             >
@@ -388,7 +412,7 @@ export function ChatPanel({ bookTitle, sectionKey }: ChatPanelProps) {
         {readinessLoading && !readiness ? (
           <div className="text-xs text-muted-foreground">Проверяем готовность чата...</div>
         ) : null}
-        {readiness?.canChat ? <ChatReadinessBanner readiness={readiness} compact /> : null}
+        {readiness ? <ChatReadinessGate readiness={readiness} compact /> : null}
         {readinessError && !readiness ? <div className="text-xs text-destructive">{readinessError}</div> : null}
 
         {readinessError && !readiness ? null : readinessLoading && !readiness ? null : readiness && !readiness.canChat ? null : (
@@ -419,11 +443,7 @@ export function ChatPanel({ bookTitle, sectionKey }: ChatPanelProps) {
         )}
       </div>
 
-      {readinessError && !readiness ? null : readinessLoading && !readiness ? null : readiness && !readiness.canChat ? (
-        <div className="p-4">
-          <ChatReadinessGate readiness={readiness} compact />
-        </div>
-      ) : (
+      {readinessError && !readiness ? null : readinessLoading && !readiness ? null : readiness && !readiness.canChat ? null : (
       <>
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.map((message) => (
@@ -443,14 +463,12 @@ export function ChatPanel({ bookTitle, sectionKey }: ChatPanelProps) {
             >
               <ChatMessageMarkdown
                 content={message.content || (message.pending ? "..." : "")}
+                inlineCitations={message.inlineCitations}
                 className={`text-sm ${message.role === "user" ? "text-primary-foreground" : "text-foreground"}`}
               />
 
               {message.role === "assistant" ? (
-                <>
-                  <ChatModePill mode={message.mode} confidence={message.confidence} compact />
-                  <ChatEvidence evidence={message.evidence} compact maxItems={3} />
-                </>
+                <ChatModePill mode={message.mode} confidence={message.confidence} compact />
               ) : null}
               <p className="text-[10px] opacity-60 mt-2">{formatTime(message.createdAt)}</p>
             </div>

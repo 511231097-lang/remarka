@@ -1,5 +1,5 @@
-import { BookIntroduction } from "@/components/BookIntroduction";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function BookWhatIsReallyGoingOnPage() {
-  return <BookIntroduction />;
+  return <BookAnalysisPlaceholder title="Что на самом деле происходит" />;
 }

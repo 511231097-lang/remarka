@@ -1,5 +1,5 @@
-import { ThemesList } from "@/components/ThemesList";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function ThemesListPage() {
-  return <ThemesList />;
+  return <BookAnalysisPlaceholder title="Темы" />;
 }

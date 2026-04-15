@@ -25,6 +25,7 @@ import {
   runActPass,
   runAppearancePass,
   runCharacterBookPassCanonicalization,
+  runCharacterMergeArbiter,
   runCharacterProfileSynthesis,
   runEntityPass,
   runPatchCompletion,
@@ -2120,6 +2121,83 @@ function buildMergeArbiterPairCandidate(params: {
   };
 }
 
+const GENERIC_CHARACTER_ALIAS_STOPWORDS = new Set([
+  "господин",
+  "госпожа",
+  "мистер",
+  "мисс",
+  "миссис",
+  "сэр",
+  "леди",
+  "король",
+  "королева",
+  "принц",
+  "принцесса",
+  "лорд",
+  "капитан",
+  "майор",
+  "генерал",
+  "старик",
+  "старуха",
+  "отец",
+  "мать",
+  "сын",
+  "дочь",
+  "брат",
+  "сестра",
+]);
+
+function buildNormalizedCharacterAliasSet(entity: CharacterBookPassEntity): Set<string> {
+  const aliases = new Set<string>();
+  const canonicalNormalized = normalizeEntityName(entity.canonicalName);
+  if (canonicalNormalized) aliases.add(canonicalNormalized);
+  for (const alias of entity.aliases) {
+    const normalized = normalizeEntityName(alias.normalizedAlias || alias.alias);
+    if (normalized) aliases.add(normalized);
+  }
+  return aliases;
+}
+
+function collectSharedCharacterAliases(leftAliases: Set<string>, rightAliases: Set<string>): string[] {
+  const shared: string[] = [];
+  for (const alias of leftAliases) {
+    if (!rightAliases.has(alias)) continue;
+    shared.push(alias);
+  }
+  return shared;
+}
+
+function hasSafeExactAliasOverlap(params: {
+  left: CharacterBookPassEntity;
+  right: CharacterBookPassEntity;
+  leftAliases: Set<string>;
+  rightAliases: Set<string>;
+}): boolean {
+  const sharedAliases = collectSharedCharacterAliases(params.leftAliases, params.rightAliases);
+  if (sharedAliases.length === 0) return false;
+
+  const leftCanonical = normalizeEntityName(params.left.canonicalName);
+  const rightCanonical = normalizeEntityName(params.right.canonicalName);
+  return sharedAliases.some((alias) => {
+    if (!alias) return false;
+    if (alias === leftCanonical || alias === rightCanonical) return true;
+    const tokens = alias.split(/\s+/u).filter(Boolean);
+    if (tokens.length >= 2) return true;
+    if (alias.length < 6) return false;
+    return !GENERIC_CHARACTER_ALIAS_STOPWORDS.has(alias);
+  });
+}
+
+function hasRepeatedCrossSceneEvidence(
+  leftEvidence: CharacterMergeArbiterEvidence[],
+  rightEvidence: CharacterMergeArbiterEvidence[]
+): boolean {
+  const chapterIds = new Set<string>();
+  for (const item of leftEvidence) chapterIds.add(item.chapterId);
+  for (const item of rightEvidence) chapterIds.add(item.chapterId);
+  return chapterIds.size >= 2 && leftEvidence.length >= 2 && rightEvidence.length >= 2;
+}
+
 async function loadCharacterMergeArbiterEvidence(
   entityId: string,
   cache: Map<string, CharacterMergeArbiterEvidence[]>
@@ -2628,6 +2706,7 @@ async function runProjectCharacterBookPass(projectId: string) {
     if (entities.length < 2) return;
     const entityById = new Map(entities.map((item) => [item.id, item] as const));
     const mergeConfidenceThreshold = clamp01(workerConfig.pipeline.bookPassMergeArbiterConfidenceThreshold);
+    const evidenceCache = new Map<string, CharacterMergeArbiterEvidence[]>();
 
     let canonicalizationCall:
       | Awaited<ReturnType<typeof runCharacterBookPassCanonicalization>>
@@ -2727,16 +2806,135 @@ async function runProjectCharacterBookPass(projectId: string) {
       .sort((left, right) => right.confidence - left.confidence);
 
     let acceptedGroupCount = 0;
+    let exactAliasApprovedPairs = 0;
+    let arbiterApprovedPairs = 0;
+    let ambiguousPairs = 0;
     for (const group of groups) {
       if (group.confidence < mergeConfidenceThreshold) continue;
       const canonicalId = group.memberEntityIds.includes(group.canonicalEntityId)
         ? group.canonicalEntityId
         : pickBestCanonicalId(group.memberEntityIds);
+      const canonicalEntity = entityById.get(canonicalId);
+      if (!canonicalEntity) continue;
 
-      acceptedGroupCount += 1;
+      let groupAccepted = false;
       for (const memberId of group.memberEntityIds) {
         if (memberId === canonicalId) continue;
-        unionToCanonical(canonicalId, memberId);
+        const memberEntity = entityById.get(memberId);
+        if (!memberEntity) continue;
+
+        const leftAliases = buildNormalizedCharacterAliasSet(canonicalEntity);
+        const rightAliases = buildNormalizedCharacterAliasSet(memberEntity);
+
+        if (
+          hasSafeExactAliasOverlap({
+            left: canonicalEntity,
+            right: memberEntity,
+            leftAliases,
+            rightAliases,
+          })
+        ) {
+          unionToCanonical(canonicalId, memberId);
+          groupAccepted = true;
+          exactAliasApprovedPairs += 1;
+          continue;
+        }
+
+        const pairCandidate = buildMergeArbiterPairCandidate({
+          left: canonicalEntity,
+          right: memberEntity,
+          leftAliases,
+          rightAliases,
+        });
+        if (!pairCandidate) {
+          ambiguousPairs += 1;
+          logger.info(
+            {
+              projectId,
+              canonicalId,
+              memberId,
+              reason: "no_safe_alias_overlap_or_arbiter_candidate",
+            },
+            "Book-pass canonicalization pair kept separate"
+          );
+          continue;
+        }
+
+        const [leftEvidence, rightEvidence] = await Promise.all([
+          loadCharacterMergeArbiterEvidence(canonicalEntity.id, evidenceCache),
+          loadCharacterMergeArbiterEvidence(memberEntity.id, evidenceCache),
+        ]);
+        if (!hasRepeatedCrossSceneEvidence(leftEvidence, rightEvidence)) {
+          ambiguousPairs += 1;
+          logger.info(
+            {
+              projectId,
+              canonicalId,
+              memberId,
+              reason: "insufficient_cross_scene_evidence",
+              leftEvidenceCount: leftEvidence.length,
+              rightEvidenceCount: rightEvidence.length,
+            },
+            "Book-pass canonicalization pair kept separate"
+          );
+          continue;
+        }
+
+        const arbiterCall = await runCharacterMergeArbiter({
+          pairId: `${canonicalEntity.id}:${memberEntity.id}`,
+          sharedAliases: pairCandidate.sharedAliases,
+          leftEntity: {
+            id: canonicalEntity.id,
+            canonicalName: canonicalEntity.canonicalName,
+            normalizedName: normalizeEntityName(canonicalEntity.canonicalName),
+            mentionCount: canonicalEntity.mentionCount,
+            aliases: canonicalEntity.aliases.map((alias) => ({
+              alias: alias.alias,
+              aliasType: alias.aliasType,
+            })),
+            evidence: leftEvidence,
+          },
+          rightEntity: {
+            id: memberEntity.id,
+            canonicalName: memberEntity.canonicalName,
+            normalizedName: normalizeEntityName(memberEntity.canonicalName),
+            mentionCount: memberEntity.mentionCount,
+            aliases: memberEntity.aliases.map((alias) => ({
+              alias: alias.alias,
+              aliasType: alias.aliasType,
+            })),
+            evidence: rightEvidence,
+          },
+        });
+
+        if (
+          arbiterCall.result.decision === "merge" &&
+          clamp01(arbiterCall.result.confidence) >= mergeConfidenceThreshold &&
+          arbiterCall.result.preferredEntity !== "right"
+        ) {
+          unionToCanonical(canonicalId, memberId);
+          groupAccepted = true;
+          arbiterApprovedPairs += 1;
+          continue;
+        }
+
+        ambiguousPairs += 1;
+        logger.info(
+          {
+            projectId,
+            canonicalId,
+            memberId,
+            arbiterDecision: arbiterCall.result.decision,
+            arbiterConfidence: clamp01(arbiterCall.result.confidence),
+            arbiterPreferredEntity: arbiterCall.result.preferredEntity,
+            arbiterRationale: arbiterCall.result.rationale,
+          },
+          "Book-pass canonicalization pair kept separate after arbiter"
+        );
+      }
+
+      if (groupAccepted) {
+        acceptedGroupCount += 1;
       }
     }
 
@@ -2757,6 +2955,9 @@ async function runProjectCharacterBookPass(projectId: string) {
           mergeCount: 0,
           groupsReceived: groups.length,
           groupsAccepted: acceptedGroupCount,
+          exactAliasApprovedPairs,
+          arbiterApprovedPairs,
+          ambiguousPairs,
           confidenceThreshold: mergeConfidenceThreshold,
           model: canonicalizationCall.meta.model,
           provider: canonicalizationCall.meta.provider,
@@ -2851,6 +3052,9 @@ async function runProjectCharacterBookPass(projectId: string) {
         mergeCount: mergePairs.length,
         groupsReceived: groups.length,
         groupsAccepted: acceptedGroupCount,
+        exactAliasApprovedPairs,
+        arbiterApprovedPairs,
+        ambiguousPairs,
         confidenceThreshold: mergeConfidenceThreshold,
         model: canonicalizationCall.meta.model,
         provider: canonicalizationCall.meta.provider,

@@ -1,5 +1,5 @@
-import { BookSpaceTime } from "@/components/BookSpaceTime";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function BookConflictsPage() {
-  return <BookSpaceTime />;
+  return <BookAnalysisPlaceholder title="Конфликты" />;
 }

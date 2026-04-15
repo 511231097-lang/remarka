@@ -1,5 +1,5 @@
-import { BookArtisticMeans } from "@/components/BookArtisticMeans";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function BookStructurePage() {
-  return <BookArtisticMeans />;
+  return <BookAnalysisPlaceholder title="Структура" />;
 }

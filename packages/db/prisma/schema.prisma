@@ -95,6 +95,8 @@ enum BookAnalyzerType {
   chat_index
   core_window_scan
   core_merge
+  core_resolve
+  core_entity_mentions
   core_profiles
   core_quotes_finalize
   core_literary
@@ -143,6 +145,7 @@ enum BookSummaryArtifactKind {
   book_brief
   scene_summary
   chapter_summary
+  entity_summary
   character_arc
   relationship_summary
   theme_note
@@ -197,6 +200,11 @@ enum BookQuoteMentionKind {
   character
   theme
   location
+}
+
+enum BookRefResolutionStatus {
+  resolved
+  unresolved
 }
 
 enum ProjectImportState {
@@ -278,6 +286,7 @@ model Book {
   eventsGraph BookEvent[]
   eventEdges BookEventEdge[]
   relationEdges BookRelationEdge[]
+  entityMemberships BookEntityMembership[]
   summaryArtifacts BookSummaryArtifact[]
   evidenceLinks BookEvidenceLink[]
   chatSessionStates BookChatSessionState[]
@@ -405,6 +414,7 @@ model BookScene {
   mentions   BookMention[]
   eventsGraph BookEvent[]
   relationEdges BookRelationEdge[]
+  entityMemberships BookEntityMembership[]
   summaryArtifacts BookSummaryArtifact[]
   firstSceneEntities BookEntity[] @relation("BookEntityFirstScene")
   lastSceneEntities  BookEntity[] @relation("BookEntityLastScene")
@@ -420,6 +430,7 @@ model BookEntity {
   canonicalName String
   normalizedName String
   summary       String   @default("") @db.Text
+  metadataJson  Json?
   mentionCount  Int      @default(0)
   firstSceneId  String?
   lastSceneId   String?
@@ -435,6 +446,9 @@ model BookEntity {
   summaryArtifacts BookSummaryArtifact[]
   outgoingRelations BookRelationEdge[] @relation("BookRelationFromEntity")
   incomingRelations BookRelationEdge[] @relation("BookRelationToEntity")
+  collectedMemberships BookEntityMembership[] @relation("BookEntityMembershipCollection")
+  memberMemberships BookEntityMembership[] @relation("BookEntityMembershipMember")
+  quoteMentions BookQuoteMention[]
 
   @@unique([bookId, type, normalizedName])
   @@index([bookId, type, mentionCount])
@@ -493,6 +507,7 @@ model BookEvent {
   orderIndex Int
   title      String
   summary    String   @db.Text
+  metadataJson Json?
   importance Float    @default(0.5)
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
@@ -501,6 +516,7 @@ model BookEvent {
   chapter   BookChapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
   scene     BookScene?  @relation(fields: [sceneId], references: [id], onDelete: SetNull)
   participants BookEventParticipant[]
+  entityMemberships BookEntityMembership[]
   outgoingEdges BookEventEdge[] @relation("BookEventEdgeFrom")
   incomingEdges BookEventEdge[] @relation("BookEventEdgeTo")
 
@@ -549,6 +565,7 @@ model BookRelationEdge {
   toEntityId   String
   type         BookRelationEdgeType
   summary      String   @db.Text
+  metadataJson Json?
   confidence   Float    @default(0.7)
   sceneId      String?
   createdAt    DateTime @default(now())
@@ -562,6 +579,36 @@ model BookRelationEdge {
   @@unique([bookId, fromEntityId, toEntityId, type])
   @@index([sceneId])
   @@index([bookId, type])
+}
+
+model BookEntityMembership {
+  id                 String   @id @default(cuid())
+  bookId             String
+  collectionEntityId String
+  memberEntityId     String?
+  memberValue        String
+  memberNormalizedValue String
+  resolutionStatus   BookRefResolutionStatus @default(unresolved)
+  role               String
+  summary            String   @db.Text
+  confidence         Float    @default(0.7)
+  sceneId            String?
+  eventId            String?
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  book             Book       @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  collectionEntity BookEntity @relation("BookEntityMembershipCollection", fields: [collectionEntityId], references: [id], onDelete: Cascade)
+  memberEntity     BookEntity? @relation("BookEntityMembershipMember", fields: [memberEntityId], references: [id], onDelete: SetNull)
+  scene            BookScene? @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  event            BookEvent? @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  @@unique([bookId, collectionEntityId, memberNormalizedValue, role])
+  @@index([bookId, collectionEntityId])
+  @@index([bookId, memberEntityId])
+  @@index([bookId, memberNormalizedValue])
+  @@index([sceneId])
+  @@index([eventId])
 }
 
 model BookSummaryArtifact {
@@ -615,6 +662,7 @@ model BookAnalyzerTask {
   analyzerType BookAnalyzerType
   state        BookAnalysisState @default(queued)
   error        String?
+  metadataJson Json?
   startedAt    DateTime?
   completedAt  DateTime?
   createdAt    DateTime          @default(now())
@@ -624,6 +672,7 @@ model BookAnalyzerTask {
 
   @@unique([bookId, analyzerType])
   @@index([bookId, state, analyzerType])
+  @@index([state, updatedAt], map: "BookAnalyzerTask_state_updatedAt_idx")
 }
 
 model BookChunk {
@@ -827,17 +876,21 @@ model BookQuoteTagLink {
 model BookQuoteMention {
   id              String   @id @default(cuid())
   quoteId         String
+  entityId        String?
   kind            BookQuoteMentionKind
   value           String
   normalizedValue String
+  resolutionStatus BookRefResolutionStatus @default(unresolved)
   startChar       Int
   endChar         Int
   confidence      Float
   createdAt       DateTime @default(now())
 
   quote BookQuote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  entity BookEntity? @relation(fields: [entityId], references: [id], onDelete: SetNull)
 
   @@index([quoteId], map: "BookQuoteMention_quoteId_idx")
+  @@index([entityId], map: "BookQuoteMention_entityId_idx")
   @@index([kind, normalizedValue, confidence], map: "BookQuoteMention_kind_normalized_confidence_idx")
 }
 
@@ -1242,12 +1295,14 @@ model Outbox {
   aggregateId   String
   eventType     String
   payloadJson   Json
+  availableAt   DateTime  @default(now())
   createdAt     DateTime  @default(now())
   processedAt   DateTime?
   error         String?
   attemptCount  Int       @default(0)
 
   @@index([processedAt, createdAt])
+  @@index([processedAt, availableAt, createdAt], map: "Outbox_processedAt_availableAt_createdAt_idx")
   @@index([aggregateType, aggregateId])
 }
 

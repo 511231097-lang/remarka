@@ -604,7 +604,11 @@ export type StrictJsonPhase =
   | "book_chapter_quotes"
   | "book_literary"
   | "book_core_window_scan"
+  | "book_core_entity_mentions"
   | "book_core_profiles"
+  | "book_core_quote_mentions"
+  | "book_core_ref_link"
+  | "book_core_relations"
   | "book_core_literary_pattern"
   | "book_core_literary_synthesis";
 
@@ -612,6 +616,12 @@ export interface StrictJsonCallResult<T> {
   result: T;
   meta: StrictJsonCallMeta;
   debug: StrictJsonCallDebug;
+}
+
+export interface StrictJsonAttemptMeta extends StrictJsonCallMeta {
+  phase: StrictJsonPhase;
+  success: boolean;
+  error: string | null;
 }
 
 export class ExtractionStructuredOutputError extends Error {
@@ -834,7 +844,25 @@ export async function callStrictJson<T>(params: {
   allowedModels?: string[] | null;
   disableGlobalFallback?: boolean;
   maxAttempts?: number | null;
+  onAttempt?: ((attempt: StrictJsonAttemptMeta) => void | Promise<void>) | null;
 }): Promise<StrictJsonCallResult<T>> {
+  const emitAttempt = async (attempt: StrictJsonAttemptMeta) => {
+    if (!params.onAttempt) return;
+    try {
+      await params.onAttempt(attempt);
+    } catch (error) {
+      logger.warn(
+        {
+          err: error,
+          phase: params.phase,
+          model: attempt.model,
+          attempt: attempt.attempt,
+          success: attempt.success,
+        },
+        "Strict-json onAttempt callback failed"
+      );
+    }
+  };
   const resolveVertexModelForPhase = (phase: string): string => {
     const phaseModel = workerConfig.vertex.phaseModels[phase];
     if (typeof phaseModel === "string" && phaseModel.trim().length > 0) {
@@ -1066,6 +1094,20 @@ export async function callStrictJson<T>(params: {
           "LLM strict-json call completed"
         );
 
+        await emitAttempt({
+          phase: params.phase,
+          provider,
+          model,
+          attempt,
+          finishReason,
+          usage,
+          startedAt,
+          completedAt,
+          latencyMs,
+          success: true,
+          error: null,
+        });
+
         return {
           result,
           meta: {
@@ -1089,6 +1131,8 @@ export async function callStrictJson<T>(params: {
         const completedAtMs = Date.now();
         const latencyMs = Math.max(0, completedAtMs - attemptStartedAtMs);
         const structured = error instanceof ExtractionStructuredOutputError ? error : null;
+        const startedAt = new Date(attemptStartedAtMs).toISOString();
+        const completedAt = new Date(completedAtMs).toISOString();
         logger.warn(
           {
             phase: params.phase,
@@ -1104,6 +1148,19 @@ export async function callStrictJson<T>(params: {
           },
           "LLM strict-json call attempt failed"
         );
+        await emitAttempt({
+          phase: params.phase,
+          provider,
+          model,
+          attempt,
+          finishReason: structured?.finishReason ?? null,
+          usage: structured?.usage ?? null,
+          startedAt,
+          completedAt,
+          latencyMs,
+          success: false,
+          error: lastError.message,
+        });
       }
     }
   }

@@ -11,6 +11,11 @@ import {
 } from "@remarka/contracts";
 import { workerConfig } from "../config";
 import {
+  completedExecution,
+  deferredLockExecution,
+  type AnalyzerExecutionResult,
+} from "../analyzerExecution";
+import {
   runBookChapterQuotes,
   type BookQuoteMentionKind,
   type BookQuoteTag,
@@ -984,7 +989,7 @@ function remapMentionsToQuoteWindow(
   return out;
 }
 
-export async function processBookQuotes(payload: ProcessBookQuotesPayload) {
+export async function processBookQuotes(payload: ProcessBookQuotesPayload): Promise<AnalyzerExecutionResult> {
   const bookId = String(payload.bookId || "").trim();
   if (!bookId) {
     throw new Error("Invalid book quotes payload: bookId is required");
@@ -994,7 +999,12 @@ export async function processBookQuotes(payload: ProcessBookQuotesPayload) {
   const lockRows =
     await prisma.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_lock(hashtext(${lockKey})::bigint) AS locked`;
   const locked = Boolean(lockRows?.[0]?.locked);
-  if (!locked) return;
+  if (!locked) {
+    return deferredLockExecution(
+      `Book quotes stage deferred because advisory lock is busy for ${bookId}`,
+      workerConfig.outbox.deferredLockDelayMs
+    );
+  }
 
   try {
     const existingBook = await prisma.book.findUnique({
@@ -1011,7 +1021,7 @@ export async function processBookQuotes(payload: ProcessBookQuotesPayload) {
         },
       },
     });
-    if (!existingBook) return;
+    if (!existingBook) return completedExecution(`book ${bookId} not found for quotes stage`);
 
     const existingTaskState = existingBook.analyzerTasks[0]?.state || null;
     if (existingTaskState === "completed") {
@@ -1019,7 +1029,7 @@ export async function processBookQuotes(payload: ProcessBookQuotesPayload) {
         where: { bookId },
       });
       if (existingQuotesCount > 0) {
-        return;
+        return completedExecution("book quotes already built");
       }
     }
 
@@ -1631,6 +1641,7 @@ export async function processBookQuotes(payload: ProcessBookQuotesPayload) {
       },
       "Book quotes analysis completed"
     );
+    return completedExecution();
   } catch (error) {
     const message = safeErrorMessage(error);
     await prisma.bookAnalyzerTask.upsert({

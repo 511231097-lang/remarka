@@ -10,6 +10,11 @@ import {
 } from "@remarka/contracts";
 import { workerConfig } from "../config";
 import {
+  completedExecution,
+  deferredLockExecution,
+  type AnalyzerExecutionResult,
+} from "../analyzerExecution";
+import {
   runBookChapterLocations,
   runBookLocationProfileSynthesis,
 } from "../extractionV2";
@@ -165,7 +170,7 @@ class DisjointSet {
   }
 }
 
-export async function processBookLocations(payload: ProcessBookLocationsPayload) {
+export async function processBookLocations(payload: ProcessBookLocationsPayload): Promise<AnalyzerExecutionResult> {
   const bookId = String(payload.bookId || "").trim();
   if (!bookId) {
     throw new Error("Invalid book locations payload: bookId is required");
@@ -175,7 +180,12 @@ export async function processBookLocations(payload: ProcessBookLocationsPayload)
   const lockRows =
     await prisma.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_lock(hashtext(${lockKey})::bigint) AS locked`;
   const locked = Boolean(lockRows?.[0]?.locked);
-  if (!locked) return;
+  if (!locked) {
+    return deferredLockExecution(
+      `Book locations stage deferred because advisory lock is busy for ${bookId}`,
+      workerConfig.outbox.deferredLockDelayMs
+    );
+  }
 
   try {
     const existingBook = await prisma.book.findUnique({
@@ -192,7 +202,7 @@ export async function processBookLocations(payload: ProcessBookLocationsPayload)
         },
       },
     });
-    if (!existingBook) return;
+    if (!existingBook) return completedExecution(`book ${bookId} not found for locations stage`);
 
     const existingTaskState = existingBook.analyzerTasks[0]?.state || null;
     if (existingTaskState === "completed") {
@@ -200,7 +210,7 @@ export async function processBookLocations(payload: ProcessBookLocationsPayload)
         where: { bookId },
       });
       if (existingLocationsCount > 0) {
-        return;
+        return completedExecution("book locations already built");
       }
     }
 
@@ -582,6 +592,7 @@ export async function processBookLocations(payload: ProcessBookLocationsPayload)
       },
       "Book locations analysis completed"
     );
+    return completedExecution();
   } catch (error) {
     const message = safeErrorMessage(error);
     await prisma.bookAnalyzerTask.upsert({

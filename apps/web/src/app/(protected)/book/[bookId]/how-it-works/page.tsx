@@ -1,5 +1,5 @@
-import { BookConflict } from "@/components/BookConflict";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function BookHowItWorksPage() {
-  return <BookConflict />;
+  return <BookAnalysisPlaceholder title="Как это работает" />;
 }

@@ -1,5 +1,5 @@
-import { LocationView } from "@/components/LocationView";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function LocationViewPage() {
-  return <LocationView />;
+  return <BookAnalysisPlaceholder title="Карточка локации" />;
 }

@@ -83,7 +83,7 @@ type VertexModelTier = "lite" | "flash" | "pro";
 
 const DEFAULT_VERTEX_MODEL_BY_TIER: Record<VertexModelTier, string> = {
   lite: "gemini-3.1-flash-lite-preview",
-  flash: "gemini-3.1-flash-preview",
+  flash: "gemini-3.1-flash-lite-preview",
   pro: "gemini-3.1-pro-preview",
 };
 
@@ -213,6 +213,12 @@ export const workerConfig = {
     batchSize: getIntEnv("OUTBOX_BATCH_SIZE", 16),
     maxAttempts: getIntEnv("OUTBOX_MAX_ATTEMPTS", 8),
     eventConcurrency: getIntEnv("OUTBOX_EVENT_CONCURRENCY", 4),
+    claimLeaseMs: getIntEnv("OUTBOX_CLAIM_LEASE_MS", 10 * 60_000),
+    deferredDependenciesDelayMs: getIntEnv("OUTBOX_DEFERRED_DEPENDENCIES_DELAY_MS", 15_000),
+    deferredLockDelayMs: getIntEnv("OUTBOX_DEFERRED_LOCK_DELAY_MS", 2_000),
+    retryableFailureDelayMs: getIntEnv("OUTBOX_RETRYABLE_FAILURE_DELAY_MS", 15_000),
+    staleTaskSweepIntervalMs: getIntEnv("BOOK_ANALYZER_STALE_SWEEP_INTERVAL_MS", 60_000),
+    staleTaskTtlMs: getIntEnv("BOOK_ANALYZER_STALE_TASK_TTL_MS", 5_400_000),
   },
   imports: {
     blobDir: defaultImportBlobDir,

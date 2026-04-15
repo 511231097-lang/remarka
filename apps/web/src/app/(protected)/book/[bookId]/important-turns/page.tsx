@@ -1,5 +1,5 @@
-import { BookAuthorsPosition } from "@/components/BookAuthorsPosition";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function BookImportantTurnsPage() {
-  return <BookAuthorsPosition />;
+  return <BookAnalysisPlaceholder title="Важные повороты" />;
 }

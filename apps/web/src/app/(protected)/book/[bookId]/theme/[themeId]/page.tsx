@@ -1,5 +1,5 @@
-import { ThemeView } from "@/components/ThemeView";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function ThemeViewPage() {
-  return <ThemeView />;
+  return <BookAnalysisPlaceholder title="Карточка темы" />;
 }

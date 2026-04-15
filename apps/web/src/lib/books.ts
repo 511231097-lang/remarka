@@ -20,6 +20,7 @@ import type {
   BookThemeQuote,
   User,
 } from "@prisma/client";
+import { BOOK_CHAT_GRAPH_STAGE_KEYS, BOOK_EXPERT_CORE_STAGE_KEYS } from "@remarka/contracts";
 
 export interface BookOwnerDTO {
   id: string;
@@ -200,6 +201,72 @@ export interface BookLiteraryAnalysisDTO {
   updatedAt: string;
 }
 
+export interface BookTokenUsageDTO {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
+export interface BookReportModelUsageDTO extends BookTokenUsageDTO {
+  model: string;
+  requests: number;
+}
+
+export interface BookReportChatSessionDTO {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  lastMessageAt: string | null;
+  totalMessages: number;
+  userMessages: number;
+  assistantMessages: number;
+  usage: BookTokenUsageDTO;
+  models: string[];
+}
+
+export interface BookReportAnalyzerStepDTO {
+  key: string;
+  label: string;
+  state: BookAnalyzerStateDTO;
+  error: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  durationMs: number | null;
+  usage: BookTokenUsageDTO | null;
+  models: string[];
+  attempts: number | null;
+  degraded: boolean;
+  fallbackKind: string | null;
+  lastReason: string | null;
+  selectedModel: string | null;
+  note: string | null;
+}
+
+export interface BookReportDTO {
+  bookId: string;
+  generatedAt: string;
+  analysis: {
+    totalSteps: number;
+    completedSteps: number;
+    runningSteps: number;
+    failedSteps: number;
+    pendingSteps: number;
+    usage: BookTokenUsageDTO | null;
+    steps: BookReportAnalyzerStepDTO[];
+  };
+  chat: {
+    totalSessions: number;
+    totalMessages: number;
+    userMessages: number;
+    assistantMessages: number;
+    usage: BookTokenUsageDTO;
+    byModel: BookReportModelUsageDTO[];
+    sessions: BookReportChatSessionDTO[];
+  };
+  notes: string[];
+}
+
 export interface BookChunkCitationDTO {
   chunkId: string;
   chapterOrderIndex: number;
@@ -225,15 +292,12 @@ export type BookChatConfidenceDTO = "high" | "medium" | "low";
 export type BookChatModeDTO = "fast" | "expert" | "degraded";
 export type BookChatEntryContextDTO = "overview" | "section" | "full_chat";
 export type BookAnalyzerStateDTO = "queued" | "running" | "completed" | "failed" | "not_requested";
-export type BookPipelineStageKeyDTO =
-  | "canonical_text"
-  | "scene_build"
-  | "entity_graph"
-  | "event_relation_graph"
-  | "summary_store"
-  | "evidence_store"
-  | "text_index"
-  | "quote_store";
+export const BOOK_PIPELINE_STAGE_KEYS = [
+  ...BOOK_EXPERT_CORE_STAGE_KEYS,
+  "chat_index",
+  ...BOOK_CHAT_GRAPH_STAGE_KEYS,
+] as const;
+export type BookPipelineStageKeyDTO = (typeof BOOK_PIPELINE_STAGE_KEYS)[number];
 export type BookAnalysisViewKeyDTO = "summary" | "characters" | "themes" | "locations" | "quotes" | "literary";
 
 export interface BookAnalyzerStatusDTO {
@@ -280,17 +344,44 @@ export interface BookChatEvidenceDTO {
   score?: number | null;
 }
 
+export interface BookChatInlineCitationAnchorDTO {
+  anchorId: string;
+  quotes: BookQuoteListItemDTO[];
+}
+
+export interface BookChatAnswerItemDTO {
+  id: string;
+  ordinal: number | null;
+  label: string;
+  summary: string;
+  linkedEntityIds: string[];
+  linkedEvidenceIds: string[];
+}
+
+export interface BookChatReferenceResolutionDTO {
+  resolvedEntityIds: string[];
+  resolvedAnswerItemId: string | null;
+  confidence: BookChatConfidenceDTO | null;
+  reason: string | null;
+  overrideMode: string | null;
+  fallbackUsed: boolean;
+}
+
 export type BookChatMessageRoleDTO = "user" | "assistant";
 
 export interface BookChatMessageDTO {
   id: string;
   role: BookChatMessageRoleDTO;
   content: string;
+  rawAnswer: string | null;
   evidence: BookChatEvidenceDTO[];
   usedSources: string[];
   confidence: BookChatConfidenceDTO | null;
   mode: BookChatModeDTO | null;
   citations: BookChatCitationDTO[];
+  inlineCitations: BookChatInlineCitationAnchorDTO[];
+  answerItems: BookChatAnswerItemDTO[];
+  referenceResolution: BookChatReferenceResolutionDTO | null;
   createdAt: string;
 }
 
@@ -333,11 +424,15 @@ export interface BookChatStreamFinalEventDTO {
   sessionId: string;
   messageId: string;
   answer: string;
+  rawAnswer: string | null;
   evidence: BookChatEvidenceDTO[];
   usedSources: string[];
   confidence: BookChatConfidenceDTO | null;
   mode: BookChatModeDTO | null;
   citations: BookChunkCitationDTO[];
+  inlineCitations: BookChatInlineCitationAnchorDTO[];
+  answerItems: BookChatAnswerItemDTO[];
+  referenceResolution: BookChatReferenceResolutionDTO | null;
 }
 
 export interface BookChatStreamEventDTO {
@@ -564,6 +659,158 @@ function asChatCitation(value: unknown): BookChatCitationDTO | null {
   };
 }
 
+function asChatQuoteMention(value: unknown): BookQuoteMentionDTO | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const kind = String(record.kind || "").trim();
+  const valueText = String(record.value || "").trim();
+  const normalizedValue = String(record.normalizedValue || "").trim();
+  const startChar = Number(record.startChar);
+  const endChar = Number(record.endChar);
+  const confidence = Number(record.confidence);
+
+  if (kind !== "character" && kind !== "theme" && kind !== "location") return null;
+  if (!valueText || !normalizedValue) return null;
+  if (!Number.isFinite(startChar) || !Number.isFinite(endChar)) return null;
+
+  return {
+    kind,
+    value: valueText,
+    normalizedValue,
+    startChar: Math.max(0, Math.floor(startChar)),
+    endChar: Math.max(0, Math.floor(endChar)),
+    confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
+  };
+}
+
+function asBookQuoteType(value: unknown): BookQuoteTypeDTO | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized === "dialogue" ||
+    normalized === "monologue" ||
+    normalized === "narration" ||
+    normalized === "description" ||
+    normalized === "reflection" ||
+    normalized === "action"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function asBookQuoteTag(value: unknown): BookQuoteTagDTO | null {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (
+    normalized === "conflict" ||
+    normalized === "relationship" ||
+    normalized === "identity" ||
+    normalized === "morality" ||
+    normalized === "power" ||
+    normalized === "freedom" ||
+    normalized === "fear" ||
+    normalized === "guilt" ||
+    normalized === "hope" ||
+    normalized === "fate" ||
+    normalized === "society" ||
+    normalized === "violence" ||
+    normalized === "love" ||
+    normalized === "death" ||
+    normalized === "faith"
+  ) {
+    return normalized;
+  }
+  return null;
+}
+
+function asBookQuoteListItem(value: unknown): BookQuoteListItemDTO | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const id = String(record.id || "").trim();
+  const text = String(record.text || "").trim();
+  const type = asBookQuoteType(record.type);
+  const chapterOrderIndex = Number(record.chapterOrderIndex);
+  const startChar = Number(record.startChar);
+  const endChar = Number(record.endChar);
+  const confidence = Number(record.confidence);
+
+  if (!id || !text || !type) return null;
+  if (!Number.isFinite(chapterOrderIndex) || !Number.isFinite(startChar) || !Number.isFinite(endChar)) return null;
+
+  const tags = Array.isArray(record.tags)
+    ? record.tags.map(asBookQuoteTag).filter((item): item is BookQuoteTagDTO => Boolean(item))
+    : [];
+  const mentions = Array.isArray(record.mentions)
+    ? record.mentions.map(asChatQuoteMention).filter((item): item is BookQuoteMentionDTO => Boolean(item))
+    : [];
+
+  return {
+    id,
+    chapterOrderIndex: Math.max(1, Math.floor(chapterOrderIndex)),
+    startChar: Math.max(0, Math.floor(startChar)),
+    endChar: Math.max(0, Math.floor(endChar)),
+    text,
+    type,
+    tags,
+    confidence: Number.isFinite(confidence) ? Math.max(0, Math.min(1, confidence)) : 0,
+    commentary: typeof record.commentary === "string" ? record.commentary.trim() || null : null,
+    mentions,
+  };
+}
+
+function asChatInlineCitation(value: unknown): BookChatInlineCitationAnchorDTO | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const anchorId = String(record.anchorId || record.id || "").trim();
+  if (!anchorId) return null;
+
+  const quotes = Array.isArray(record.quotes)
+    ? record.quotes.map(asBookQuoteListItem).filter((item): item is BookQuoteListItemDTO => Boolean(item))
+    : [];
+  if (quotes.length === 0) return null;
+
+  return {
+    anchorId,
+    quotes: quotes.slice(0, 3),
+  };
+}
+
+function asChatAnswerItem(value: unknown): BookChatAnswerItemDTO | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const id = String(record.id || "").trim();
+  const label = String(record.label || "").trim();
+  const summary = String(record.summary || "").trim();
+  const ordinalRaw = Number(record.ordinal);
+  if (!id || !label || !summary) return null;
+
+  return {
+    id,
+    ordinal: Number.isFinite(ordinalRaw) ? Math.max(1, Math.floor(ordinalRaw)) : null,
+    label,
+    summary,
+    linkedEntityIds: normalizeStringArray(record.linkedEntityIds, 8),
+    linkedEvidenceIds: normalizeStringArray(record.linkedEvidenceIds, 8),
+  };
+}
+
+function asChatReferenceResolution(value: unknown): BookChatReferenceResolutionDTO | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const record = value as Record<string, unknown>;
+  const resolvedAnswerItemId = typeof record.resolvedAnswerItemId === "string" ? record.resolvedAnswerItemId.trim() || null : null;
+  const reason = typeof record.reason === "string" ? record.reason.trim() || null : null;
+  const overrideMode = typeof record.overrideMode === "string" ? record.overrideMode.trim() || null : null;
+  const fallbackUsed = Boolean(record.fallbackUsed);
+
+  return {
+    resolvedEntityIds: normalizeStringArray(record.resolvedEntityIds, 8),
+    resolvedAnswerItemId,
+    confidence: asChatConfidence(record.confidence),
+    reason,
+    overrideMode,
+    fallbackUsed,
+  };
+}
+
 function asChatConfidence(value: unknown): BookChatConfidenceDTO | null {
   if (value === "high" || value === "medium" || value === "low") {
     return value;
@@ -649,6 +896,20 @@ function normalizeChatUsedSources(value: unknown, evidence: BookChatEvidenceDTO[
   return out;
 }
 
+function normalizeStringArray(value: unknown, limit: number): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const normalized = String(item || "").trim();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    out.push(normalized);
+    if (out.length >= limit) break;
+  }
+  return out;
+}
+
 export function toBookChatSessionDTO(session: BookChatSession): BookChatSessionDTO {
   return {
     id: session.id,
@@ -682,18 +943,37 @@ export function toBookChatMessageDTO(message: BookChatMessage): BookChatMessageD
   const usedSources = normalizeChatUsedSources(payload?.usedSources, normalizedEvidence);
   const confidence = asChatConfidence(payload?.confidence);
   const mode = asChatMode(payload?.mode);
+  const inlineCitations = Array.isArray(payload?.inlineCitations)
+    ? payload.inlineCitations
+        .map(asChatInlineCitation)
+        .filter((item): item is BookChatInlineCitationAnchorDTO => Boolean(item))
+    : [];
+  const answerItems = Array.isArray(payload?.answerItems)
+    ? payload.answerItems.map(asChatAnswerItem).filter((item): item is BookChatAnswerItemDTO => Boolean(item))
+    : [];
+  const referenceResolution = asChatReferenceResolution(payload?.referenceResolution);
 
   const role: BookChatMessageRoleDTO = message.role === "assistant" ? "assistant" : "user";
+  const rawAnswer =
+    role === "assistant"
+      ? typeof payload?.rawAnswer === "string" && payload.rawAnswer.trim()
+        ? payload.rawAnswer.trim()
+        : message.content
+      : null;
 
   return {
     id: message.id,
     role,
     content: message.content,
+    rawAnswer,
     evidence: normalizedEvidence,
     usedSources,
     confidence,
     mode,
     citations,
+    inlineCitations,
+    answerItems,
+    referenceResolution,
     createdAt: message.createdAt.toISOString(),
   };
 }

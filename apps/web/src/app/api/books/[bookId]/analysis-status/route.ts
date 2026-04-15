@@ -1,6 +1,7 @@
 import { prisma } from "@remarka/db";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
+import { BOOK_PIPELINE_STAGE_KEYS, type BookAnalyzerStatusDTO, type BookPipelineStageKeyDTO } from "@/lib/books";
 import {
   buildAnalysisViews,
   buildBookChatReadiness,
@@ -12,17 +13,6 @@ import {
 interface RouteContext {
   params: Promise<{ bookId: string }>;
 }
-
-const PIPELINE_TASK_TYPES = [
-  "canonical_text",
-  "scene_build",
-  "entity_graph",
-  "event_relation_graph",
-  "summary_store",
-  "evidence_store",
-  "text_index",
-  "quote_store",
-] as const;
 
 export async function GET(_request: Request, context: RouteContext) {
   const authUser = await resolveAuthUser();
@@ -68,7 +58,7 @@ export async function GET(_request: Request, context: RouteContext) {
   const tasks = await prisma.bookAnalyzerTask.findMany({
     where: {
       bookId: book.id,
-      analyzerType: { in: [...PIPELINE_TASK_TYPES] },
+      analyzerType: { in: [...BOOK_PIPELINE_STAGE_KEYS] },
     },
     select: {
       analyzerType: true,
@@ -91,17 +81,12 @@ export async function GET(_request: Request, context: RouteContext) {
     };
   };
 
+  const analyzerStatuses = Object.fromEntries(
+    BOOK_PIPELINE_STAGE_KEYS.map((key) => [key, serializeTask(key)])
+  ) as Record<BookPipelineStageKeyDTO, BookAnalyzerStatusDTO>;
+
   const analyzers = normalizePipelineAnalyzers({
-    analyzers: {
-      canonical_text: serializeTask("canonical_text"),
-      scene_build: serializeTask("scene_build"),
-      entity_graph: serializeTask("entity_graph"),
-      event_relation_graph: serializeTask("event_relation_graph"),
-      summary_store: serializeTask("summary_store"),
-      evidence_store: serializeTask("evidence_store"),
-      text_index: serializeTask("text_index"),
-      quote_store: serializeTask("quote_store"),
-    },
+    analyzers: analyzerStatuses,
     presence: {
       paragraphs: book._count.paragraphs > 0,
       sentences: book._count.sentences > 0,

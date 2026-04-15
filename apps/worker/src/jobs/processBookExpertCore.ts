@@ -1,37 +1,71 @@
 import { createHash } from "node:crypto";
+import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import { LocalBlobStore, S3BlobStore, enqueueBookAnalyzerStage, type BlobStore, prisma } from "@remarka/db";
 import {
+  BOOK_EXPERT_CORE_GROUP_FACETS,
   BOOK_EXPERT_CORE_LITERARY_SECTION_KEYS,
   BOOK_EXPERT_CORE_INCIDENT_PARTICIPANT_KINDS,
   BOOK_EXPERT_CORE_QUOTE_MENTION_KINDS,
   BOOK_EXPERT_CORE_QUOTE_TAGS,
   BOOK_EXPERT_CORE_QUOTE_TYPES,
+  BOOK_EXPERT_CORE_RELATION_FACETS,
+  BOOK_EXPERT_CORE_RESOLUTION_STATUSES,
   BOOK_EXPERT_CORE_STAGE_KEYS,
   BOOK_EXPERT_CORE_VERSION,
   BookExpertCoreCharacterSchema,
+  BookExpertCoreEntityMentionSchema,
+  BookExpertCoreExtractedRefSchema,
+  BookExpertCoreGroupSchema,
   BookExpertCoreIncidentSchema,
+  type BookExpertCoreLiterarySection,
   BookExpertCoreLiterarySectionKeySchema,
   BookExpertCoreLiterarySectionSchema,
   BookExpertCoreLocationSchema,
   BookExpertCoreQuoteSchema,
+  BookExpertCoreRelationCandidateSchema,
   BookExpertCoreSnapshotSchema,
   BookExpertCoreThemeSchema,
   BookExpertCoreWindowScanSchema,
   buildPlainTextFromParsedChapter,
+  canonicalizeDocumentContent,
   detectBookFormatFromFileName,
   ensureParsedBookHasChapters,
   normalizeEntityName,
   parseBook,
   type BookExpertCoreIncident,
+  type BookExpertCoreRelationCandidate,
   type BookExpertCoreSnapshot,
   type BookExpertCoreStageKey,
   type BookExpertCoreWindowScan,
   type BookFormat,
   type ParsedChapter,
 } from "@remarka/contracts";
+import {
+  completedExecution,
+  deferredDependenciesExecution,
+  deferredLockExecution,
+  retryableFailureExecution,
+  RetryableAnalyzerError,
+  type AnalyzerExecutionResult,
+} from "../analyzerExecution";
+import {
+  applyStrictJsonAttemptToTaskMetadata,
+  type BookAnalyzerTaskMetadata,
+  type StrictJsonAttemptLike,
+  mergeBookAnalyzerTaskMetadata,
+} from "../bookAnalyzerTaskMetadata";
+import {
+  normalizeLiterarySection,
+  normalizeLiterarySectionsRecord,
+} from "../bookExpertCoreLiteraryNormalization";
+import {
+  claimQueuedAnalyzerTaskExecution,
+  markBookAnalysisRunning,
+  refreshBookAnalysisLifecycle,
+} from "../bookAnalysisLifecycle";
 import { workerConfig } from "../config";
-import { callStrictJson } from "../extractionV2";
+import { callStrictJson, ExtractionStructuredOutputError } from "../extractionV2";
 import { logger } from "../logger";
 
 interface StagePayload {
@@ -39,6 +73,7 @@ interface StagePayload {
 }
 
 type CoreAnalyzerType = BookExpertCoreStageKey;
+type LiterarySectionsRecord = Record<LiterarySectionKey, BookExpertCoreLiterarySection>;
 
 interface LoadedBookSource {
   id: string;
@@ -68,6 +103,7 @@ interface WindowInput {
 interface CandidateEntityAggregate {
   normalizedName: string;
   name: string;
+  category: "character" | "theme" | "location" | "group";
   aliases: Set<string>;
   mentionCount: number;
   firstAppearanceChapterOrder: number | null;
@@ -76,17 +112,51 @@ interface CandidateEntityAggregate {
   arcHints: string[];
   motivationHints: string[];
   significanceHints: string[];
+  memberHints: Array<{
+    value: string;
+    normalizedValue: string;
+    role: string;
+    confidence: number;
+  }>;
+  rawKindLabels: string[];
+  facetHints: Array<{ facet: (typeof BOOK_EXPERT_CORE_GROUP_FACETS)[number]; confidence: number }>;
   anchors: Array<{ chapterOrderIndex: number; snippet: string }>;
   sourceWindows: Set<number>;
+}
+
+interface RelationCandidateAggregate {
+  id: string;
+  fromRef: z.infer<typeof BookExpertCoreExtractedRefSchema>;
+  toRef: z.infer<typeof BookExpertCoreExtractedRefSchema>;
+  rawTypeLabel: string;
+  facet: BookExpertCoreRelationCandidate["facet"];
+  facetConfidence: number | null;
+  summary: string;
+  confidence: number;
+  chapterFrom: number;
+  chapterTo: number;
+  quoteTexts: string[];
+  anchors: Array<{ chapterOrderIndex: number; snippet: string }>;
+  sourceWindows: Array<{ windowIndex: number; chapterFrom: number; chapterTo: number; chapterCount: number; textChars: number }>;
 }
 
 const MAX_PLOT_POINTS = 18;
 const MAX_CHARACTERS = 12;
 const MAX_THEMES = 10;
 const MAX_LOCATIONS = 10;
+const MAX_GROUPS = 10;
 const MAX_QUOTES = 60;
 const MAX_INCIDENTS = 24;
 const WINDOW_SCAN_CONCURRENCY = 3;
+const QUOTE_MENTION_BATCH_SIZE = 12;
+const QUOTE_MENTION_CONCURRENCY = 2;
+const RELATION_REFINE_BATCH_SIZE = 6;
+const RELATION_REFINE_CONCURRENCY = 2;
+const ENTITY_MENTION_BATCH_SIZE = 12;
+const ENTITY_MENTION_CONCURRENCY = 2;
+const PROFILE_BATCH_SIZE = 4;
+const REF_LINK_BATCH_SIZE = 10;
+const REF_LINK_CONCURRENCY = 2;
 const WINDOW_TARGET_TOKENS = 9_000;
 const WINDOW_MAX_TOKENS = 12_000;
 const WINDOW_HARD_MAX = 16;
@@ -107,11 +177,11 @@ const CharacterProfilePatchSchema = z
     id: z.string().trim().min(1).max(80).optional(),
     normalizedName: z.string().trim().min(1).max(160).optional(),
     name: z.string().trim().min(1).max(160).optional(),
-    aliases: z.array(z.string().trim().min(1).max(160)).max(12).optional(),
-    role: z.string().trim().min(1).max(220).optional(),
+    role: z.string().trim().max(220).optional(),
     description: z.string().trim().min(1).max(900).optional(),
     arc: z.string().trim().min(1).max(900).optional(),
     motivations: z.array(z.string().trim().min(1).max(220)).max(6).optional(),
+    degraded: z.boolean().optional(),
   })
   .passthrough();
 const ThemeProfilePatchSchema = z
@@ -119,9 +189,9 @@ const ThemeProfilePatchSchema = z
     id: z.string().trim().min(1).max(80).optional(),
     normalizedName: z.string().trim().min(1).max(160).optional(),
     name: z.string().trim().min(1).max(160).optional(),
-    aliases: z.array(z.string().trim().min(1).max(160)).max(12).optional(),
     description: z.string().trim().min(1).max(900).optional(),
     development: z.string().trim().min(1).max(900).optional(),
+    degraded: z.boolean().optional(),
   })
   .passthrough();
 const LocationProfilePatchSchema = z
@@ -129,9 +199,19 @@ const LocationProfilePatchSchema = z
     id: z.string().trim().min(1).max(80).optional(),
     normalizedName: z.string().trim().min(1).max(160).optional(),
     name: z.string().trim().min(1).max(160).optional(),
-    aliases: z.array(z.string().trim().min(1).max(160)).max(12).optional(),
     description: z.string().trim().min(1).max(900).optional(),
     significance: z.string().trim().min(1).max(900).optional(),
+    degraded: z.boolean().optional(),
+  })
+  .passthrough();
+const GroupProfilePatchSchema = z
+  .object({
+    id: z.string().trim().min(1).max(80).optional(),
+    normalizedName: z.string().trim().min(1).max(160).optional(),
+    name: z.string().trim().min(1).max(160).optional(),
+    description: z.string().trim().min(1).max(900).optional(),
+    significance: z.string().trim().min(1).max(900).optional(),
+    degraded: z.boolean().optional(),
   })
   .passthrough();
 const CharacterBatchSchema = LooseProfileBatchInputSchema.pipe(
@@ -147,6 +227,109 @@ const ThemeBatchSchema = LooseProfileBatchInputSchema.pipe(
 const LocationBatchSchema = LooseProfileBatchInputSchema.pipe(
   z.object({
     items: z.array(LocationProfilePatchSchema).max(MAX_LOCATIONS),
+  })
+);
+const GroupBatchSchema = LooseProfileBatchInputSchema.pipe(
+  z.object({
+    items: z.array(GroupProfilePatchSchema).max(MAX_GROUPS),
+  })
+);
+const QuoteMentionRefinementMentionSchema = z
+  .object({
+    kind: z.enum(BOOK_EXPERT_CORE_QUOTE_MENTION_KINDS),
+    value: z.string().trim().min(1).max(160),
+    candidateCanonicalName: z.string().trim().min(1).max(160).nullable().optional(),
+    confidence: z.number().min(0).max(1).optional(),
+  })
+  .passthrough();
+const QuoteMentionRefinementItemSchema = z
+  .object({
+    quoteId: z.string().trim().min(1).max(80),
+    mentions: z.array(QuoteMentionRefinementMentionSchema).max(16).default([]),
+  })
+  .passthrough();
+const QuoteMentionRefinementBatchSchema = z.preprocess(
+  (input) => {
+    if (Array.isArray(input)) return { items: input };
+    if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+    const record = input as Record<string, unknown>;
+    if (Array.isArray(record.items)) return { items: record.items };
+    if (Array.isArray(record.quotes)) return { items: record.quotes };
+    return input;
+  },
+  z.object({
+    items: z.array(QuoteMentionRefinementItemSchema).max(QUOTE_MENTION_BATCH_SIZE),
+  })
+);
+const RelationRefinementItemSchema = z
+  .object({
+    fromValue: z.string().trim().min(1).max(160),
+    toValue: z.string().trim().min(1).max(160),
+    rawTypeLabel: z.string().trim().min(1).max(120),
+    facet: z.enum(BOOK_EXPERT_CORE_RELATION_FACETS).nullable().optional(),
+    facetConfidence: z.number().min(0).max(1).nullable().optional(),
+    summary: z.string().trim().min(1).max(500),
+    chapterFrom: z.number().int().min(1),
+    chapterTo: z.number().int().min(1),
+    quoteIds: z.array(z.string().trim().min(1).max(80)).max(12).optional().default([]),
+    snippet: z.string().trim().min(1).max(280),
+    confidence: z.number().min(0).max(1).optional(),
+  })
+  .passthrough();
+const RelationRefinementBatchSchema = z.preprocess(
+  (input) => {
+    if (Array.isArray(input)) return { items: input };
+    if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+    const record = input as Record<string, unknown>;
+    if (Array.isArray(record.items)) return { items: record.items };
+    if (Array.isArray(record.relations)) return { items: record.relations };
+    return input;
+  },
+  z.object({
+    items: z.array(RelationRefinementItemSchema).max(24),
+  })
+);
+const EntityMentionRefinementItemSchema = z
+  .object({
+    entityId: z.string().trim().min(1).max(80),
+    chapterOrderIndex: z.number().int().min(1),
+    paragraphOrderInChapter: z.number().int().min(1),
+    surfaceForm: z.string().trim().min(1).max(160),
+    occurrenceIndex: z.number().int().min(1).max(16).optional().default(1),
+    confidence: z.number().min(0).max(1).optional(),
+  })
+  .passthrough();
+const EntityMentionRefinementBatchSchema = z.preprocess(
+  (input) => {
+    if (Array.isArray(input)) return { items: input };
+    if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+    const record = input as Record<string, unknown>;
+    if (Array.isArray(record.items)) return { items: record.items };
+    if (Array.isArray(record.mentions)) return { items: record.mentions };
+    return input;
+  },
+  z.object({
+    items: z.array(EntityMentionRefinementItemSchema).max(ENTITY_MENTION_BATCH_SIZE * 6),
+  })
+);
+const RefLinkItemSchema = z
+  .object({
+    refId: z.string().trim().min(1).max(160),
+    candidateCanonicalName: z.string().trim().min(1).max(160).nullable().optional(),
+    confidence: z.number().min(0).max(1).optional(),
+  })
+  .passthrough();
+const RefLinkBatchSchema = z.preprocess(
+  (input) => {
+    if (Array.isArray(input)) return { items: input };
+    if (!input || typeof input !== "object" || Array.isArray(input)) return input;
+    const record = input as Record<string, unknown>;
+    if (Array.isArray(record.items)) return { items: record.items };
+    if (Array.isArray(record.refs)) return { items: record.refs };
+    return input;
+  },
+  z.object({
+    items: z.array(RefLinkItemSchema).max(REF_LINK_BATCH_SIZE),
   })
 );
 
@@ -295,6 +478,48 @@ const LooseIncidentQuoteArraySchema = z.preprocess(
   z.array(z.string().trim().min(1).max(1200)).max(8).optional().default([])
 );
 
+const LooseGroupMemberSchema = z.union([
+  z.string().trim().min(1).max(160),
+  z
+    .object({
+      name: z.string().trim().min(1).max(160).optional(),
+      normalizedName: z.string().trim().min(1).max(160).optional(),
+      role: z.string().trim().min(1).max(160).optional(),
+    })
+    .passthrough(),
+]);
+
+const LooseGroupMemberArraySchema = z.preprocess(
+  (input) => {
+    if (input == null) return [];
+    if (Array.isArray(input)) return input;
+    return [input];
+  },
+  z.array(LooseGroupMemberSchema).max(16).optional().default([])
+);
+
+const LooseRelationCandidateSchema = z.union([
+  z.string().trim().min(1).max(260),
+  z
+    .object({
+      fromName: z.string().trim().min(1).max(160).optional(),
+      from: z.string().trim().min(1).max(160).optional(),
+      fromNormalizedName: z.string().trim().min(1).max(160).optional(),
+      toName: z.string().trim().min(1).max(160).optional(),
+      to: z.string().trim().min(1).max(160).optional(),
+      toNormalizedName: z.string().trim().min(1).max(160).optional(),
+      type: z.string().trim().min(1).max(60).optional(),
+      summary: z.string().trim().min(1).max(500).optional(),
+      chapterFrom: LooseWindowScanNumberSchema,
+      chapterTo: LooseWindowScanNumberSchema,
+      chapterOrderIndex: LooseWindowScanNumberSchema,
+      confidence: LooseWindowScanNumberSchema,
+      supportingQuoteTexts: LooseIncidentQuoteArraySchema,
+      snippet: z.string().trim().min(1).max(280).optional(),
+    })
+    .passthrough(),
+]);
+
 const WindowScanModelOutputSchema = z.preprocess(
   (input) => (Array.isArray(input) ? { plotPoints: input } : input),
   z
@@ -384,6 +609,28 @@ const WindowScanModelOutputSchema = z.preprocess(
         .max(16)
         .optional()
         .default([]),
+      groups: z
+        .array(
+          z.union([
+            z.string().trim().min(1).max(220),
+            z
+              .object({
+                name: z.string().trim().min(1).max(160).optional(),
+                aliases: LooseWindowScanStringArraySchema,
+                category: z.string().trim().min(1).max(60).optional(),
+                description: z.string().trim().min(1).max(260).optional(),
+                significanceHint: z.string().trim().min(1).max(320).optional(),
+                members: LooseGroupMemberArraySchema,
+                chapterOrderIndex: LooseWindowScanNumberSchema,
+                importance: LooseWindowScanNumberSchema,
+                snippet: z.string().trim().min(1).max(280).optional(),
+              })
+              .passthrough(),
+          ])
+        )
+        .max(16)
+        .optional()
+        .default([]),
       quotes: z
         .array(
           z.union([
@@ -446,6 +693,13 @@ const WindowScanModelOutputSchema = z.preprocess(
               })
               .passthrough(),
           ])
+        )
+        .max(16)
+        .optional()
+        .default([]),
+      relationCandidates: z
+        .array(
+          LooseRelationCandidateSchema
         )
         .max(16)
         .optional()
@@ -569,6 +823,13 @@ function dedupeStrings(items: string[], limit: number): string[] {
   return out;
 }
 
+function buildVertexAllowedModels(...tiers: Array<"lite" | "flash" | "pro">): string[] {
+  return dedupeStrings(
+    tiers.map((tier) => workerConfig.vertex.modelByTier[tier]),
+    tiers.length
+  );
+}
+
 function dedupeBy<T>(items: T[], keyFn: (item: T) => string, limit: number): T[] {
   const out: T[] = [];
   const seen = new Set<string>();
@@ -590,6 +851,63 @@ function hashId(prefix: string, parts: Array<string | number>): string {
   return `${prefix}_${hash}`;
 }
 
+type ExactEntityResolution = {
+  entityId: string;
+  canonicalEntityType: NonNullable<BookExpertCoreSnapshot["quoteBank"][number]["mentions"][number]["canonicalEntityType"]>;
+  normalizedValue: string;
+};
+
+function buildExactEntityResolutionIndex(snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations" | "groups">) {
+  const ownerCounts = new Map<string, Set<string>>();
+  const entries = new Map<string, ExactEntityResolution>();
+
+  const registerOwner = (entityId: string, value: string) => {
+    const normalizedValue = normalizeEntityName(value);
+    if (!normalizedValue) return;
+    const owners = ownerCounts.get(normalizedValue) || new Set<string>();
+    owners.add(entityId);
+    ownerCounts.set(normalizedValue, owners);
+  };
+
+  const registerEntity = (
+    type: ExactEntityResolution["canonicalEntityType"],
+    entity: { id: string; name: string; aliases: string[] }
+  ) => {
+    for (const value of [entity.name, ...(entity.aliases || [])]) {
+      registerOwner(entity.id, value);
+    }
+  };
+
+  for (const entity of snapshot.characters) registerEntity("character", entity);
+  for (const entity of snapshot.themes) registerEntity("theme", entity);
+  for (const entity of snapshot.locations) registerEntity("location", entity);
+  for (const entity of snapshot.groups) registerEntity("group", entity);
+
+  const addUniqueEntries = (
+    type: ExactEntityResolution["canonicalEntityType"],
+    entity: { id: string; name: string; aliases: string[] }
+  ) => {
+    for (const value of [entity.name, ...(entity.aliases || [])]) {
+      const normalizedValue = normalizeEntityName(value);
+      if (!normalizedValue || (ownerCounts.get(normalizedValue)?.size || 0) !== 1 || entries.has(normalizedValue)) {
+        continue;
+      }
+      entries.set(normalizedValue, {
+        entityId: entity.id,
+        canonicalEntityType: type,
+        normalizedValue,
+      });
+    }
+  };
+
+  for (const entity of snapshot.characters) addUniqueEntries("character", entity);
+  for (const entity of snapshot.themes) addUniqueEntries("theme", entity);
+  for (const entity of snapshot.locations) addUniqueEntries("location", entity);
+  for (const entity of snapshot.groups) addUniqueEntries("group", entity);
+
+  return entries;
+}
+
 function createEmptySnapshot(bookId: string): BookExpertCoreSnapshot {
   return {
     version: BOOK_EXPERT_CORE_VERSION,
@@ -601,8 +919,11 @@ function createEmptySnapshot(bookId: string): BookExpertCoreSnapshot {
     characters: [],
     themes: [],
     locations: [],
+    groups: [],
+    entityMentionBank: [],
     quoteBank: [],
     incidents: [],
+    relationCandidates: [],
     literarySections: null,
     windowScans: [],
     generatedAt: new Date().toISOString(),
@@ -651,14 +972,29 @@ async function updateTaskState(params: {
   error?: string | null;
   startedAt?: Date | null;
   completedAt?: Date | null;
+  metadataPatch?: Partial<BookAnalyzerTaskMetadata>;
 }) {
-  await prisma.bookAnalyzerTask.upsert({
-    where: {
-      bookId_analyzerType: {
-        bookId: params.bookId,
-        analyzerType: params.analyzerType as any,
-      },
+  const taskKey = {
+    bookId_analyzerType: {
+      bookId: params.bookId,
+      analyzerType: params.analyzerType as any,
     },
+  };
+  const existing = params.metadataPatch === undefined
+    ? null
+    : await prisma.bookAnalyzerTask.findUnique({
+        where: taskKey,
+        select: {
+          metadataJson: true,
+        },
+      });
+  const metadataJson =
+    params.metadataPatch === undefined
+      ? undefined
+      : mergeBookAnalyzerTaskMetadata(existing?.metadataJson, params.metadataPatch);
+
+  await prisma.bookAnalyzerTask.upsert({
+    where: taskKey,
     create: {
       bookId: params.bookId,
       analyzerType: params.analyzerType as any,
@@ -666,12 +1002,14 @@ async function updateTaskState(params: {
       error: params.error || null,
       startedAt: params.startedAt || null,
       completedAt: params.completedAt || null,
+      metadataJson: metadataJson ?? Prisma.JsonNull,
     },
     update: {
       state: params.state,
       error: params.error || null,
       startedAt: params.startedAt === undefined ? undefined : params.startedAt,
       completedAt: params.completedAt === undefined ? undefined : params.completedAt,
+      metadataJson: metadataJson === undefined ? undefined : (metadataJson ?? Prisma.JsonNull),
     },
   });
 }
@@ -686,7 +1024,9 @@ async function queueNextStage(bookId: string, analyzerType: CoreAnalyzerType): P
 
 const CORE_STAGE_DEPENDENCIES: Partial<Record<CoreAnalyzerType, CoreAnalyzerType>> = {
   core_merge: "core_window_scan",
-  core_profiles: "core_merge",
+  core_resolve: "core_merge",
+  core_entity_mentions: "core_resolve",
+  core_profiles: "core_entity_mentions",
   core_quotes_finalize: "core_profiles",
   core_literary: "core_quotes_finalize",
 };
@@ -731,6 +1071,26 @@ async function loadBookSource(bookId: string): Promise<{ book: LoadedBookSource;
   }));
 
   return { book, chapters };
+}
+
+function mergeMetadataPatch(
+  base: Partial<BookAnalyzerTaskMetadata>,
+  patch: Partial<BookAnalyzerTaskMetadata>
+): Partial<BookAnalyzerTaskMetadata> {
+  return {
+    ...base,
+    ...patch,
+    models: patch.models
+      ? dedupeStrings([...(base.models || []), ...patch.models], 8)
+      : base.models,
+  };
+}
+
+function registerStrictJsonAttempt(
+  current: Partial<BookAnalyzerTaskMetadata>,
+  attempt: StrictJsonAttemptLike
+): Partial<BookAnalyzerTaskMetadata> {
+  return applyStrictJsonAttemptToTaskMetadata(current, attempt);
 }
 
 function estimateTextTokens(value: string): number {
@@ -870,18 +1230,26 @@ function buildWindowScanPrompt(book: LoadedBookSource, window: WindowInput): str
     "2. summary опиши как короткий смысловой снимок этого окна.",
     "3. plotPoints — только реально важные события или повороты.",
     "4. characters/themes/locations — только сущности, которые реально значимы в этом окне.",
-    "5. quotes — только сильные фрагменты, полезные для будущего expert-chat. Не более 24.",
-    "6. incidents — важные сцены или эпизоды этого окна, где есть понятная причинно-следственная цепочка.",
-    "7. У incident нужны title, participants, facts, consequences и snippet. facts должны идти по порядку.",
-    "8. Для chapterOrderIndex/chapterFrom/chapterTo используй реальные номера глав из окна.",
-    "9. Не возвращай windowIndex, textChars: эти поля проставит система.",
-    "10. Не придумывай startChar/endChar: если не уверен, верни null.",
-    "11. Если для сущности или incident не хватает деталей, дай короткий объект, но не превращай весь ответ в массив строк.",
-    "12. Корневой JSON должен быть объектом с ключами summary, plotPoints, characters, themes, locations, quotes, incidents.",
-    "13. Предпочитай компактность и точность, а не полноту любой ценой.",
+    "5. groups — семьи, дома, команды, институции и другие устойчивые коллективы, если они реально представлены в окне.",
+    "5a. aliases добавляй только если этот вариант имени или названия прямо встречается в тексте окна.",
+    "5b. Для groups заполняй rawKindLabel свободной меткой из текста, а facet указывай только если тип группы явно понятен из окна.",
+    "5c. Для groups members перечисляй только явно названных участников окна. Не додумывай состав группы.",
+    "6. relationCandidates — только явные связи между сущностями окна; не выводи их по общему знанию о книге.",
+    "6a. Для relationCandidates сохраняй rawTypeLabel как свободную метку связи, а facet указывай только если тип связи явно выражен в тексте окна.",
+    "7. quotes — только сильные фрагменты, полезные для будущего expert-chat. Не более 24.",
+    "7a. Для quotes указывай mentions: какие персонажи, темы или локации прямо названы внутри самой цитаты.",
+    "8. incidents — важные сцены или эпизоды этого окна, где есть понятная причинно-следственная цепочка.",
+    "9. У incident нужны title, participants, facts, consequences и snippet. facts должны идти по порядку.",
+    "10. Для chapterOrderIndex/chapterFrom/chapterTo используй реальные номера глав из окна.",
+    "11. Не возвращай windowIndex, textChars: эти поля проставит система.",
+    "12. Не придумывай startChar/endChar: если не уверен, верни null.",
+    "13. Если для сущности или incident не хватает деталей, дай короткий объект, но не превращай весь ответ в массив строк.",
+    "14. Корневой JSON должен быть объектом с ключами summary, plotPoints, characters, themes, locations, groups, quotes, incidents, relationCandidates.",
+    "15. Предпочитай компактность и точность, а не полноту любой ценой.",
+    "16. relationCandidates возвращай массивом объектов, а не строк. У объекта нужны fromRef, toRef, rawTypeLabel, summary; facet опционален.",
     "",
     "Минимальная форма объекта:",
-    '{"summary":"...","plotPoints":[],"characters":[],"themes":[],"locations":[],"quotes":[],"incidents":[]}',
+    '{"summary":"...","plotPoints":[],"characters":[],"themes":[],"locations":[],"groups":[{"name":"...","rawKindLabel":"...","facet":null,"members":[]}],"quotes":[],"incidents":[],"relationCandidates":[{"fromRef":{"value":"...","normalizedValue":"...","confidence":0.8},"toRef":{"value":"...","normalizedValue":"...","confidence":0.8},"rawTypeLabel":"...","facet":null,"summary":"..."}]}',
     "",
     "Текст окна:",
     window.text,
@@ -912,16 +1280,21 @@ function buildWindowSource(window: BookExpertCoreWindowScan): { windowIndex: num
 function mergeWindowScans(
   bookId: string,
   windowScans: BookExpertCoreWindowScan[]
-): Pick<BookExpertCoreSnapshot, "bookBrief" | "plotSpine" | "characters" | "themes" | "locations" | "quoteBank" | "incidents"> {
+): Pick<
+  BookExpertCoreSnapshot,
+  "bookBrief" | "plotSpine" | "characters" | "themes" | "locations" | "groups" | "quoteBank" | "incidents" | "relationCandidates"
+> {
   const summaryBits = dedupeStrings(windowScans.map((window) => window.summary), 12);
 
   const plotPointMap = new Map<string, BookExpertCoreSnapshot["plotSpine"][number]>();
   const characterMap = new Map<string, CandidateEntityAggregate>();
   const themeMap = new Map<string, CandidateEntityAggregate>();
   const locationMap = new Map<string, CandidateEntityAggregate>();
+  const groupMap = new Map<string, CandidateEntityAggregate>();
   const quoteMap = new Map<string, BookExpertCoreSnapshot["quoteBank"][number]>();
   const incidentMap = new Map<string, BookExpertCoreIncident>();
   const incidentSupportingQuotes = new Map<string, string[]>();
+  const relationMap = new Map<string, RelationCandidateAggregate>();
 
   const pushAnchor = (target: CandidateEntityAggregate, chapterOrderIndex: number, snippet: string, windowIndex: number) => {
     if (target.anchors.length < 4) {
@@ -938,6 +1311,9 @@ function mergeWindowScans(
     raw: {
       name: string;
       aliases?: string[];
+      rawKindLabel?: string | null;
+      facet?: (typeof BOOK_EXPERT_CORE_GROUP_FACETS)[number] | null;
+      facetConfidence?: number | null;
       roleHint?: string;
       description?: string;
       developmentHint?: string;
@@ -945,11 +1321,12 @@ function mergeWindowScans(
       arcHint?: string;
       motivations?: string[];
       traits?: string[];
+      members?: Array<{ value: string; normalizedValue: string; role: string; confidence: number }>;
       chapterOrderIndex: number;
       snippet: string;
     },
     windowIndex: number,
-    kind: "character" | "theme" | "location"
+    kind: "character" | "theme" | "location" | "group"
   ) => {
     const normalizedName = normalizeEntityName(raw.name);
     if (!normalizedName) return;
@@ -959,6 +1336,7 @@ function mergeWindowScans(
       ({
         normalizedName,
         name: compactWhitespace(raw.name),
+        category: kind,
         aliases: new Set<string>(),
         mentionCount: 0,
         firstAppearanceChapterOrder: null,
@@ -967,6 +1345,9 @@ function mergeWindowScans(
         arcHints: [],
         motivationHints: [],
         significanceHints: [],
+        memberHints: [],
+        rawKindLabels: [],
+        facetHints: [],
         anchors: [],
         sourceWindows: new Set<number>(),
       } satisfies CandidateEntityAggregate);
@@ -985,6 +1366,8 @@ function mergeWindowScans(
         ? raw.description || raw.developmentHint || ""
         : kind === "location"
           ? raw.description || raw.significanceHint || ""
+          : kind === "group"
+            ? raw.description || raw.significanceHint || raw.roleHint || ""
           : raw.description || raw.roleHint || raw.arcHint || "";
     if (descriptionHint) existing.descriptionHints.push(clampText(descriptionHint, 260));
     if (raw.roleHint) existing.roleHints.push(clampText(raw.roleHint, 180));
@@ -994,6 +1377,30 @@ function mergeWindowScans(
       if (normalized) existing.motivationHints.push(normalized);
     }
     if (raw.significanceHint) existing.significanceHints.push(clampText(raw.significanceHint, 220));
+    if (kind === "group") {
+      const rawKindLabel = compactWhitespace(raw.rawKindLabel || "");
+      if (rawKindLabel) existing.rawKindLabels.push(clampText(rawKindLabel, 120));
+      if (raw.facet) {
+        existing.facetHints.push({
+          facet: raw.facet,
+          confidence: raw.facetConfidence ?? 0.7,
+        });
+      }
+      for (const member of raw.members || []) {
+        const normalizedMemberName = normalizeEntityName(member.normalizedValue || member.value);
+        const memberName = compactWhitespace(member.value);
+        const role = clampText(member.role || "member", 160);
+        if (!normalizedMemberName || !memberName) continue;
+        if (!existing.memberHints.some((item) => item.normalizedValue === normalizedMemberName && item.role === role)) {
+          existing.memberHints.push({
+            normalizedValue: normalizedMemberName,
+            value: memberName,
+            role,
+            confidence: member.confidence,
+          });
+        }
+      }
+    }
     pushAnchor(existing, raw.chapterOrderIndex, raw.snippet, windowIndex);
     map.set(normalizedName, existing);
   };
@@ -1049,6 +1456,30 @@ function mergeWindowScans(
     }
     for (const location of window.locations) {
       mergeEntity(locationMap, location, window.windowIndex, "location");
+    }
+    for (const group of window.groups || []) {
+      mergeEntity(
+        groupMap,
+        {
+          name: group.name,
+          aliases: group.aliases,
+          rawKindLabel: group.rawKindLabel,
+          facet: group.facet,
+          facetConfidence: group.facetConfidence,
+          description: group.description,
+          significanceHint: group.significanceHint,
+          members: group.members.map((member) => ({
+            normalizedValue: member.normalizedValue,
+            value: member.value,
+            role: member.role,
+            confidence: member.confidence,
+          })),
+          chapterOrderIndex: group.chapterOrderIndex,
+          snippet: group.snippet,
+        },
+        window.windowIndex,
+        "group"
+      );
     }
 
     for (const quote of window.quotes) {
@@ -1156,7 +1587,72 @@ function mergeWindowScans(
         dedupeStrings([...(incidentSupportingQuotes.get(key) || []), ...(incident.supportingQuoteTexts || [])], 8)
       );
     }
+
+    for (const relation of window.relationCandidates || []) {
+      const key = [
+        normalizeEntityName(relation.fromRef.normalizedValue || relation.fromRef.value),
+        normalizeEntityName(relation.toRef.normalizedValue || relation.toRef.value),
+        relation.rawTypeLabel,
+        relation.chapterFrom,
+        relation.chapterTo,
+      ].join(":");
+      if (!key) continue;
+      const anchor = {
+        chapterOrderIndex: relation.chapterFrom,
+        snippet: clampText(relation.snippet, 220),
+      };
+      const existing = relationMap.get(key);
+      if (!existing) {
+        relationMap.set(key, {
+          id: hashId("relation_candidate", [bookId, key]),
+          fromRef: {
+            value: clampText(relation.fromRef.value, 160),
+            normalizedValue: relation.fromRef.normalizedValue,
+            candidateCanonicalName: relation.fromRef.candidateCanonicalName || null,
+            entityId: null,
+            canonicalEntityType: null,
+            resolutionStatus: "unresolved",
+            confidence: relation.fromRef.confidence,
+          },
+          toRef: {
+            value: clampText(relation.toRef.value, 160),
+            normalizedValue: relation.toRef.normalizedValue,
+            candidateCanonicalName: relation.toRef.candidateCanonicalName || null,
+            entityId: null,
+            canonicalEntityType: null,
+            resolutionStatus: "unresolved",
+            confidence: relation.toRef.confidence,
+          },
+          rawTypeLabel: clampText(relation.rawTypeLabel, 120),
+          facet: relation.facet,
+          facetConfidence: relation.facetConfidence,
+          summary: clampText(relation.summary, 900),
+          confidence: relation.confidence,
+          chapterFrom: relation.chapterFrom,
+          chapterTo: relation.chapterTo,
+          quoteTexts: dedupeStrings(relation.supportingQuoteTexts || [], 8),
+          anchors: [anchor],
+          sourceWindows: [windowSource],
+        });
+        continue;
+      }
+      existing.summary = clampText([existing.summary, relation.summary].join(" "), 900);
+      existing.confidence = Math.max(existing.confidence, relation.confidence);
+      existing.chapterFrom = Math.min(existing.chapterFrom, relation.chapterFrom);
+      existing.chapterTo = Math.max(existing.chapterTo, relation.chapterTo);
+      existing.facet = existing.facet || relation.facet;
+      existing.facetConfidence = existing.facetConfidence ?? relation.facetConfidence ?? null;
+      existing.quoteTexts = dedupeStrings([...existing.quoteTexts, ...(relation.supportingQuoteTexts || [])], 8);
+      if (existing.anchors.length < 4) existing.anchors.push(anchor);
+      if (existing.sourceWindows.length < 6) existing.sourceWindows.push(windowSource);
+    }
   }
+
+  const toSourceWindows = (entry: CandidateEntityAggregate) =>
+    Array.from(entry.sourceWindows)
+      .sort((left, right) => left - right)
+      .slice(0, 6)
+      .map((windowIndex) => ({ windowIndex, chapterFrom: 1, chapterTo: 1, chapterCount: 1, textChars: 0 }));
 
   const toCharacterCard = (entry: CandidateEntityAggregate) => ({
     id: hashId("character", [bookId, entry.normalizedName]),
@@ -1165,6 +1661,7 @@ function mergeWindowScans(
     aliases: dedupeStrings([...entry.aliases], 12),
     mentionCount: entry.mentionCount,
     firstAppearanceChapterOrder: entry.firstAppearanceChapterOrder,
+    profileDegraded: false,
     role: clampText(entry.roleHints[0] || "Ключевой участник сюжетной линии", 180),
     description: clampText(dedupeStrings(entry.descriptionHints, 3).join(" ") || entry.name, 600),
     arc: clampText(dedupeStrings(entry.arcHints, 3).join(" ") || dedupeStrings(entry.descriptionHints, 2).join(" ") || entry.name, 600),
@@ -1175,10 +1672,7 @@ function mergeWindowScans(
       endChar: null,
       snippet: anchor.snippet,
     })),
-    sourceWindows: Array.from(entry.sourceWindows)
-      .sort((left, right) => left - right)
-      .slice(0, 6)
-      .map((windowIndex) => ({ windowIndex, chapterFrom: 1, chapterTo: 1, chapterCount: 1, textChars: 0 })),
+    sourceWindows: toSourceWindows(entry),
   });
 
   const toThemeCard = (entry: CandidateEntityAggregate) => ({
@@ -1188,6 +1682,7 @@ function mergeWindowScans(
     aliases: dedupeStrings([...entry.aliases], 8),
     mentionCount: entry.mentionCount,
     firstAppearanceChapterOrder: entry.firstAppearanceChapterOrder,
+    profileDegraded: false,
     description: clampText(dedupeStrings(entry.descriptionHints, 3).join(" ") || entry.name, 600),
     development: clampText(dedupeStrings([...entry.descriptionHints, ...entry.arcHints], 4).join(" ") || entry.name, 600),
     anchors: entry.anchors.slice(0, 4).map((anchor) => ({
@@ -1196,10 +1691,7 @@ function mergeWindowScans(
       endChar: null,
       snippet: anchor.snippet,
     })),
-    sourceWindows: Array.from(entry.sourceWindows)
-      .sort((left, right) => left - right)
-      .slice(0, 6)
-      .map((windowIndex) => ({ windowIndex, chapterFrom: 1, chapterTo: 1, chapterCount: 1, textChars: 0 })),
+    sourceWindows: toSourceWindows(entry),
   });
 
   const toLocationCard = (entry: CandidateEntityAggregate) => ({
@@ -1209,6 +1701,7 @@ function mergeWindowScans(
     aliases: dedupeStrings([...entry.aliases], 8),
     mentionCount: entry.mentionCount,
     firstAppearanceChapterOrder: entry.firstAppearanceChapterOrder,
+    profileDegraded: false,
     description: clampText(dedupeStrings(entry.descriptionHints, 3).join(" ") || entry.name, 600),
     significance: clampText(dedupeStrings([...entry.significanceHints, ...entry.descriptionHints], 4).join(" ") || entry.name, 600),
     anchors: entry.anchors.slice(0, 4).map((anchor) => ({
@@ -1217,10 +1710,39 @@ function mergeWindowScans(
       endChar: null,
       snippet: anchor.snippet,
     })),
-    sourceWindows: Array.from(entry.sourceWindows)
-      .sort((left, right) => left - right)
-      .slice(0, 6)
-      .map((windowIndex) => ({ windowIndex, chapterFrom: 1, chapterTo: 1, chapterCount: 1, textChars: 0 })),
+    sourceWindows: toSourceWindows(entry),
+  });
+
+  const toGroupCard = (entry: CandidateEntityAggregate) => ({
+    id: hashId("group", [bookId, entry.normalizedName]),
+    name: entry.name,
+    normalizedName: entry.normalizedName,
+    aliases: dedupeStrings([...entry.aliases], 8),
+    mentionCount: entry.mentionCount,
+    firstAppearanceChapterOrder: entry.firstAppearanceChapterOrder,
+    profileDegraded: false,
+    rawKindLabel: entry.rawKindLabels[0] || null,
+    facet: entry.facetHints[0]?.facet || null,
+    facetConfidence: entry.facetHints[0]?.confidence ?? null,
+    description: clampText(dedupeStrings(entry.descriptionHints, 3).join(" ") || entry.name, 600),
+    significance: clampText(dedupeStrings([...entry.significanceHints, ...entry.descriptionHints], 4).join(" ") || entry.name, 600),
+    members: dedupeBy(entry.memberHints, (item) => `${item.normalizedValue}:${item.role}`, 16).map((item) => ({
+      value: item.value,
+      normalizedValue: item.normalizedValue,
+      candidateCanonicalName: null,
+      role: item.role,
+      confidence: item.confidence,
+      entityId: null,
+      canonicalEntityType: null,
+      resolutionStatus: "unresolved" as const,
+    })),
+    anchors: entry.anchors.slice(0, 4).map((anchor) => ({
+      chapterOrderIndex: anchor.chapterOrderIndex,
+      startChar: null,
+      endChar: null,
+      snippet: anchor.snippet,
+    })),
+    sourceWindows: toSourceWindows(entry),
   });
 
   const plotSpine = Array.from(plotPointMap.values())
@@ -1242,28 +1764,15 @@ function mergeWindowScans(
     .slice(0, MAX_LOCATIONS)
     .map(toLocationCard);
 
+  const groups = Array.from(groupMap.values())
+    .sort((left, right) => right.mentionCount - left.mentionCount || left.name.localeCompare(right.name, "ru"))
+    .slice(0, MAX_GROUPS)
+    .map(toGroupCard);
+
   const quoteBank = Array.from(quoteMap.values())
     .sort((left, right) => right.confidence - left.confidence || left.chapterOrderIndex - right.chapterOrderIndex)
     .slice(0, MAX_QUOTES);
 
-  const characterIds = new Map(characters.map((item) => [item.normalizedName, item.id] as const));
-  const themeIds = new Map(themes.map((item) => [item.normalizedName, item.id] as const));
-  const locationIds = new Map(locations.map((item) => [item.normalizedName, item.id] as const));
-  const resolveIncidentParticipant = (participant: BookExpertCoreIncident["participants"][number]) => {
-    const normalized = participant.normalizedValue;
-    const characterId = characterIds.get(normalized);
-    const themeId = themeIds.get(normalized);
-    const locationId = locationIds.get(normalized);
-    if (participant.kind === "character" && characterId) return { ...participant, entityId: characterId };
-    if (participant.kind === "theme" && themeId) return { ...participant, entityId: themeId };
-    if (participant.kind === "location" && locationId) return { ...participant, entityId: locationId };
-    if (participant.kind === "unknown") {
-      if (characterId) return { ...participant, kind: "character" as const, entityId: characterId };
-      if (locationId) return { ...participant, kind: "location" as const, entityId: locationId };
-      if (themeId) return { ...participant, kind: "theme" as const, entityId: themeId };
-    }
-    return participant;
-  };
   const quoteTextIndex = quoteBank.map((quote) => ({
     id: quote.id,
     chapterOrderIndex: quote.chapterOrderIndex,
@@ -1289,7 +1798,6 @@ function mergeWindowScans(
 
       return BookExpertCoreIncidentSchema.parse({
         ...incident,
-        participants: incident.participants.map(resolveIncidentParticipant),
         quoteIds,
         sourceWindows: incident.sourceWindows
           .sort((left, right) => left.windowIndex - right.windowIndex)
@@ -1302,6 +1810,44 @@ function mergeWindowScans(
       return left.title.localeCompare(right.title, "ru");
     })
     .slice(0, MAX_INCIDENTS);
+
+  const relationCandidates = Array.from(relationMap.values())
+    .map((relation) => {
+      const normalizedSupports = relation.quoteTexts.map((value) => normalizeEntityName(value)).filter(Boolean);
+      const quoteIds = dedupeStrings(
+        quoteTextIndex
+          .filter((quote) => quote.chapterOrderIndex >= relation.chapterFrom && quote.chapterOrderIndex <= relation.chapterTo)
+          .filter((quote) =>
+            normalizedSupports.length === 0
+              ? relation.anchors.some((anchor) => normalizeEntityName(anchor.snippet).includes(quote.normalizedText.slice(0, 160)))
+              : normalizedSupports.some(
+                  (support) => quote.normalizedText.includes(support) || support.includes(quote.normalizedText)
+                )
+          )
+          .map((quote) => quote.id),
+        12
+      );
+
+      return BookExpertCoreRelationCandidateSchema.parse({
+        ...relation,
+        quoteIds,
+        sourceWindows: relation.sourceWindows
+          .sort((left, right) => left.windowIndex - right.windowIndex)
+          .slice(0, 6),
+        anchors: relation.anchors.map((anchor) => ({
+          chapterOrderIndex: anchor.chapterOrderIndex,
+          startChar: null,
+          endChar: null,
+          snippet: anchor.snippet,
+        })),
+      });
+    })
+    .sort((left, right) => {
+      if (right.confidence !== left.confidence) return right.confidence - left.confidence;
+      if (left.chapterFrom !== right.chapterFrom) return left.chapterFrom - right.chapterFrom;
+      return left.summary.localeCompare(right.summary, "ru");
+    })
+    .slice(0, 48);
 
   const plotSummaries = plotSpine.slice(0, 6).map((item) => item.summary);
   const bookBrief = {
@@ -1316,35 +1862,1040 @@ function mergeWindowScans(
     characters,
     themes,
     locations,
+    groups,
     quoteBank,
     incidents,
+    relationCandidates,
+  };
+}
+
+function resolveExtractedRef<TRef extends z.infer<typeof BookExpertCoreExtractedRefSchema>>(
+  ref: TRef,
+  exactMatches: Map<string, ExactEntityResolution>
+): TRef {
+  const normalizedValue = normalizeEntityName(ref.normalizedValue || ref.value);
+  const normalizedCandidateCanonicalName = normalizeEntityName(ref.candidateCanonicalName || "");
+  const match =
+    (normalizedValue ? exactMatches.get(normalizedValue) : undefined) ||
+    (normalizedCandidateCanonicalName ? exactMatches.get(normalizedCandidateCanonicalName) : undefined);
+  if (!match) {
+    return {
+      ...ref,
+      normalizedValue,
+      candidateCanonicalName: ref.candidateCanonicalName || null,
+      entityId: null,
+      canonicalEntityType: null,
+      resolutionStatus: "unresolved",
+    };
+  }
+  return {
+    ...ref,
+    normalizedValue,
+    candidateCanonicalName: ref.candidateCanonicalName || null,
+    entityId: match.entityId,
+    canonicalEntityType: match.canonicalEntityType,
+    resolutionStatus: "resolved",
+  };
+}
+
+function resolveSnapshotRefs(current: BookExpertCoreSnapshot): Pick<BookExpertCoreSnapshot, "quoteBank" | "incidents" | "groups" | "relationCandidates"> {
+  const exactMatches = buildExactEntityResolutionIndex(current);
+  return {
+    quoteBank: current.quoteBank.map((quote) =>
+      BookExpertCoreQuoteSchema.parse({
+        ...quote,
+        mentions: quote.mentions.map((mention) => resolveExtractedRef(mention, exactMatches)),
+      })
+    ),
+    incidents: current.incidents.map((incident) =>
+      BookExpertCoreIncidentSchema.parse({
+        ...incident,
+        participants: incident.participants.map((participant) => resolveExtractedRef(participant, exactMatches)),
+      })
+    ),
+    groups: current.groups.map((group) =>
+      BookExpertCoreGroupSchema.parse({
+        ...group,
+        members: group.members.map((member) => resolveExtractedRef(member, exactMatches)),
+      })
+    ),
+    relationCandidates: current.relationCandidates.map((relation) =>
+      BookExpertCoreRelationCandidateSchema.parse({
+        ...relation,
+        fromRef: resolveExtractedRef(relation.fromRef, exactMatches),
+        toRef: resolveExtractedRef(relation.toRef, exactMatches),
+      })
+    ),
   };
 }
 
 function buildProfilesPrompt(params: {
-  kind: "characters" | "themes" | "locations";
+  kind: "characters" | "themes" | "locations" | "groups";
   book: LoadedBookSource;
   bookBrief: BookExpertCoreSnapshot["bookBrief"];
   plotSpine: BookExpertCoreSnapshot["plotSpine"];
-  items: unknown[];
+  items: Array<Record<string, unknown>>;
 }): string {
-  const label = params.kind === "characters" ? "персонажей" : params.kind === "themes" ? "тем" : "локаций";
+  const label =
+    params.kind === "characters"
+      ? "персонажей"
+      : params.kind === "themes"
+        ? "тем"
+        : params.kind === "locations"
+          ? "локаций"
+          : "групп и коллективов";
   return [
     `Книга: ${params.book.title}${params.book.author ? ` (${params.book.author})` : ""}`,
     `Собери narrative patch для карточек ${label} по уже агрегированному semantic core.`,
     "Требования:",
     "1. Не придумывай новых сущностей и не удаляй существующие.",
     "2. Верни только items с идентификатором (id или normalizedName) и narrative-полями для патча.",
-    "3. Не переписывай anchors, sourceWindows, mentionCount, firstAppearanceChapterOrder.",
-    "4. Пиши коротко, конкретно, без академической воды.",
-    "5. Поля description/development/arc/significance должны быть полезны для expert-chat, а не общими фразами.",
-    "6. motivations для персонажей — только то, что реально следует из core, не более 6 пунктов.",
-    "7. aliases обновляй только если это реально полезные и точные варианты имени.",
+    "3. Ориентируйся только на локальный evidence pack каждого item.",
+    "4. Если evidence weak, не пиши общие фразы вроде «заметный участник событий». Верни краткое factual-описание и degraded=true.",
+    "5. Если evidence strong, пиши коротко, конкретно, без академической воды и без литературного мусора.",
+    "6. Поля description/development/arc/significance должны быть полезны для expert-chat и опираться на evidence pack.",
+    "7. motivations для персонажей — только то, что реально следует из evidence, не более 6 пунктов.",
+    "8. Не добавляй aliases, members, facets, rawKindLabel, relation types, quote mentions или новые сущности.",
+    "9. Для groups разрешены только description и significance как narrative overlay.",
+    "10. Корневой JSON: {\"items\":[{\"id\":\"...\",\"description\":\"...\",\"degraded\":false}]}",
     "",
     `Book brief: ${JSON.stringify(params.bookBrief)}`,
-    `Plot spine: ${JSON.stringify(params.plotSpine.slice(0, 12))}`,
+    `Plot spine: ${JSON.stringify(params.plotSpine.slice(0, 6))}`,
     `Входные кандидаты ${label}: ${JSON.stringify(params.items)}`,
   ].join("\n");
+}
+
+function buildCanonicalEntityCatalog(snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations" | "groups">) {
+  return [
+    ...snapshot.characters.map((item) => ({
+      id: item.id,
+      type: "character" as const,
+      canonicalName: item.name,
+      normalizedName: item.normalizedName,
+      aliases: item.aliases.slice(0, 8),
+    })),
+    ...snapshot.themes.map((item) => ({
+      id: item.id,
+      type: "theme" as const,
+      canonicalName: item.name,
+      normalizedName: item.normalizedName,
+      aliases: item.aliases.slice(0, 8),
+    })),
+    ...snapshot.locations.map((item) => ({
+      id: item.id,
+      type: "location" as const,
+      canonicalName: item.name,
+      normalizedName: item.normalizedName,
+      aliases: item.aliases.slice(0, 8),
+    })),
+    ...snapshot.groups.map((item) => ({
+      id: item.id,
+      type: "group" as const,
+      canonicalName: item.name,
+      normalizedName: item.normalizedName,
+      aliases: item.aliases.slice(0, 8),
+    })),
+  ];
+}
+
+function buildQuoteMentionCandidateCatalog(snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations">) {
+  return {
+    characters: snapshot.characters.map((item) => ({
+      canonicalName: item.name,
+      name: item.name,
+      aliases: item.aliases.slice(0, 8),
+    })),
+    themes: snapshot.themes.map((item) => ({
+      canonicalName: item.name,
+      name: item.name,
+      aliases: item.aliases.slice(0, 8),
+    })),
+    locations: snapshot.locations.map((item) => ({
+      canonicalName: item.name,
+      name: item.name,
+      aliases: item.aliases.slice(0, 8),
+    })),
+  };
+}
+
+function chunkIntoBatches<T>(items: T[], batchSize: number): T[][] {
+  if (items.length === 0) return [];
+  const out: T[][] = [];
+  const safeBatchSize = Math.max(1, Math.floor(batchSize));
+  for (let index = 0; index < items.length; index += safeBatchSize) {
+    out.push(items.slice(index, index + safeBatchSize));
+  }
+  return out;
+}
+
+function computeResolvedRate(resolvedCount: number, totalCount: number): number {
+  if (totalCount <= 0) return 0;
+  return clampUnitInterval(resolvedCount / totalCount, 0);
+}
+
+function splitCoreParagraphs(chapter: ChapterSource): Array<{
+  chapterOrderIndex: number;
+  paragraphOrderInChapter: number;
+  text: string;
+}> {
+  const normalized = canonicalizeDocumentContent(chapter.rawText || "");
+  const out: Array<{ chapterOrderIndex: number; paragraphOrderInChapter: number; text: string }> = [];
+  let cursor = 0;
+  let paragraphOrderInChapter = 1;
+  while (cursor < normalized.length) {
+    while (cursor < normalized.length && /\n/.test(normalized[cursor])) cursor += 1;
+    if (cursor >= normalized.length) break;
+    const start = cursor;
+    while (cursor < normalized.length) {
+      const isBoundary = normalized[cursor] === "\n" && normalized[cursor + 1] === "\n";
+      if (isBoundary) break;
+      cursor += 1;
+    }
+    const end = cursor;
+    const text = compactWhitespace(normalized.slice(start, end));
+    if (text) {
+      out.push({
+        chapterOrderIndex: chapter.orderIndex,
+        paragraphOrderInChapter,
+        text,
+      });
+      paragraphOrderInChapter += 1;
+    }
+    while (cursor < normalized.length && /\n/.test(normalized[cursor])) cursor += 1;
+  }
+  return out;
+}
+
+function quoteTextContainsSurfaceForm(quoteText: string, surfaceForm: string): boolean {
+  const haystack = compactWhitespace(quoteText).toLocaleLowerCase("ru");
+  const needle = compactWhitespace(surfaceForm).toLocaleLowerCase("ru");
+  if (!haystack || !needle) return false;
+  return haystack.includes(needle);
+}
+
+function buildEntityMentionRefinementPrompt(params: {
+  book: LoadedBookSource;
+  catalog: ReturnType<typeof buildCanonicalEntityCatalog>;
+  paragraphs: Array<{ chapterOrderIndex: number; paragraphOrderInChapter: number; text: string }>;
+}): string {
+  return [
+    `Книга: ${params.book.title}${params.book.author ? ` (${params.book.author})` : ""}`,
+    "Извлеки explicit entity mentions из paragraph batch.",
+    "Правила:",
+    "1. Возвращай только mentions для сущностей из переданного каталога.",
+    "2. surfaceForm должен буквально присутствовать в тексте paragraph.",
+    "3. occurrenceIndex — порядковый номер literal occurrence surfaceForm внутри paragraph, начиная с 1.",
+    "4. Не выводи coreference, местоимения, догадки по роли или фамилии.",
+    "5. Если не уверен, пропусти mention.",
+    "6. Корневой JSON: {\"items\":[{\"entityId\":\"...\",\"chapterOrderIndex\":1,\"paragraphOrderInChapter\":2,\"surfaceForm\":\"...\",\"occurrenceIndex\":1,\"confidence\":0.8}]}",
+    "",
+    `Catalog: ${JSON.stringify(params.catalog)}`,
+    `Paragraphs: ${JSON.stringify(params.paragraphs)}`,
+  ].join("\n");
+}
+
+function buildRefLinkPrompt(params: {
+  book: LoadedBookSource;
+  catalog: ReturnType<typeof buildCanonicalEntityCatalog>;
+  refs: Array<Record<string, unknown>>;
+}): string {
+  return [
+    `Книга: ${params.book.title}${params.book.author ? ` (${params.book.author})` : ""}`,
+    "Подбери canonical entity только для unresolved refs.",
+    "Правила:",
+    "1. Выбирай candidateCanonicalName только из переданного каталога canonical entities.",
+    "2. Если уверенного соответствия нет, candidateCanonicalName должен быть null.",
+    "3. Не создавай новые сущности и не используй общий канон вне книги.",
+    "4. Ориентируйся только на сам ref и его локальный context.",
+    "5. Корневой JSON: {\"items\":[{\"refId\":\"...\",\"candidateCanonicalName\":\"...\",\"confidence\":0.8}]}",
+    "",
+    `Catalog: ${JSON.stringify(params.catalog)}`,
+    `Refs: ${JSON.stringify(params.refs)}`,
+  ].join("\n");
+}
+
+function buildQuoteMentionRefinementPrompt(params: {
+  book: LoadedBookSource;
+  snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations">;
+  quotes: Array<Pick<BookExpertCoreSnapshot["quoteBank"][number], "id" | "chapterOrderIndex" | "text" | "commentary" | "mentions">>;
+}): string {
+  const catalog = buildQuoteMentionCandidateCatalog(params.snapshot);
+  return [
+    `Книга: ${params.book.title}${params.book.author ? ` (${params.book.author})` : ""}`,
+    "Уточни mentions для уже извлечённых цитат.",
+    "Правила:",
+    "1. Для каждой цитаты верни mentions только для тех персонажей, тем или локаций, которые прямо названы в тексте самой цитаты.",
+    "2. Используй только surface forms, которые буквально присутствуют внутри текста цитаты.",
+    "3. Не расширяй короткое имя до полного. Если в цитате написано «Гарри», value должно быть «Гарри», а не «Гарри Поттер».",
+    "4. Для каждого mention укажи candidateCanonicalName только если это один из переданных canonicalName и ты уверен, что literal form ссылается именно на него.",
+    "5. Если уверенного canonical target нет, candidateCanonicalName должен быть null.",
+    "6. Ориентируйся только на переданный каталог candidates и сам текст цитаты. Не выводи mentions из commentary, главы или общего знания о книге.",
+    "7. Если в цитате нет явных mentions из каталога, верни пустой массив.",
+    "8. Не возвращай spans, normalizedValue, entityId или новые сущности.",
+    "9. Корневой JSON: {\"items\":[{\"quoteId\":\"...\",\"mentions\":[{\"kind\":\"character\",\"value\":\"...\",\"candidateCanonicalName\":\"Гарри Поттер\",\"confidence\":0.8}]}]}",
+    "",
+    `Candidates: ${JSON.stringify(catalog)}`,
+    `Quotes: ${JSON.stringify(
+      params.quotes.map((quote) => ({
+        quoteId: quote.id,
+        chapterOrderIndex: quote.chapterOrderIndex,
+        text: quote.text,
+        commentary: quote.commentary,
+        currentMentions: quote.mentions.map((mention) => ({
+          kind: mention.kind,
+          value: mention.value,
+        })),
+      }))
+    )}`,
+  ].join("\n");
+}
+
+function applyQuoteMentionRefinement(params: {
+  snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations" | "quoteBank">;
+  refinements: Array<z.infer<typeof QuoteMentionRefinementItemSchema>>;
+}): BookExpertCoreSnapshot["quoteBank"] {
+  const canonicalNameSet = new Set(
+    [
+      ...params.snapshot.characters.map((item) => item.name),
+      ...params.snapshot.themes.map((item) => item.name),
+      ...params.snapshot.locations.map((item) => item.name),
+    ].map((item) => compactWhitespace(item))
+  );
+  const refinementMap = new Map<string, z.infer<typeof QuoteMentionRefinementItemSchema>>();
+  for (const item of params.refinements) {
+    const quoteId = compactWhitespace(item.quoteId);
+    if (!quoteId || refinementMap.has(quoteId)) continue;
+    refinementMap.set(quoteId, item);
+  }
+
+  return params.snapshot.quoteBank.map((quote) => {
+    const refinement = refinementMap.get(quote.id);
+    const mergedMentions: BookExpertCoreSnapshot["quoteBank"][number]["mentions"] = [];
+    const pushMention = (input: {
+      kind: (typeof BOOK_EXPERT_CORE_QUOTE_MENTION_KINDS)[number];
+      value: string;
+      candidateCanonicalName?: string | null;
+      confidence: number;
+    }) => {
+      const kind = input.kind;
+      const value = compactWhitespace(input.value);
+      const normalizedValue = normalizeEntityName(value);
+      const candidateCanonicalName = canonicalNameSet.has(compactWhitespace(input.candidateCanonicalName || ""))
+        ? compactWhitespace(input.candidateCanonicalName || "")
+        : null;
+      if (!value || !normalizedValue) return;
+      if (!quoteTextContainsSurfaceForm(quote.text, value)) return;
+      mergedMentions.push({
+        kind,
+        value,
+        normalizedValue,
+        candidateCanonicalName,
+        entityId: null,
+        canonicalEntityType: null,
+        resolutionStatus: "unresolved" as const,
+        confidence: clampUnitInterval(input.confidence, 0.72),
+      });
+    };
+
+    for (const mention of quote.mentions) {
+      pushMention({
+        kind: mention.kind,
+        value: mention.value,
+        candidateCanonicalName: mention.candidateCanonicalName,
+        confidence: mention.confidence,
+      });
+    }
+    for (const mention of refinement?.mentions || []) {
+      pushMention({
+        kind: mention.kind,
+        value: mention.value,
+        candidateCanonicalName: mention.candidateCanonicalName,
+        confidence: clampUnitInterval(mention.confidence, 0.72),
+      });
+    }
+
+    const dedupedMentions = new Map<string, (typeof mergedMentions)[number]>();
+    for (const mention of [...mergedMentions].sort((left, right) => right.confidence - left.confidence)) {
+      const key = `${mention.kind}:${mention.normalizedValue}`;
+      if (!dedupedMentions.has(key)) {
+        dedupedMentions.set(key, mention);
+      }
+    }
+
+    return BookExpertCoreQuoteSchema.parse({
+      ...quote,
+      mentions: Array.from(dedupedMentions.values()).slice(0, 16),
+    });
+  });
+}
+
+async function refineQuoteBankMentions(params: {
+  book: LoadedBookSource;
+  snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations" | "quoteBank">;
+  onAttempt?: ((attempt: StrictJsonAttemptLike) => void | Promise<void>) | null;
+}): Promise<BookExpertCoreSnapshot["quoteBank"]> {
+  if (params.snapshot.quoteBank.length === 0) {
+    return params.snapshot.quoteBank;
+  }
+
+  const batches = chunkIntoBatches(params.snapshot.quoteBank, QUOTE_MENTION_BATCH_SIZE);
+  const refinements = await mapWithConcurrency(batches, QUOTE_MENTION_CONCURRENCY, async (quotes, batchIndex) => {
+    const call = await callStrictJson({
+      phase: "book_core_quote_mentions",
+      prompt: buildQuoteMentionRefinementPrompt({
+        book: params.book,
+        snapshot: params.snapshot,
+        quotes,
+      }),
+      schema: QuoteMentionRefinementBatchSchema,
+      allowedModels: buildVertexAllowedModels("lite", "flash"),
+      disableGlobalFallback: true,
+      maxAttempts: 2,
+      vertexModel: workerConfig.vertex.modelByTier.lite,
+      vertexThinkingLevel: "MINIMAL",
+      maxTokens: 2200,
+      onAttempt: params.onAttempt || undefined,
+    });
+    logger.info(
+      {
+        bookId: params.book.id,
+        analyzerType: "core_quotes_finalize",
+        stage: "quote_mentions",
+        batchIndex: batchIndex + 1,
+        batchSize: quotes.length,
+        provider: call.meta.provider,
+        model: call.meta.model,
+        latencyMs: call.meta.latencyMs,
+        promptTokens: call.meta.usage?.promptTokens ?? null,
+        completionTokens: call.meta.usage?.completionTokens ?? null,
+      },
+      "Book expert core quote mentions refined"
+    );
+    return call.result.items;
+  });
+
+  return applyQuoteMentionRefinement({
+    snapshot: params.snapshot,
+    refinements: refinements.flat(),
+  });
+}
+
+function normalizeEntityMentionBank(params: {
+  snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations" | "groups">;
+  mentions: Array<z.infer<typeof EntityMentionRefinementItemSchema>>;
+  paragraphs: Array<{ chapterOrderIndex: number; paragraphOrderInChapter: number; text: string }>;
+}): BookExpertCoreSnapshot["entityMentionBank"] {
+  const entityIdSet = new Set(buildCanonicalEntityCatalog(params.snapshot).map((item) => item.id));
+  const paragraphMap = new Map<string, { chapterOrderIndex: number; paragraphOrderInChapter: number; text: string }>(
+    params.paragraphs.map((paragraph) => [`${paragraph.chapterOrderIndex}:${paragraph.paragraphOrderInChapter}`, paragraph] as const)
+  );
+  const deduped = new Map<string, BookExpertCoreSnapshot["entityMentionBank"][number]>();
+
+  for (const mention of params.mentions) {
+    const entityId = compactWhitespace(mention.entityId);
+    if (!entityIdSet.has(entityId)) continue;
+    const key = `${mention.chapterOrderIndex}:${mention.paragraphOrderInChapter}`;
+    const paragraph = paragraphMap.get(key);
+    if (!paragraph) continue;
+    const surfaceForm = compactWhitespace(mention.surfaceForm);
+    if (!surfaceForm || !paragraph.text.includes(surfaceForm)) continue;
+    const occurrenceIndex = Math.max(1, Math.floor(Number(mention.occurrenceIndex) || 1));
+    const id = hashId("entity_mention", [
+      entityId,
+      mention.chapterOrderIndex,
+      mention.paragraphOrderInChapter,
+      surfaceForm,
+      occurrenceIndex,
+    ]);
+    const normalized = BookExpertCoreEntityMentionSchema.parse({
+      id,
+      entityId,
+      chapterOrderIndex: mention.chapterOrderIndex,
+      paragraphOrderInChapter: mention.paragraphOrderInChapter,
+      surfaceForm,
+      occurrenceIndex,
+      confidence: clampUnitInterval(mention.confidence, 0.72),
+    });
+    const existing = deduped.get(normalized.id);
+    if (!existing || normalized.confidence > existing.confidence) {
+      deduped.set(normalized.id, normalized);
+    }
+  }
+
+  return [...deduped.values()].sort((left, right) => {
+    if (left.chapterOrderIndex !== right.chapterOrderIndex) return left.chapterOrderIndex - right.chapterOrderIndex;
+    if (left.paragraphOrderInChapter !== right.paragraphOrderInChapter) return left.paragraphOrderInChapter - right.paragraphOrderInChapter;
+    return left.entityId.localeCompare(right.entityId);
+  });
+}
+
+async function extractEntityMentionBank(params: {
+  book: LoadedBookSource;
+  chapters: ChapterSource[];
+  snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations" | "groups">;
+  onAttempt?: ((attempt: StrictJsonAttemptLike) => void | Promise<void>) | null;
+}): Promise<BookExpertCoreSnapshot["entityMentionBank"]> {
+  const catalog = buildCanonicalEntityCatalog(params.snapshot);
+  if (catalog.length === 0) return [];
+
+  const paragraphs = params.chapters.flatMap((chapter) => splitCoreParagraphs(chapter));
+  if (paragraphs.length === 0) return [];
+
+  const runBatch = async (
+    batch: Array<{ chapterOrderIndex: number; paragraphOrderInChapter: number; text: string }>,
+    batchLabel: string
+  ): Promise<BookExpertCoreSnapshot["entityMentionBank"]> => {
+    try {
+      const call = await callStrictJson({
+        phase: "book_core_entity_mentions",
+        prompt: buildEntityMentionRefinementPrompt({
+          book: params.book,
+          catalog,
+          paragraphs: batch,
+        }),
+        schema: EntityMentionRefinementBatchSchema,
+        allowedModels: buildVertexAllowedModels("lite", "flash"),
+        disableGlobalFallback: true,
+        maxAttempts: 2,
+        vertexModel: workerConfig.vertex.modelByTier.lite,
+        vertexThinkingLevel: "MINIMAL",
+        maxTokens: 2600,
+        onAttempt: params.onAttempt || undefined,
+      });
+      logger.info(
+        {
+          bookId: params.book.id,
+          analyzerType: "core_entity_mentions",
+          batchIndex: batchLabel,
+          batchSize: batch.length,
+          provider: call.meta.provider,
+          model: call.meta.model,
+          latencyMs: call.meta.latencyMs,
+          promptTokens: call.meta.usage?.promptTokens ?? null,
+          completionTokens: call.meta.usage?.completionTokens ?? null,
+        },
+        "Book expert core entity mentions refined"
+      );
+      return normalizeEntityMentionBank({
+        snapshot: params.snapshot,
+        mentions: call.result.items,
+        paragraphs: batch,
+      });
+    } catch (error) {
+      const recoverableEmptyOutput =
+        error instanceof ExtractionStructuredOutputError &&
+        (error.finishReason === "length" || error.message.includes("empty response"));
+      if (!recoverableEmptyOutput) {
+        throw error;
+      }
+
+      if (batch.length <= 1) {
+        logger.warn(
+          {
+            bookId: params.book.id,
+            analyzerType: "core_entity_mentions",
+            batchIndex: batchLabel,
+            batchSize: batch.length,
+            finishReason: error.finishReason,
+            error: error.message,
+          },
+          "Book expert core entity mentions batch returned empty structured output; dropping minimal batch as degraded"
+        );
+        return [];
+      }
+
+      const midpoint = Math.ceil(batch.length / 2);
+      const left = batch.slice(0, midpoint);
+      const right = batch.slice(midpoint);
+      logger.warn(
+        {
+          bookId: params.book.id,
+          analyzerType: "core_entity_mentions",
+          batchIndex: batchLabel,
+          batchSize: batch.length,
+          splitLeft: left.length,
+          splitRight: right.length,
+          finishReason: error.finishReason,
+        },
+        "Book expert core entity mentions batch exceeded output budget; retrying with smaller batches"
+      );
+      const [leftMentions, rightMentions] = await Promise.all([
+        runBatch(left, `${batchLabel}.1`),
+        runBatch(right, `${batchLabel}.2`),
+      ]);
+      return [...leftMentions, ...rightMentions];
+    }
+  };
+
+  const batches = chunkIntoBatches(paragraphs, ENTITY_MENTION_BATCH_SIZE);
+  const results = await mapWithConcurrency(batches, ENTITY_MENTION_CONCURRENCY, async (batch, batchIndex) =>
+    runBatch(batch, String(batchIndex + 1))
+  );
+
+  return normalizeEntityMentionBank({
+    snapshot: params.snapshot,
+    mentions: results.flat(),
+    paragraphs,
+  });
+}
+
+async function linkSnapshotUnresolvedRefs(params: {
+  book: LoadedBookSource;
+  snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations" | "groups" | "incidents" | "relationCandidates">;
+  onAttempt?: ((attempt: StrictJsonAttemptLike) => void | Promise<void>) | null;
+}): Promise<Pick<BookExpertCoreSnapshot, "groups" | "incidents" | "relationCandidates">> {
+  const catalog = buildCanonicalEntityCatalog(params.snapshot);
+  if (catalog.length === 0) {
+    return {
+      groups: params.snapshot.groups,
+      incidents: params.snapshot.incidents,
+      relationCandidates: params.snapshot.relationCandidates,
+    };
+  }
+
+  const unresolvedRefs: Array<Record<string, unknown>> = [];
+  for (const group of params.snapshot.groups) {
+    group.members.forEach((member, index) => {
+      if (member.resolutionStatus === "resolved") return;
+      unresolvedRefs.push({
+        refId: `group:${group.id}:member:${index}`,
+        refType: "group_member",
+        groupName: group.name,
+        context: `${group.description} ${group.significance}`.trim(),
+        value: member.value,
+        normalizedValue: member.normalizedValue,
+        role: member.role,
+      });
+    });
+  }
+  for (const incident of params.snapshot.incidents) {
+    incident.participants.forEach((participant, index) => {
+      if (participant.resolutionStatus === "resolved") return;
+      unresolvedRefs.push({
+        refId: `incident:${incident.id}:participant:${index}`,
+        refType: "incident_participant",
+        context: `${incident.title} ${incident.facts.join(" ")} ${incident.consequences.join(" ")}`.trim(),
+        value: participant.value,
+        normalizedValue: participant.normalizedValue,
+        role: participant.role,
+      });
+    });
+  }
+  for (const relation of params.snapshot.relationCandidates) {
+    if (relation.fromRef.resolutionStatus !== "resolved") {
+      unresolvedRefs.push({
+        refId: `relation:${relation.id}:from`,
+        refType: "relation_from",
+        context: `${relation.rawTypeLabel} ${relation.summary} ${relation.anchors[0]?.snippet || ""}`.trim(),
+        value: relation.fromRef.value,
+        normalizedValue: relation.fromRef.normalizedValue,
+      });
+    }
+    if (relation.toRef.resolutionStatus !== "resolved") {
+      unresolvedRefs.push({
+        refId: `relation:${relation.id}:to`,
+        refType: "relation_to",
+        context: `${relation.rawTypeLabel} ${relation.summary} ${relation.anchors[0]?.snippet || ""}`.trim(),
+        value: relation.toRef.value,
+        normalizedValue: relation.toRef.normalizedValue,
+      });
+    }
+  }
+
+  if (unresolvedRefs.length === 0) {
+    return {
+      groups: params.snapshot.groups,
+      incidents: params.snapshot.incidents,
+      relationCandidates: params.snapshot.relationCandidates,
+    };
+  }
+
+  const batches = chunkIntoBatches(unresolvedRefs, REF_LINK_BATCH_SIZE);
+  const linked = await mapWithConcurrency(batches, REF_LINK_CONCURRENCY, async (refs, batchIndex) => {
+    const call = await callStrictJson({
+      phase: "book_core_ref_link",
+      prompt: buildRefLinkPrompt({
+        book: params.book,
+        catalog,
+        refs,
+      }),
+      schema: RefLinkBatchSchema,
+      allowedModels: buildVertexAllowedModels("lite", "flash"),
+      disableGlobalFallback: true,
+      maxAttempts: 2,
+      vertexModel: workerConfig.vertex.modelByTier.lite,
+      vertexThinkingLevel: "MINIMAL",
+      maxTokens: 1800,
+      onAttempt: params.onAttempt || undefined,
+    });
+    logger.info(
+      {
+        bookId: params.book.id,
+        analyzerType: "core_resolve",
+        stage: "ref_link",
+        batchIndex: batchIndex + 1,
+        batchSize: refs.length,
+        provider: call.meta.provider,
+        model: call.meta.model,
+        latencyMs: call.meta.latencyMs,
+      },
+      "Book expert core unresolved refs linked"
+    );
+    return call.result.items;
+  });
+
+  const canonicalNameSet = new Set(catalog.map((item) => item.canonicalName));
+  const linkMap = new Map(
+    linked
+      .flat()
+      .map((item) => [compactWhitespace(item.refId), canonicalNameSet.has(compactWhitespace(item.candidateCanonicalName || "")) ? compactWhitespace(item.candidateCanonicalName || "") : null] as const)
+      .filter(([refId]) => Boolean(refId))
+  );
+
+  return {
+    groups: params.snapshot.groups.map((group) => ({
+      ...group,
+      members: group.members.map((member, index) => ({
+        ...member,
+        candidateCanonicalName: linkMap.get(`group:${group.id}:member:${index}`) ?? member.candidateCanonicalName ?? null,
+      })),
+    })),
+    incidents: params.snapshot.incidents.map((incident) => ({
+      ...incident,
+      participants: incident.participants.map((participant, index) => ({
+        ...participant,
+        candidateCanonicalName: linkMap.get(`incident:${incident.id}:participant:${index}`) ?? participant.candidateCanonicalName ?? null,
+      })),
+    })),
+    relationCandidates: params.snapshot.relationCandidates.map((relation) => ({
+      ...relation,
+      fromRef: {
+        ...relation.fromRef,
+        candidateCanonicalName: linkMap.get(`relation:${relation.id}:from`) ?? relation.fromRef.candidateCanonicalName ?? null,
+      },
+      toRef: {
+        ...relation.toRef,
+        candidateCanonicalName: linkMap.get(`relation:${relation.id}:to`) ?? relation.toRef.candidateCanonicalName ?? null,
+      },
+    })),
+  };
+}
+
+function buildRelationCandidateCatalog(snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations" | "groups">) {
+  return {
+    characters: snapshot.characters.map((item) => ({
+      name: item.name,
+      aliases: item.aliases.slice(0, 8),
+    })),
+    themes: snapshot.themes.map((item) => ({
+      name: item.name,
+      aliases: item.aliases.slice(0, 8),
+    })),
+    locations: snapshot.locations.map((item) => ({
+      name: item.name,
+      aliases: item.aliases.slice(0, 8),
+    })),
+    groups: snapshot.groups.map((item) => ({
+      name: item.name,
+      aliases: item.aliases.slice(0, 8),
+    })),
+  };
+}
+
+function buildRelationRefinementViews(
+  snapshot: Pick<BookExpertCoreSnapshot, "incidents" | "quoteBank" | "relationCandidates">
+) {
+  const sortedIncidents = [...snapshot.incidents].sort((left, right) => {
+    if (right.importance !== left.importance) return right.importance - left.importance;
+    if (left.chapterFrom !== right.chapterFrom) return left.chapterFrom - right.chapterFrom;
+    return left.title.localeCompare(right.title, "ru");
+  });
+  const incidentBatches = chunkIntoBatches(sortedIncidents, RELATION_REFINE_BATCH_SIZE);
+  return incidentBatches
+    .map((incidents) => {
+      const chapterFrom = Math.min(...incidents.map((item) => item.chapterFrom));
+      const chapterTo = Math.max(...incidents.map((item) => item.chapterTo));
+      const incidentQuoteIds = dedupeStrings(incidents.flatMap((item) => item.quoteIds), 24);
+      const quoteSet = new Set(incidentQuoteIds);
+      const quotes = snapshot.quoteBank
+        .filter(
+          (quote) =>
+            quoteSet.has(quote.id) ||
+            (quote.chapterOrderIndex >= chapterFrom &&
+              quote.chapterOrderIndex <= chapterTo &&
+              quote.mentions.length > 0)
+        )
+        .slice(0, 12);
+      const existingRelations = snapshot.relationCandidates
+        .filter((relation) => relation.chapterFrom <= chapterTo && relation.chapterTo >= chapterFrom)
+        .slice(0, 8);
+      return {
+        chapterFrom,
+        chapterTo,
+        incidents,
+        quotes,
+        existingRelations,
+      };
+    })
+    .filter((view) => view.incidents.length > 0 && (view.quotes.length > 0 || view.existingRelations.length > 0));
+}
+
+function buildRelationRefinementPrompt(params: {
+  book: LoadedBookSource;
+  snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations" | "groups">;
+  view: ReturnType<typeof buildRelationRefinementViews>[number];
+}): string {
+  const catalog = buildRelationCandidateCatalog(params.snapshot);
+  return [
+    `Книга: ${params.book.title}${params.book.author ? ` (${params.book.author})` : ""}`,
+    `Уточни explicit relationCandidates для диапазона глав ${params.view.chapterFrom}-${params.view.chapterTo}.`,
+    "Правила:",
+    "1. Возвращай только явные pairwise relations, которые прямо поддержаны incidents, quote ids и текстами цитат из входа.",
+    "2. fromValue и toValue должны быть взяты только из catalog surface forms. Используй только exact surface form из catalog, без новых имён и без нормализации.",
+    "3. Если сущности просто участвуют в одной сцене, но тип их связи не выражен явно, не возвращай relation.",
+    "4. rawTypeLabel оставляй свободной короткой меткой на языке книги.",
+    "5. facet выбирай из точного списка enum ids: ally, family, romance, conflict, authority, dependence, rivalry, mirror, symbolic_association.",
+    "6. Если evidence явно показывает один из этих типов, facet не должен быть null.",
+    "7. Ставь facet=null только если связь explicit, но не укладывается в enum ids выше.",
+    "8. Примеры: союзники/друзья/поддерживают друг друга -> ally; семейная связь -> family; открытый конфликт/вражда -> conflict; наставник/учитель/начальник/официальная власть -> authority; зависимость/подчинённость/нуждается в -> dependence; соперники -> rivalry; отражают друг друга как параллель или контраст -> mirror; символически связаны через идею/образ -> symbolic_association.",
+    "9. Не используй rawTypeLabel вместо facet. rawTypeLabel может быть 'союзники' или 'наставник', а facet должен быть соответствующим enum id.",
+    "10. quoteIds выбирай только из переданного списка quotes.",
+    "11. Не используй знания о серии, мире или книге вне переданных incidents и quotes.",
+    "12. Корневой JSON: {\"items\":[{\"fromValue\":\"...\",\"toValue\":\"...\",\"rawTypeLabel\":\"...\",\"facet\":\"ally\",\"summary\":\"...\",\"chapterFrom\":1,\"chapterTo\":1,\"quoteIds\":[\"quote_...\"],\"snippet\":\"...\",\"confidence\":0.8}]}",
+    "",
+    `Catalog: ${JSON.stringify(catalog)}`,
+    `Incidents: ${JSON.stringify(
+      params.view.incidents.map((incident) => ({
+        title: incident.title,
+        chapterFrom: incident.chapterFrom,
+        chapterTo: incident.chapterTo,
+        participants: incident.participants.map((participant) => ({
+          kind: participant.kind,
+          value: participant.value,
+          normalizedValue: participant.normalizedValue,
+          resolutionStatus: participant.resolutionStatus,
+        })),
+        facts: incident.facts,
+        consequences: incident.consequences,
+        quoteIds: incident.quoteIds,
+        anchors: incident.anchors,
+      }))
+    )}`,
+    `Quotes: ${JSON.stringify(
+      params.view.quotes.map((quote) => ({
+        id: quote.id,
+        chapterOrderIndex: quote.chapterOrderIndex,
+        text: quote.text,
+        commentary: quote.commentary,
+        mentions: quote.mentions.map((mention) => ({
+          kind: mention.kind,
+          value: mention.value,
+          normalizedValue: mention.normalizedValue,
+          resolutionStatus: mention.resolutionStatus,
+        })),
+      }))
+    )}`,
+    `Existing relation candidates: ${JSON.stringify(
+      params.view.existingRelations.map((relation) => ({
+        fromValue: relation.fromRef.value,
+        toValue: relation.toRef.value,
+        rawTypeLabel: relation.rawTypeLabel,
+        facet: relation.facet,
+        chapterFrom: relation.chapterFrom,
+        chapterTo: relation.chapterTo,
+        quoteIds: relation.quoteIds,
+        summary: relation.summary,
+      }))
+    )}`,
+  ].join("\n");
+}
+
+function applyRelationCandidateRefinement(params: {
+  snapshot: Pick<BookExpertCoreSnapshot, "characters" | "themes" | "locations" | "groups" | "quoteBank" | "relationCandidates">;
+  refinements: Array<z.infer<typeof RelationRefinementItemSchema>>;
+}): BookExpertCoreSnapshot["relationCandidates"] {
+  const exactMatches = buildExactEntityResolutionIndex(params.snapshot);
+  const quoteIdSet = new Set(params.snapshot.quoteBank.map((quote) => quote.id));
+  const relationFacetSet = new Set<string>(BOOK_EXPERT_CORE_RELATION_FACETS);
+  const map = new Map<string, BookExpertCoreSnapshot["relationCandidates"][number]>();
+
+  const mergeRelation = (relation: BookExpertCoreSnapshot["relationCandidates"][number]) => {
+    const key = [
+      normalizeEntityName(relation.fromRef.normalizedValue || relation.fromRef.value),
+      normalizeEntityName(relation.toRef.normalizedValue || relation.toRef.value),
+      relation.rawTypeLabel,
+      relation.chapterFrom,
+      relation.chapterTo,
+    ].join(":");
+    if (!key) return;
+    const existing = map.get(key);
+    if (!existing) {
+      map.set(
+        key,
+        BookExpertCoreRelationCandidateSchema.parse({
+          ...relation,
+          quoteIds: dedupeStrings(relation.quoteIds, 12),
+          anchors: relation.anchors.slice(0, 4),
+          sourceWindows: relation.sourceWindows.slice(0, 6),
+        })
+      );
+      return;
+    }
+
+    map.set(
+      key,
+      BookExpertCoreRelationCandidateSchema.parse({
+        ...existing,
+        summary: clampText(dedupeStrings([existing.summary, relation.summary], 2).join(" "), 900),
+        confidence: Math.max(existing.confidence, relation.confidence),
+        chapterFrom: Math.min(existing.chapterFrom, relation.chapterFrom),
+        chapterTo: Math.max(existing.chapterTo, relation.chapterTo),
+        facet: existing.facet || relation.facet,
+        facetConfidence:
+          typeof existing.facetConfidence === "number" ? existing.facetConfidence : relation.facetConfidence ?? null,
+        quoteIds: dedupeStrings([...existing.quoteIds, ...relation.quoteIds], 12),
+        anchors: dedupeBy(
+          [...existing.anchors, ...relation.anchors],
+          (anchor) => `${anchor.chapterOrderIndex}:${anchor.snippet}`,
+          4
+        ),
+        sourceWindows: dedupeBy(
+          [...existing.sourceWindows, ...relation.sourceWindows],
+          (source) => `${source.windowIndex}:${source.chapterFrom}:${source.chapterTo}`,
+          6
+        ),
+      })
+    );
+  };
+
+  for (const relation of params.snapshot.relationCandidates) {
+    mergeRelation(relation);
+  }
+
+  for (const refinement of params.refinements) {
+    const fromValue = clampText(refinement.fromValue, 160);
+    const toValue = clampText(refinement.toValue, 160);
+    const fromNormalizedValue = normalizeEntityName(fromValue || "");
+    const toNormalizedValue = normalizeEntityName(toValue || "");
+    if (!fromValue || !toValue || !fromNormalizedValue || !toNormalizedValue) continue;
+    if (!exactMatches.has(fromNormalizedValue) || !exactMatches.has(toNormalizedValue)) continue;
+    if (fromNormalizedValue === toNormalizedValue) continue;
+
+    const rawTypeLabel = clampText(refinement.rawTypeLabel, 120);
+    const summary = clampText(refinement.summary, 500);
+    const snippet = clampText(refinement.snippet, 280);
+    if (!rawTypeLabel || !summary || !snippet) continue;
+
+    const facetRaw = compactWhitespace(String(refinement.facet || "")).toLowerCase();
+    const facet = relationFacetSet.has(facetRaw)
+      ? (facetRaw as (typeof BOOK_EXPERT_CORE_RELATION_FACETS)[number])
+      : null;
+    const chapterFrom = Math.max(1, Math.min(refinement.chapterFrom, refinement.chapterTo));
+    const chapterTo = Math.max(chapterFrom, Math.max(refinement.chapterFrom, refinement.chapterTo));
+
+    mergeRelation({
+      id: hashId("relation_candidate", [params.snapshot.quoteBank.length, fromNormalizedValue, toNormalizedValue, rawTypeLabel, chapterFrom, chapterTo]),
+      fromRef: {
+        value: fromValue,
+        normalizedValue: fromNormalizedValue,
+        candidateCanonicalName: null,
+        entityId: null,
+        canonicalEntityType: null,
+        resolutionStatus: "unresolved",
+        confidence: 0.78,
+      },
+      toRef: {
+        value: toValue,
+        normalizedValue: toNormalizedValue,
+        candidateCanonicalName: null,
+        entityId: null,
+        canonicalEntityType: null,
+        resolutionStatus: "unresolved",
+        confidence: 0.78,
+      },
+      rawTypeLabel,
+      facet,
+      facetConfidence:
+        facet || refinement.facetConfidence != null ? clampUnitInterval(refinement.facetConfidence, 0.72) : null,
+      summary,
+      confidence: clampUnitInterval(refinement.confidence, 0.76),
+      chapterFrom,
+      chapterTo,
+      quoteIds: dedupeStrings((refinement.quoteIds || []).filter((quoteId) => quoteIdSet.has(quoteId)), 12),
+      anchors: [
+        {
+          chapterOrderIndex: chapterFrom,
+          startChar: null,
+          endChar: null,
+          snippet,
+        },
+      ],
+      sourceWindows: [],
+    });
+  }
+
+  return Array.from(map.values())
+    .sort((left, right) => {
+      if (right.confidence !== left.confidence) return right.confidence - left.confidence;
+      if (left.chapterFrom !== right.chapterFrom) return left.chapterFrom - right.chapterFrom;
+      return left.summary.localeCompare(right.summary, "ru");
+    })
+    .slice(0, 48);
+}
+
+async function refineRelationCandidates(params: {
+  book: LoadedBookSource;
+  snapshot: Pick<
+    BookExpertCoreSnapshot,
+    "characters" | "themes" | "locations" | "groups" | "quoteBank" | "incidents" | "relationCandidates"
+  >;
+  onAttempt?: ((attempt: StrictJsonAttemptLike) => void | Promise<void>) | null;
+}): Promise<BookExpertCoreSnapshot["relationCandidates"]> {
+  const views = buildRelationRefinementViews(params.snapshot);
+  if (views.length === 0) {
+    return params.snapshot.relationCandidates;
+  }
+
+  const refinements = await mapWithConcurrency(views, RELATION_REFINE_CONCURRENCY, async (view, batchIndex) => {
+    const call = await callStrictJson({
+      phase: "book_core_relations",
+      prompt: buildRelationRefinementPrompt({
+        book: params.book,
+        snapshot: params.snapshot,
+        view,
+      }),
+      schema: RelationRefinementBatchSchema,
+      allowedModels: buildVertexAllowedModels("lite", "flash"),
+      disableGlobalFallback: true,
+      maxAttempts: 2,
+      vertexModel: workerConfig.vertex.modelByTier.lite,
+      vertexThinkingLevel: "MINIMAL",
+      maxTokens: 2400,
+      onAttempt: params.onAttempt || undefined,
+    });
+    logger.info(
+      {
+        bookId: params.book.id,
+        analyzerType: "core_resolve",
+        stage: "relations",
+        batchIndex: batchIndex + 1,
+        incidentCount: view.incidents.length,
+        quoteCount: view.quotes.length,
+        provider: call.meta.provider,
+        model: call.meta.model,
+        latencyMs: call.meta.latencyMs,
+        promptTokens: call.meta.usage?.promptTokens ?? null,
+        completionTokens: call.meta.usage?.completionTokens ?? null,
+      },
+      "Book expert core relations refined"
+    );
+    return call.result.items;
+  });
+
+  return applyRelationCandidateRefinement({
+    snapshot: params.snapshot,
+    refinements: refinements.flat(),
+  });
 }
 
 function buildLiteraryPatternPrompt(snapshot: BookExpertCoreSnapshot): string {
@@ -1360,6 +2911,8 @@ function buildLiteraryPatternPrompt(snapshot: BookExpertCoreSnapshot): string {
     `Characters: ${JSON.stringify(snapshot.characters.slice(0, 10))}`,
     `Themes: ${JSON.stringify(snapshot.themes.slice(0, 10))}`,
     `Locations: ${JSON.stringify(snapshot.locations.slice(0, 8))}`,
+    `Groups: ${JSON.stringify(snapshot.groups.slice(0, 8))}`,
+    `Relations: ${JSON.stringify(snapshot.relationCandidates.slice(0, 12))}`,
     `Quote bank: ${JSON.stringify(snapshot.quoteBank.slice(0, 24))}`,
   ].join("\n");
 }
@@ -1380,6 +2933,8 @@ function buildLiterarySectionsPrompt(snapshot: BookExpertCoreSnapshot, patternMa
     `Plot spine: ${JSON.stringify(snapshot.plotSpine.slice(0, 16))}`,
     `Characters: ${JSON.stringify(snapshot.characters.slice(0, 10))}`,
     `Themes: ${JSON.stringify(snapshot.themes.slice(0, 10))}`,
+    `Groups: ${JSON.stringify(snapshot.groups.slice(0, 8))}`,
+    `Relations: ${JSON.stringify(snapshot.relationCandidates.slice(0, 12))}`,
     `Quote bank: ${JSON.stringify(snapshot.quoteBank.slice(0, 32))}`,
   ].join("\n");
 }
@@ -1389,6 +2944,8 @@ function normalizeWindowScan(window: WindowInput, result: z.infer<typeof WindowS
   const quoteTagSet = new Set<string>(BOOK_EXPERT_CORE_QUOTE_TAGS);
   const mentionKindSet = new Set<string>(BOOK_EXPERT_CORE_QUOTE_MENTION_KINDS);
   const incidentParticipantKindSet = new Set<string>(BOOK_EXPERT_CORE_INCIDENT_PARTICIPANT_KINDS);
+  const groupFacetSet = new Set<string>(BOOK_EXPERT_CORE_GROUP_FACETS);
+  const relationFacetSet = new Set<string>(BOOK_EXPERT_CORE_RELATION_FACETS);
 
   const normalizeStringList = (items: string[] | undefined, limit: number, maxChars: number): string[] =>
     dedupeStrings(
@@ -1440,8 +2997,12 @@ function normalizeWindowScan(window: WindowInput, result: z.infer<typeof WindowS
                   kind: "unknown" as const,
                   value,
                   normalizedValue,
+                  candidateCanonicalName: null,
                   role: "participant",
+                  confidence: 0.7,
                   entityId: null,
+                  canonicalEntityType: null,
+                  resolutionStatus: "unresolved" as const,
                 };
               }
 
@@ -1455,8 +3016,12 @@ function normalizeWindowScan(window: WindowInput, result: z.infer<typeof WindowS
                 ) as BookExpertCoreIncident["participants"][number]["kind"],
                 value,
                 normalizedValue,
+                candidateCanonicalName: null,
                 role: clampText(String(item.role || "participant"), 120),
+                confidence: 0.7,
                 entityId: null,
+                canonicalEntityType: null,
+                resolutionStatus: "unresolved" as const,
               };
             })
             .filter((item): item is NonNullable<typeof item> => Boolean(item))
@@ -1590,6 +3155,83 @@ function normalizeWindowScan(window: WindowInput, result: z.infer<typeof WindowS
     .filter((item): item is NonNullable<typeof item> => Boolean(item))
     .slice(0, 12);
 
+  const groups = (result.groups || [])
+    .map((item, index) => {
+      if (typeof item === "string") {
+        const name = clampText(item, 160);
+        if (!name) return null;
+        return {
+          name,
+          aliases: [],
+          rawKindLabel: null,
+          facet: null,
+          facetConfidence: null,
+          description: name,
+          significanceHint: "Значимая группа или коллектив этого фрагмента.",
+          members: [],
+          chapterOrderIndex: window.chapterFrom,
+          importance: Math.max(0.35, 0.64 - index * 0.04),
+          snippet: name,
+        };
+      }
+
+      const name = clampText(item.name || "", 160);
+      if (!name) return null;
+      const groupRecord = item as Record<string, unknown>;
+      const rawKindLabel = clampText(String(groupRecord.rawKindLabel || item.category || ""), 120) || null;
+      const facetRaw = String(groupRecord.facet || item.category || "").trim().toLowerCase();
+      return {
+        name,
+        aliases: normalizeStringList(item.aliases, 8, 160),
+        rawKindLabel,
+        facet: (groupFacetSet.has(facetRaw) ? facetRaw : null) as (typeof BOOK_EXPERT_CORE_GROUP_FACETS)[number] | null,
+        facetConfidence:
+          groupFacetSet.has(facetRaw) || groupRecord.facetConfidence != null
+            ? clampUnitInterval(groupRecord.facetConfidence, 0.7)
+            : null,
+        description: clampText(item.description || name, 260),
+        significanceHint: clampText(item.significanceHint || item.description || name, 320),
+        members: (Array.isArray(item.members) ? item.members : [])
+          .map((member) => {
+            if (typeof member === "string") {
+              const memberName = clampText(member, 160);
+              const normalizedName = normalizeEntityName(memberName);
+              if (!memberName || !normalizedName) return null;
+              return {
+                value: memberName,
+                normalizedValue: normalizedName,
+                candidateCanonicalName: null,
+                role: "member",
+                confidence: 0.7,
+                entityId: null,
+                canonicalEntityType: null,
+                resolutionStatus: "unresolved" as const,
+              };
+            }
+            const memberName = clampText(String(member.name || member.normalizedName || ""), 160);
+            const normalizedName = normalizeEntityName(String(member.normalizedName || memberName || ""));
+            if (!memberName || !normalizedName) return null;
+            return {
+              value: memberName,
+              normalizedValue: normalizedName,
+              candidateCanonicalName: null,
+              role: clampText(String(member.role || "member"), 160),
+              confidence: 0.7,
+              entityId: null,
+              canonicalEntityType: null,
+              resolutionStatus: "unresolved" as const,
+            };
+          })
+          .filter((member): member is NonNullable<typeof member> => Boolean(member))
+          .slice(0, 16),
+        chapterOrderIndex: clampChapterOrderIndex(item.chapterOrderIndex, window),
+        importance: clampUnitInterval(item.importance, Math.max(0.35, 0.64 - index * 0.04)),
+        snippet: clampText(item.snippet || item.description || name, 280),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .slice(0, 12);
+
   const quotes = (result.quotes || [])
     .map((item, index) => {
       if (typeof item === "string") {
@@ -1628,6 +3270,10 @@ function normalizeWindowScan(window: WindowInput, result: z.infer<typeof WindowS
                 kind: kind as (typeof BOOK_EXPERT_CORE_QUOTE_MENTION_KINDS)[number],
                 value,
                 normalizedValue,
+                candidateCanonicalName: null,
+                entityId: null,
+                canonicalEntityType: null,
+                resolutionStatus: "unresolved" as const,
                 confidence: clampUnitInterval(mention.confidence, 0.7),
               };
             })
@@ -1721,6 +3367,68 @@ function normalizeWindowScan(window: WindowInput, result: z.infer<typeof WindowS
           .filter((item) => Boolean(item.title && item.snippet))
       : [];
 
+  const relationCandidates = (result.relationCandidates || [])
+    .map((item, index) => {
+      // Some model outputs still collapse relations into plain strings. Keep the
+      // scan valid and drop those degraded items instead of failing the whole book.
+      if (typeof item === "string") return null;
+      const fromRecord = item.fromRef && typeof item.fromRef === "object" ? (item.fromRef as Record<string, unknown>) : item;
+      const toRecord = item.toRef && typeof item.toRef === "object" ? (item.toRef as Record<string, unknown>) : item;
+      const fromValue = clampText(String(fromRecord.value || fromRecord.name || item.fromName || item.from || ""), 160);
+      const toValue = clampText(String(toRecord.value || toRecord.name || item.toName || item.to || ""), 160);
+      const fromNormalizedValue = normalizeEntityName(
+        String(fromRecord.normalizedValue || item.fromNormalizedName || fromValue || "")
+      );
+      const toNormalizedValue = normalizeEntityName(
+        String(toRecord.normalizedValue || item.toNormalizedName || toValue || "")
+      );
+      if (!fromValue || !toValue || !fromNormalizedValue || !toNormalizedValue) return null;
+      const rawTypeLabel = clampText(String((item as Record<string, unknown>).rawTypeLabel || item.type || ""), 120);
+      if (!rawTypeLabel) return null;
+      const facetRaw = String((item as Record<string, unknown>).facet || item.type || "").trim().toLowerCase();
+      const chapterFrom = clampChapterOrderIndex(item.chapterFrom || item.chapterOrderIndex, window);
+      const chapterTo = clampChapterOrderIndex(item.chapterTo || item.chapterOrderIndex || chapterFrom, window);
+      return {
+        fromRef: {
+          value: fromValue,
+          normalizedValue: fromNormalizedValue,
+          candidateCanonicalName: null,
+          entityId: null,
+          canonicalEntityType: null,
+          resolutionStatus: "unresolved" as const,
+          confidence: clampUnitInterval(fromRecord.confidence, 0.7),
+        },
+        toRef: {
+          value: toValue,
+          normalizedValue: toNormalizedValue,
+          candidateCanonicalName: null,
+          entityId: null,
+          canonicalEntityType: null,
+          resolutionStatus: "unresolved" as const,
+          confidence: clampUnitInterval(toRecord.confidence, 0.7),
+        },
+        rawTypeLabel,
+        facet: (relationFacetSet.has(facetRaw) ? facetRaw : null) as (typeof BOOK_EXPERT_CORE_RELATION_FACETS)[number] | null,
+        facetConfidence:
+          relationFacetSet.has(facetRaw) || (item as Record<string, unknown>).facetConfidence != null
+            ? clampUnitInterval((item as Record<string, unknown>).facetConfidence, 0.7)
+            : null,
+        summary: clampText(String(item.summary || item.snippet || `${fromValue} и ${toValue}`), 500),
+        confidence: clampUnitInterval(item.confidence, Math.max(0.45, 0.7 - index * 0.03)),
+        chapterFrom: Math.min(chapterFrom, chapterTo),
+        chapterTo: Math.max(chapterFrom, chapterTo),
+        supportingQuoteTexts: dedupeStrings(
+          (Array.isArray(item.supportingQuoteTexts) ? item.supportingQuoteTexts : [])
+            .map((value) => clampText(String(value || ""), 1200))
+            .filter(Boolean),
+          8
+        ),
+        snippet: clampText(String(item.snippet || item.summary || `${fromValue} и ${toValue}`), 280),
+      };
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item))
+    .slice(0, 16);
+
   const summary =
     clampText(
       result.summary ||
@@ -1741,14 +3449,17 @@ function normalizeWindowScan(window: WindowInput, result: z.infer<typeof WindowS
     characters,
     themes,
     locations,
+    groups,
     quotes,
     incidents: incidents.length > 0 ? incidents : fallbackIncidents,
+    relationCandidates,
   };
 }
 
 type CharacterProfilePatch = z.infer<typeof CharacterProfilePatchSchema>;
 type ThemeProfilePatch = z.infer<typeof ThemeProfilePatchSchema>;
 type LocationProfilePatch = z.infer<typeof LocationProfilePatchSchema>;
+type GroupProfilePatch = z.infer<typeof GroupProfilePatchSchema>;
 type LiteraryPatternMap = z.infer<typeof LiteraryPatternSchema>;
 type LiterarySectionKey = (typeof BOOK_EXPERT_CORE_LITERARY_SECTION_KEYS)[number];
 
@@ -1772,10 +3483,6 @@ function resolvePatchMatchKey(input: { id?: string; normalizedName?: string; nam
   };
 }
 
-function dedupeAliases(items: string[] | undefined, limit: number): string[] {
-  return dedupeStrings(Array.isArray(items) ? items.map((item) => clampText(item, 160)).filter(Boolean) : [], limit);
-}
-
 function mergeCharacterProfilePatches(
   items: BookExpertCoreSnapshot["characters"],
   patches: CharacterProfilePatch[]
@@ -1790,13 +3497,16 @@ function mergeCharacterProfilePatches(
   return items.map((item) => {
     const patch = byId.get(item.id) || byNormalizedName.get(item.normalizedName);
     if (!patch) return item;
+    const has = (field: string) => Object.prototype.hasOwnProperty.call(patch, field);
     return {
       ...item,
-      aliases: patch.aliases ? dedupeAliases(patch.aliases, 12) : item.aliases,
-      role: patch.role ? clampText(patch.role, 220) : item.role,
-      description: patch.description ? clampText(patch.description, 900) : item.description,
-      arc: patch.arc ? clampText(patch.arc, 900) : item.arc,
-      motivations: patch.motivations ? dedupeStrings(patch.motivations.map((value) => clampText(value, 220)).filter(Boolean), 6) : item.motivations,
+      profileDegraded: patch.degraded ?? item.profileDegraded,
+      role: has("role") ? clampText(patch.role || "", 220) : item.role,
+      description: has("description") ? clampText(patch.description || "", 900) : item.description,
+      arc: has("arc") ? clampText(patch.arc || "", 900) : item.arc,
+      motivations: has("motivations")
+        ? dedupeStrings((patch.motivations || []).map((value) => clampText(value, 220)).filter(Boolean), 6)
+        : item.motivations,
     };
   });
 }
@@ -1815,11 +3525,12 @@ function mergeThemeProfilePatches(
   return items.map((item) => {
     const patch = byId.get(item.id) || byNormalizedName.get(item.normalizedName);
     if (!patch) return item;
+    const has = (field: string) => Object.prototype.hasOwnProperty.call(patch, field);
     return {
       ...item,
-      aliases: patch.aliases ? dedupeAliases(patch.aliases, 8) : item.aliases,
-      description: patch.description ? clampText(patch.description, 900) : item.description,
-      development: patch.development ? clampText(patch.development, 900) : item.development,
+      profileDegraded: patch.degraded ?? item.profileDegraded,
+      description: has("description") ? clampText(patch.description || "", 900) : item.description,
+      development: has("development") ? clampText(patch.development || "", 900) : item.development,
     };
   });
 }
@@ -1838,13 +3549,300 @@ function mergeLocationProfilePatches(
   return items.map((item) => {
     const patch = byId.get(item.id) || byNormalizedName.get(item.normalizedName);
     if (!patch) return item;
+    const has = (field: string) => Object.prototype.hasOwnProperty.call(patch, field);
     return {
       ...item,
-      aliases: patch.aliases ? dedupeAliases(patch.aliases, 8) : item.aliases,
-      description: patch.description ? clampText(patch.description, 900) : item.description,
-      significance: patch.significance ? clampText(patch.significance, 900) : item.significance,
+      profileDegraded: patch.degraded ?? item.profileDegraded,
+      description: has("description") ? clampText(patch.description || "", 900) : item.description,
+      significance: has("significance") ? clampText(patch.significance || "", 900) : item.significance,
     };
   });
+}
+
+function mergeGroupProfilePatches(
+  items: BookExpertCoreSnapshot["groups"],
+  patches: GroupProfilePatch[]
+): BookExpertCoreSnapshot["groups"] {
+  const byId = new Map<string, GroupProfilePatch>();
+  const byNormalizedName = new Map<string, GroupProfilePatch>();
+  for (const patch of patches) {
+    const key = resolvePatchMatchKey(patch);
+    if (key.id) byId.set(key.id, patch);
+    if (key.normalizedName) byNormalizedName.set(key.normalizedName, patch);
+  }
+  return items.map((item) => {
+    const patch = byId.get(item.id) || byNormalizedName.get(item.normalizedName);
+    if (!patch) return item;
+    const has = (field: string) => Object.prototype.hasOwnProperty.call(patch, field);
+    return {
+      ...item,
+      profileDegraded: patch.degraded ?? item.profileDegraded,
+      description: has("description") ? clampText(patch.description || "", 900) : item.description,
+      significance: has("significance") ? clampText(patch.significance || "", 900) : item.significance,
+    };
+  });
+}
+
+function buildProfileEvidencePack(params: {
+  kind: "characters" | "themes" | "locations" | "groups";
+  item:
+    | BookExpertCoreSnapshot["characters"][number]
+    | BookExpertCoreSnapshot["themes"][number]
+    | BookExpertCoreSnapshot["locations"][number]
+    | BookExpertCoreSnapshot["groups"][number];
+  snapshot: BookExpertCoreSnapshot;
+  sceneOrderById: Map<string, number>;
+}): Record<string, unknown> {
+  const name = params.item.name;
+  const normalizedName = params.item.normalizedName;
+  const quoteMatches = params.snapshot.quoteBank
+    .filter((quote) =>
+      quote.mentions.some((mention) => mention.entityId === params.item.id || mention.normalizedValue === normalizedName)
+    )
+    .slice(0, 4)
+    .map((quote) => ({
+      id: quote.id,
+      text: quote.text,
+      commentary: quote.commentary,
+      confidence: quote.confidence,
+    }));
+  const relationMatches = params.snapshot.relationCandidates
+    .filter((relation) => relation.fromRef.entityId === params.item.id || relation.toRef.entityId === params.item.id)
+    .slice(0, 4)
+    .map((relation) => ({
+      rawTypeLabel: relation.rawTypeLabel,
+      facet: relation.facet,
+      summary: relation.summary,
+      chapterFrom: relation.chapterFrom,
+      chapterTo: relation.chapterTo,
+    }));
+  const incidentMatches = params.snapshot.incidents
+    .filter((incident) => incident.participants.some((participant) => participant.entityId === params.item.id))
+    .slice(0, 4)
+    .map((incident) => ({
+      title: incident.title,
+      facts: incident.facts.slice(0, 3),
+      consequences: incident.consequences.slice(0, 2),
+      chapterFrom: incident.chapterFrom,
+      chapterTo: incident.chapterTo,
+    }));
+  const sourceWindowIndexes = params.item.sourceWindows.map((window) => window.windowIndex).slice(0, 6);
+  const evidenceWeak =
+    quoteMatches.length === 0 &&
+    relationMatches.length === 0 &&
+    incidentMatches.length === 0;
+
+  return {
+    id: params.item.id,
+    normalizedName,
+    name,
+    type: params.kind,
+    mentionStats: {
+      mentionCount: params.item.mentionCount,
+      firstAppearanceChapterOrder: params.item.firstAppearanceChapterOrder,
+      firstSceneOrder:
+        typeof params.item.firstAppearanceChapterOrder === "number"
+          ? params.sceneOrderById.get(`chapter:${params.item.firstAppearanceChapterOrder}`) || null
+          : null,
+      lastSceneOrder:
+        params.item.anchors.length > 0
+          ? params.sceneOrderById.get(`chapter:${params.item.anchors[params.item.anchors.length - 1]?.chapterOrderIndex || 0}`) || null
+          : null,
+    },
+    anchors: params.item.anchors.slice(0, 4),
+    quotes: quoteMatches,
+    relations: relationMatches,
+    incidents: incidentMatches,
+    sourceWindowIndexes,
+    evidenceWeak,
+  };
+}
+
+function buildEvidenceSentence(label: string, values: string[], limit = 3): string {
+  const parts = dedupeStrings(values.map((value) => clampText(value, 220)).filter(Boolean), limit);
+  if (parts.length === 0) return "";
+  return `${label}: ${parts.join("; ")}.`;
+}
+
+function readEvidenceTexts(evidencePack: Record<string, unknown>) {
+  const anchors = Array.isArray(evidencePack.anchors) ? evidencePack.anchors : [];
+  const incidents = Array.isArray(evidencePack.incidents) ? evidencePack.incidents : [];
+  const relations = Array.isArray(evidencePack.relations) ? evidencePack.relations : [];
+  const quotes = Array.isArray(evidencePack.quotes) ? evidencePack.quotes : [];
+
+  const anchorSnippets = anchors
+    .map((item) =>
+      typeof item === "object" && item && "snippet" in item ? clampText(String((item as { snippet?: string }).snippet || ""), 220) : ""
+    )
+    .filter(Boolean);
+  const incidentTitles = incidents
+    .map((item) =>
+      typeof item === "object" && item && "title" in item ? clampText(String((item as { title?: string }).title || ""), 180) : ""
+    )
+    .filter(Boolean);
+  const incidentFacts = incidents.flatMap((item) =>
+    typeof item === "object" && item && "facts" in item && Array.isArray((item as { facts?: unknown[] }).facts)
+      ? (item as { facts?: unknown[] }).facts!.map((value) => clampText(String(value || ""), 220)).filter(Boolean)
+      : []
+  );
+  const incidentConsequences = incidents.flatMap((item) =>
+    typeof item === "object" && item && "consequences" in item && Array.isArray((item as { consequences?: unknown[] }).consequences)
+      ? (item as { consequences?: unknown[] }).consequences!.map((value) => clampText(String(value || ""), 220)).filter(Boolean)
+      : []
+  );
+  const relationSummaries = relations
+    .map((item) =>
+      typeof item === "object" && item && "summary" in item ? clampText(String((item as { summary?: string }).summary || ""), 220) : ""
+    )
+    .filter(Boolean);
+  const quoteNotes = quotes
+    .map((item) => {
+      if (!item || typeof item !== "object") return "";
+      const commentary = "commentary" in item ? String((item as { commentary?: string }).commentary || "") : "";
+      const text = "text" in item ? String((item as { text?: string }).text || "") : "";
+      return clampText(commentary || text, 220);
+    })
+    .filter(Boolean);
+
+  return {
+    anchorSnippets,
+    incidentTitles,
+    incidentFacts,
+    incidentConsequences,
+    relationSummaries,
+    quoteNotes,
+  };
+}
+
+function buildDeterministicProfilePatch(
+  kind: "characters" | "themes" | "locations" | "groups",
+  item:
+    | BookExpertCoreSnapshot["characters"][number]
+    | BookExpertCoreSnapshot["themes"][number]
+    | BookExpertCoreSnapshot["locations"][number]
+    | BookExpertCoreSnapshot["groups"][number],
+  evidencePack: Record<string, unknown>
+) {
+  const evidence = readEvidenceTexts(evidencePack);
+  const hasEvidence =
+    evidence.anchorSnippets.length > 0 ||
+    evidence.incidentTitles.length > 0 ||
+    evidence.incidentFacts.length > 0 ||
+    evidence.incidentConsequences.length > 0 ||
+    evidence.relationSummaries.length > 0 ||
+    evidence.quoteNotes.length > 0;
+
+  if (!hasEvidence) {
+    if (kind === "characters") {
+      return {
+        id: item.id,
+        role: "",
+        description: item.name,
+        arc: "",
+        motivations: [],
+        degraded: true,
+      };
+    }
+    if (kind === "themes") {
+      return {
+        id: item.id,
+        description: item.name,
+        development: "",
+        degraded: true,
+      };
+    }
+    return {
+      id: item.id,
+      description: item.name,
+      significance: "",
+      degraded: true,
+    };
+  }
+
+  const lead =
+    evidence.anchorSnippets[0] ||
+    evidence.quoteNotes[0] ||
+    evidence.incidentFacts[0] ||
+    evidence.incidentTitles[0] ||
+    item.name;
+
+  const description = clampText(
+    [
+      lead,
+      buildEvidenceSentence("Эпизоды", evidence.incidentTitles),
+      buildEvidenceSentence("Опорные факты", evidence.incidentFacts),
+      kind === "characters" || kind === "groups" ? buildEvidenceSentence("Связи", evidence.relationSummaries, 2) : "",
+    ]
+      .filter(Boolean)
+      .join(" "),
+    900
+  ) || item.name;
+
+  if (kind === "characters") {
+    const role = clampText(
+      [
+        evidence.relationSummaries[0] || "",
+        evidence.incidentTitles[0] ? `Линия проявляется через эпизод «${evidence.incidentTitles[0]}».` : "",
+      ]
+        .filter(Boolean)
+        .join(" "),
+      220
+    ) || "";
+
+    const arc = clampText(
+      [
+        buildEvidenceSentence("Развитие", evidence.incidentFacts),
+        buildEvidenceSentence("Последствия", evidence.incidentConsequences, 2),
+        buildEvidenceSentence("Цитаты", evidence.quoteNotes, 2),
+      ]
+        .filter(Boolean)
+        .join(" "),
+      900
+    ) || description;
+
+    return {
+      id: item.id,
+      role,
+      description,
+      arc,
+      motivations: [],
+      degraded: true,
+    };
+  }
+
+  if (kind === "themes") {
+    return {
+      id: item.id,
+      description,
+      development:
+        clampText(
+          [
+            buildEvidenceSentence("Развитие", evidence.incidentConsequences.length > 0 ? evidence.incidentConsequences : evidence.incidentFacts),
+            buildEvidenceSentence("Цитатные маркеры", evidence.quoteNotes, 2),
+          ]
+            .filter(Boolean)
+            .join(" "),
+          900
+        ) || description,
+      degraded: true,
+    };
+  }
+
+  return {
+    id: item.id,
+    description,
+    significance:
+      clampText(
+        [
+          buildEvidenceSentence("Значение", evidence.incidentConsequences.length > 0 ? evidence.incidentConsequences : evidence.relationSummaries),
+          buildEvidenceSentence("Цитатные маркеры", evidence.quoteNotes, 2),
+        ]
+          .filter(Boolean)
+          .join(" "),
+        900
+      ) || description,
+    degraded: true,
+  };
 }
 
 function pickEvidenceQuoteIds(snapshot: BookExpertCoreSnapshot, queries: string[], limit: number): string[] {
@@ -2019,7 +4017,7 @@ function buildSectionBodyMarkdown(summary: string, bullets: string[], extra: str
 function buildDeterministicLiterarySections(
   snapshot: BookExpertCoreSnapshot,
   patternMap: LiteraryPatternMap
-): NonNullable<BookExpertCoreSnapshot["literarySections"]> {
+): LiterarySectionsRecord {
   const topPatterns = patternMap.patterns.slice(0, 6);
   const topPlot = snapshot.plotSpine.slice(0, 6);
   const topIncidents = snapshot.incidents.slice(0, 4);
@@ -2081,15 +4079,145 @@ function buildDeterministicLiterarySections(
         },
       ];
     })
-  ) as NonNullable<BookExpertCoreSnapshot["literarySections"]>;
+  ) as LiterarySectionsRecord;
   return sections;
+}
+
+function pickTopRelevantItems<T>(
+  items: T[],
+  queries: string[],
+  limit: number,
+  toCorpus: (item: T) => string
+): T[] {
+  return items
+    .map((item, index) => ({
+      item,
+      index,
+      score: queries.reduce((sum, query) => sum + scoreSnippetRelevance(toCorpus(item), query), 0),
+    }))
+    .sort((left, right) => right.score - left.score || left.index - right.index)
+    .filter((item, index) => index < limit && (item.score > 0 || index === 0))
+    .map((item) => item.item);
+}
+
+function buildLiterarySectionStageView(params: {
+  snapshot: BookExpertCoreSnapshot;
+  patternMap: LiteraryPatternMap;
+  fallbackSections: LiterarySectionsRecord;
+  sectionKey: LiterarySectionKey;
+}) {
+  const { snapshot, patternMap, fallbackSections, sectionKey } = params;
+  const scaffold = fallbackSections[sectionKey];
+  const queries = dedupeStrings(
+    [
+      scaffold.title,
+      scaffold.summary,
+      ...scaffold.bullets,
+      patternMap.centralTension,
+      patternMap.interpretiveLens,
+      ...patternMap.patterns.slice(0, 6).map((item) => `${item.name} ${item.summary}`),
+    ],
+    16
+  );
+  const relevantPatterns = pickTopRelevantItems(
+    patternMap.patterns.slice(0, 8),
+    queries,
+    4,
+    (item) => `${item.name} ${item.summary} ${item.evidenceQuoteIds.join(" ")}`
+  );
+  const relevantIncidents = pickTopRelevantItems(
+    snapshot.incidents.slice(0, 18),
+    queries,
+    5,
+    (item) => `${item.title} ${item.facts.join(" ")} ${item.consequences.join(" ")}`
+  );
+  const relevantPlot = pickTopRelevantItems(
+    snapshot.plotSpine.slice(0, 16),
+    queries,
+    5,
+    (item) => `${item.label} ${item.summary}`
+  );
+  const relevantCharacters = pickTopRelevantItems(
+    snapshot.characters.slice(0, 12),
+    queries,
+    sectionKey === "characters" || sectionKey === "conflicts" ? 6 : 4,
+    (item) => `${item.name} ${item.role} ${item.description} ${item.arc}`
+  );
+  const relevantThemes = pickTopRelevantItems(
+    snapshot.themes.slice(0, 10),
+    queries,
+    sectionKey === "main_idea" || sectionKey === "takeaways" ? 6 : 4,
+    (item) => `${item.name} ${item.description} ${item.development}`
+  );
+  const relevantLocations = pickTopRelevantItems(
+    snapshot.locations.slice(0, 8),
+    queries,
+    3,
+    (item) => `${item.name} ${item.description} ${item.significance}`
+  );
+  const quoteIds = dedupeStrings(
+    [
+      ...scaffold.evidenceQuoteIds,
+      ...relevantPatterns.flatMap((item) => item.evidenceQuoteIds),
+      ...relevantIncidents.flatMap((item) => item.quoteIds),
+    ],
+    8
+  );
+  const relevantQuotes = snapshot.quoteBank.filter((quote) => quoteIds.includes(quote.id)).slice(0, 8);
+
+  return {
+    scaffold,
+    relevantPatterns,
+    relevantIncidents,
+    relevantPlot,
+    relevantCharacters,
+    relevantThemes,
+    relevantLocations,
+    relevantQuotes,
+  };
+}
+
+function buildLiterarySectionPrompt(params: {
+  snapshot: BookExpertCoreSnapshot;
+  patternMap: LiteraryPatternMap;
+  fallbackSections: LiterarySectionsRecord;
+  sectionKey: LiterarySectionKey;
+}): string {
+  const view = buildLiterarySectionStageView(params);
+  return [
+    "Собери один раздел literary analysis по уже готовому semantic core.",
+    "Верни только один JSON-объект с полями title, summary, bodyMarkdown, bullets, evidenceQuoteIds, confidence.",
+    "Требования:",
+    "1. Пиши только про текущий раздел.",
+    "2. Не используй внешнее знание о книге.",
+    "3. Держи summary и bullets компактными и конкретными.",
+    "4. bodyMarkdown должен быть пригоден для UI и не повторять бессмысленно одно и то же.",
+    "5. evidenceQuoteIds можно выбирать только из переданного quote bank.",
+    "6. Если данных мало, опирайся на scaffold и снижай confidence вместо выдумывания.",
+    "",
+    `Section key: ${params.sectionKey}`,
+    `Section title: ${LITERARY_SECTION_TITLES[params.sectionKey]}`,
+    `Book brief: ${JSON.stringify(params.snapshot.bookBrief)}`,
+    `Interpretive lens: ${JSON.stringify({
+      centralTension: params.patternMap.centralTension,
+      interpretiveLens: params.patternMap.interpretiveLens,
+    })}`,
+    `Scaffold: ${JSON.stringify(view.scaffold)}`,
+    `Relevant patterns: ${JSON.stringify(view.relevantPatterns)}`,
+    `Relevant incidents: ${JSON.stringify(view.relevantIncidents)}`,
+    `Relevant plot points: ${JSON.stringify(view.relevantPlot)}`,
+    `Relevant characters: ${JSON.stringify(view.relevantCharacters)}`,
+    `Relevant themes: ${JSON.stringify(view.relevantThemes)}`,
+    `Relevant locations: ${JSON.stringify(view.relevantLocations)}`,
+    `Relevant quote bank: ${JSON.stringify(view.relevantQuotes)}`,
+  ].join("\n");
 }
 
 function normalizeLiterarySections(
   snapshot: BookExpertCoreSnapshot,
   patternMap: LiteraryPatternMap,
   result: z.infer<typeof LooseLiterarySectionsResultSchema>
-): NonNullable<BookExpertCoreSnapshot["literarySections"]> {
+): LiterarySectionsRecord {
   const fallbackSections = buildDeterministicLiterarySections(snapshot, patternMap);
   const sectionPatches = result.sections;
   const entries: Array<readonly [string, z.infer<typeof LooseLiterarySectionPatchSchema>]> = Array.isArray(sectionPatches)
@@ -2101,22 +4229,20 @@ function normalizeLiterarySections(
     if (!key) continue;
     const currentSection = fallbackSections[key];
     if (!currentSection) continue;
-    fallbackSections[key] = {
-      ...currentSection,
+    fallbackSections[key] = normalizeLiterarySection(currentSection, {
+      ...patch,
       key,
-      title: patch.title ? clampText(patch.title, 160) : currentSection.title,
-      summary: patch.summary ? clampText(patch.summary, 500) : currentSection.summary,
-      bodyMarkdown: patch.bodyMarkdown ? clampMarkdown(patch.bodyMarkdown, 6000) : currentSection.bodyMarkdown,
-      bullets: patch.bullets ? dedupeStrings(patch.bullets.map((item) => clampText(item, 240)).filter(Boolean), 8) : currentSection.bullets,
       evidenceQuoteIds: patch.evidenceQuoteIds
         ? dedupeStrings(patch.evidenceQuoteIds.filter((quoteId) => quoteIdSet.has(quoteId)), 10)
         : currentSection.evidenceQuoteIds,
       confidence: clampUnitInterval(patch.confidence, currentSection.confidence),
-    };
+    });
   }
-  return LiterarySectionsResultSchema.parse({
-    sections: fallbackSections,
-  }).sections;
+  return normalizeLiterarySectionsRecord(
+    LiterarySectionsResultSchema.parse({
+      sections: fallbackSections,
+    }).sections as LiterarySectionsRecord
+  );
 }
 
 function buildSnapshotWithStage(params: {
@@ -2303,9 +4429,13 @@ async function persistQuotes(bookId: string, snapshot: BookExpertCoreSnapshot, c
         quote.mentions.map((mention, index) => ({
           id: hashId("mention", [quote.id, mention.kind, mention.normalizedValue, index]),
           quoteId: quote.id,
+          // Canonical entity ids are resolved in semantic core, but BookEntity rows are materialized later.
+          // Persist mentions first and backfill entityId in entity_graph after entities exist.
+          entityId: null,
           kind: mention.kind,
           value: mention.value,
           normalizedValue: mention.normalizedValue,
+          resolutionStatus: mention.resolutionStatus,
           startChar: 0,
           endChar: Math.max(1, mention.value.length),
           confidence: mention.confidence,
@@ -2319,7 +4449,10 @@ async function persistQuotes(bookId: string, snapshot: BookExpertCoreSnapshot, c
         quote.mentions
           .filter((mention) => mention.kind === "character")
           .map((mention, index) => {
-            const characterId = characterIds.get(mention.normalizedValue);
+            const characterId =
+              mention.entityId ||
+              characterIds.get(normalizeEntityName(mention.candidateCanonicalName || "")) ||
+              characterIds.get(mention.normalizedValue);
             if (!characterId) return null;
             return {
               id: hashId("character_quote", [quote.id, characterId, index]),
@@ -2339,7 +4472,10 @@ async function persistQuotes(bookId: string, snapshot: BookExpertCoreSnapshot, c
         quote.mentions
           .filter((mention) => mention.kind === "theme")
           .map((mention, index) => {
-            const themeId = themeIds.get(mention.normalizedValue);
+            const themeId =
+              mention.entityId ||
+              themeIds.get(normalizeEntityName(mention.candidateCanonicalName || "")) ||
+              themeIds.get(mention.normalizedValue);
             if (!themeId) return null;
             return {
               id: hashId("theme_quote", [quote.id, themeId, index]),
@@ -2359,7 +4495,10 @@ async function persistQuotes(bookId: string, snapshot: BookExpertCoreSnapshot, c
         quote.mentions
           .filter((mention) => mention.kind === "location")
           .map((mention, index) => {
-            const locationId = locationIds.get(mention.normalizedValue);
+            const locationId =
+              mention.entityId ||
+              locationIds.get(normalizeEntityName(mention.candidateCanonicalName || "")) ||
+              locationIds.get(mention.normalizedValue);
             if (!locationId) return null;
             return {
               id: hashId("location_quote", [quote.id, locationId, index]),
@@ -2386,18 +4525,16 @@ async function runStage(params: {
     chapters: ChapterSource[];
     snapshot: BookExpertCoreSnapshot | null;
     startedAt: Date;
-  }) => Promise<{ snapshot: BookExpertCoreSnapshot; nextStage?: CoreAnalyzerType | null }>;
-}) {
+  }) => Promise<{
+    snapshot: BookExpertCoreSnapshot;
+    nextStage?: CoreAnalyzerType | null;
+    metadataPatch?: Partial<BookAnalyzerTaskMetadata>;
+  }>;
+}): Promise<AnalyzerExecutionResult> {
   const bookId = String(params.bookId || "").trim();
   if (!bookId) {
     throw new Error(`Invalid ${params.analyzerType} payload: bookId is required`);
   }
-
-  const lockKey = `book-analyzer:${params.analyzerType}:${bookId}`;
-  const lockRows =
-    await prisma.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_lock(hashtext(${lockKey})::bigint) AS locked`;
-  const locked = Boolean(lockRows?.[0]?.locked);
-  if (!locked) return;
 
   try {
     const snapshotBefore = await readSnapshot(bookId);
@@ -2413,6 +4550,19 @@ async function runStage(params: {
         select: { state: true },
       });
       if (dependencyTask?.state !== "completed") {
+        const reason = `Book expert core stage ${params.analyzerType} deferred until dependency ${dependency} completes`;
+        await updateTaskState({
+          bookId,
+          analyzerType: params.analyzerType,
+          state: "queued",
+          error: null,
+          startedAt: null,
+          completedAt: null,
+          metadataPatch: {
+            deferredReason: reason,
+            lastReason: reason,
+          },
+        });
         logger.info(
           {
             bookId,
@@ -2423,7 +4573,7 @@ async function runStage(params: {
           },
           "Book expert core stage deferred until dependency task completes"
         );
-        return;
+        return deferredDependenciesExecution(reason, workerConfig.outbox.deferredDependenciesDelayMs);
       }
     }
     if (snapshotBefore?.completedStages.includes(params.analyzerType)) {
@@ -2437,43 +4587,38 @@ async function runStage(params: {
         select: { state: true },
       });
       if (task?.state === "completed") {
-        return;
+        return completedExecution(`Book expert core stage ${params.analyzerType} already completed`);
       }
     }
 
     const startedAt = new Date();
-    await prisma.$transaction(async (tx: any) => {
-      await tx.book.updateMany({
-        where: { id: bookId },
-        data: {
-          analysisState: "running",
-          analysisError: null,
-          analysisStartedAt: startedAt,
-          analysisCompletedAt: null,
-        },
-      });
-      await tx.bookAnalyzerTask.upsert({
-        where: {
-          bookId_analyzerType: {
-            bookId,
-            analyzerType: params.analyzerType,
-          },
-        },
-        create: {
-          bookId,
-          analyzerType: params.analyzerType,
-          state: "running",
-          error: null,
-          startedAt,
-          completedAt: null,
-        },
-        update: {
-          state: "running",
-          error: null,
-          startedAt,
-          completedAt: null,
-        },
-      });
+    const claim = await claimQueuedAnalyzerTaskExecution({
+      bookId,
+      analyzerType: params.analyzerType,
+      startedAt,
+    });
+    if (claim === "completed") {
+      return completedExecution(`Book expert core stage ${params.analyzerType} already completed`);
+    }
+    if (claim === "running") {
+      return deferredLockExecution(
+        `Book expert core stage ${params.analyzerType} deferred because task is already running`,
+        workerConfig.outbox.deferredLockDelayMs
+      );
+    }
+
+    await markBookAnalysisRunning(bookId, startedAt);
+    await updateTaskState({
+      bookId,
+      analyzerType: params.analyzerType,
+      state: "running",
+      error: null,
+      startedAt,
+      completedAt: null,
+      metadataPatch: {
+        deferredReason: null,
+        lastReason: null,
+      },
     });
 
     const { book, chapters } = await loadBookSource(bookId);
@@ -2492,17 +4637,12 @@ async function runStage(params: {
       error: null,
       startedAt,
       completedAt: new Date(),
+      metadataPatch: mergeMetadataPatch(result.metadataPatch || {}, {
+        deferredReason: null,
+      }),
     });
 
     if (params.analyzerType === "core_literary") {
-      await prisma.book.update({
-        where: { id: bookId },
-        data: {
-          analysisState: "completed",
-          analysisError: null,
-          analysisCompletedAt: new Date(),
-        },
-      });
       logger.info(
         {
           bookId,
@@ -2531,14 +4671,6 @@ async function runStage(params: {
       await queueNextStage(bookId, result.nextStage);
     }
 
-    if (params.analyzerType === "core_merge") {
-      await enqueueBookAnalyzerStage({
-        bookId,
-        analyzerType: "event_relation_graph",
-        publishEvent: true,
-      });
-    }
-
     if (params.analyzerType === "core_quotes_finalize") {
       await enqueueBookAnalyzerStage({
         bookId,
@@ -2546,14 +4678,51 @@ async function runStage(params: {
         publishEvent: true,
       });
     }
+
+    if (params.analyzerType === "core_literary") {
+      await enqueueBookAnalyzerStage({
+        bookId,
+        analyzerType: "summary_store",
+        publishEvent: true,
+      });
+    }
+
+    await refreshBookAnalysisLifecycle(bookId);
+
+    return completedExecution();
   } catch (error) {
     const message = safeErrorMessage(error);
+    if (error instanceof RetryableAnalyzerError) {
+      await updateTaskState({
+        bookId,
+        analyzerType: params.analyzerType,
+        state: "queued",
+        error: null,
+        startedAt: null,
+        completedAt: null,
+        metadataPatch: {
+          deferredReason: message,
+          lastReason: message,
+        },
+      });
+      return retryableFailureExecution(
+        message,
+        error.availableAt instanceof Date
+          ? Math.max(1_000, error.availableAt.getTime() - Date.now())
+          : workerConfig.outbox.retryableFailureDelayMs
+      );
+    }
     await updateTaskState({
       bookId,
       analyzerType: params.analyzerType,
       state: "failed",
       error: message,
       completedAt: new Date(),
+      metadataPatch: {
+        deferredReason: null,
+        lastReason: message,
+        lastValidationError: message,
+      },
     });
     await prisma.book.updateMany({
       where: { id: bookId },
@@ -2564,13 +4733,11 @@ async function runStage(params: {
       },
     });
     throw error;
-  } finally {
-    await prisma.$queryRaw`SELECT pg_advisory_unlock(hashtext(${lockKey})::bigint)`;
   }
 }
 
 export async function processBookCoreWindowScan(payload: StagePayload) {
-  await runStage({
+  return runStage({
     analyzerType: "core_window_scan",
     bookId: payload.bookId,
     handler: async ({ book, chapters, snapshot, startedAt }) => {
@@ -2578,6 +4745,8 @@ export async function processBookCoreWindowScan(payload: StagePayload) {
       if (windows.length === 0) {
         throw new Error("Book has no non-empty chapters for semantic core window scan");
       }
+
+      let metadataPatch: Partial<BookAnalyzerTaskMetadata> = {};
 
       const scans = await mapWithConcurrency(windows, WINDOW_SCAN_CONCURRENCY, async (window) => {
         const call = await callStrictJson({
@@ -2590,6 +4759,14 @@ export async function processBookCoreWindowScan(payload: StagePayload) {
           vertexModel: workerConfig.vertex.modelByTier.lite,
           vertexThinkingLevel: "MINIMAL",
           maxTokens: 3200,
+          onAttempt: (attempt) => {
+            metadataPatch = registerStrictJsonAttempt(metadataPatch, {
+              model: attempt.model,
+              usage: attempt.usage,
+              error: attempt.error,
+              success: attempt.success,
+            });
+          },
         });
         logger.info(
           {
@@ -2624,13 +4801,14 @@ export async function processBookCoreWindowScan(payload: StagePayload) {
       return {
         snapshot: nextSnapshot,
         nextStage: "core_merge",
+        metadataPatch,
       };
     },
   });
 }
 
 export async function processBookCoreMerge(payload: StagePayload) {
-  await runStage({
+  return runStage({
     analyzerType: "core_merge",
     bookId: payload.bookId,
     handler: async ({ book, snapshot, startedAt }) => {
@@ -2650,14 +4828,169 @@ export async function processBookCoreMerge(payload: StagePayload) {
 
       return {
         snapshot: nextSnapshot,
+        nextStage: "core_resolve",
+      };
+    },
+  });
+}
+
+export async function processBookCoreResolve(payload: StagePayload) {
+  return runStage({
+    analyzerType: "core_resolve",
+    bookId: payload.bookId,
+    handler: async ({ book, snapshot, startedAt }) => {
+      const current = snapshot || (await readSnapshot(book.id));
+      if (!current) {
+        throw new Error("core_resolve requires semantic core snapshot");
+      }
+
+      let metadataPatch: Partial<BookAnalyzerTaskMetadata> = {};
+      const baseResolved = resolveSnapshotRefs(current);
+      let resolved = baseResolved;
+
+      try {
+        const resolvedSnapshot = BookExpertCoreSnapshotSchema.parse({
+          ...current,
+          ...baseResolved,
+        });
+        const refinedRelationCandidates = await refineRelationCandidates({
+          book,
+          snapshot: resolvedSnapshot,
+          onAttempt: async (attempt) => {
+            metadataPatch = registerStrictJsonAttempt(metadataPatch, {
+              ...attempt,
+              error: attempt.error || undefined,
+            });
+          },
+        });
+        const linkedSnapshot = await linkSnapshotUnresolvedRefs({
+          book,
+          snapshot: {
+            ...resolvedSnapshot,
+            relationCandidates: refinedRelationCandidates,
+          },
+          onAttempt: async (attempt) => {
+            metadataPatch = registerStrictJsonAttempt(metadataPatch, {
+              ...attempt,
+              error: attempt.error || undefined,
+            });
+          },
+        });
+        resolved = resolveSnapshotRefs({
+          ...resolvedSnapshot,
+          incidents: linkedSnapshot.incidents,
+          groups: linkedSnapshot.groups,
+          relationCandidates: linkedSnapshot.relationCandidates,
+        });
+      } catch (error) {
+        const reason = safeErrorMessage(error);
+        metadataPatch = mergeMetadataPatch(metadataPatch, {
+          degraded: true,
+          fallbackKind: "resolved_relation_candidates",
+          lastReason: reason,
+          lastValidationError: reason,
+        });
+        logger.warn(
+          {
+            bookId: book.id,
+            analyzerType: "core_resolve",
+            reason,
+          },
+          "Book expert core relation refinement degraded to resolved snapshot"
+        );
+      }
+
+      const membershipTotal = resolved.groups.reduce((sum, group) => sum + group.members.length, 0);
+      const membershipResolved = resolved.groups.reduce(
+        (sum, group) => sum + group.members.filter((member) => member.resolutionStatus === "resolved").length,
+        0
+      );
+
+      const nextSnapshot = buildSnapshotWithStage({
+        bookId: book.id,
+        previous: current,
+        stage: "core_resolve",
+        durationMs: Date.now() - startedAt.getTime(),
+        patch: resolved,
+      });
+
+      return {
+        snapshot: nextSnapshot,
+        nextStage: "core_entity_mentions",
+        metadataPatch: mergeMetadataPatch(metadataPatch, {
+          resolvedMembershipRate: computeResolvedRate(membershipResolved, membershipTotal),
+        }),
+      };
+    },
+  });
+}
+
+export async function processBookCoreEntityMentions(payload: StagePayload) {
+  return runStage({
+    analyzerType: "core_entity_mentions",
+    bookId: payload.bookId,
+    handler: async ({ book, chapters, snapshot, startedAt }) => {
+      const current = snapshot || (await readSnapshot(book.id));
+      if (!current) {
+        throw new Error("core_entity_mentions requires semantic core snapshot");
+      }
+
+      let metadataPatch: Partial<BookAnalyzerTaskMetadata> = {};
+      const runExtraction = async () =>
+        extractEntityMentionBank({
+          book,
+          chapters,
+          snapshot: current,
+          onAttempt: (attempt) => {
+            metadataPatch = registerStrictJsonAttempt(metadataPatch, {
+              model: attempt.model,
+              usage: attempt.usage,
+              error: attempt.error,
+              success: attempt.success,
+            });
+          },
+        });
+
+      let entityMentionBank = await runExtraction();
+      const entityCount =
+        current.characters.length +
+        current.themes.length +
+        current.locations.length +
+        current.groups.length;
+      if (entityCount > 0 && entityMentionBank.length === 0) {
+        metadataPatch = mergeMetadataPatch(metadataPatch, {
+          degraded: true,
+          fallbackKind: "entity_mentions_retry",
+          lastReason: "Entity mention bank was empty after first pass",
+        });
+        entityMentionBank = await runExtraction();
+      }
+
+      const entityIdsWithMentions = new Set(entityMentionBank.map((mention) => mention.entityId));
+      const nextSnapshot = buildSnapshotWithStage({
+        bookId: book.id,
+        previous: current,
+        stage: "core_entity_mentions",
+        durationMs: Date.now() - startedAt.getTime(),
+        patch: {
+          entityMentionBank,
+        },
+      });
+
+      return {
+        snapshot: nextSnapshot,
         nextStage: "core_profiles",
+        metadataPatch: mergeMetadataPatch(metadataPatch, {
+          entityMentionCount: entityMentionBank.length,
+          entitiesWithMentionsRate: computeResolvedRate(entityIdsWithMentions.size, entityCount),
+        }),
       };
     },
   });
 }
 
 export async function processBookCoreProfiles(payload: StagePayload) {
-  await runStage({
+  return runStage({
     analyzerType: "core_profiles",
     bookId: payload.bookId,
     handler: async ({ book, snapshot, startedAt }) => {
@@ -2666,83 +4999,192 @@ export async function processBookCoreProfiles(payload: StagePayload) {
         throw new Error("core_profiles requires semantic core snapshot");
       }
 
-      const refineProfiles = async <TPatch extends { id?: string; normalizedName?: string; name?: string }, TItem>(params: {
-        kind: "characters" | "themes" | "locations";
+      let metadataPatch: Partial<BookAnalyzerTaskMetadata> = {};
+      let fallbackUsed = false;
+      const scenes = await prisma.bookScene.findMany({
+        where: { bookId: book.id },
+        select: {
+          orderIndex: true,
+          chapter: { select: { orderIndex: true } },
+        },
+        orderBy: [{ orderIndex: "asc" }],
+      });
+      const sceneOrderByChapter = new Map<string, number>();
+      for (const scene of scenes) {
+        const key = `chapter:${scene.chapter.orderIndex}`;
+        if (!sceneOrderByChapter.has(key)) {
+          sceneOrderByChapter.set(key, scene.orderIndex);
+        }
+      }
+
+      const buildFallbackPatch = (
+        kind: "characters" | "themes" | "locations" | "groups",
+        item:
+          | BookExpertCoreSnapshot["characters"][number]
+          | BookExpertCoreSnapshot["themes"][number]
+          | BookExpertCoreSnapshot["locations"][number]
+          | BookExpertCoreSnapshot["groups"][number],
+        evidencePack: Record<string, unknown>
+      ) => buildDeterministicProfilePatch(kind, item, evidencePack);
+
+      const refineProfiles = async <TPatch extends { id?: string; normalizedName?: string; name?: string; degraded?: boolean }, TItem extends { id: string; normalizedName: string; name: string }>(params: {
+        kind: "characters" | "themes" | "locations" | "groups";
         items: TItem[];
         schema: z.ZodType<{ items: TPatch[] }, z.ZodTypeDef, unknown>;
         merge: (items: TItem[], patches: TPatch[]) => TItem[];
         maxTokens: number;
       }): Promise<TItem[]> => {
         if (params.items.length === 0) return [];
-        try {
-          const result = await callStrictJson({
-            phase: "book_core_profiles",
-            prompt: buildProfilesPrompt({
-              kind: params.kind,
-              book,
-              bookBrief: current.bookBrief,
-              plotSpine: current.plotSpine,
-              items: params.items,
-            }),
-            schema: params.schema,
-            allowedModels: [workerConfig.vertex.modelByTier.lite],
-            disableGlobalFallback: true,
-            maxAttempts: 1,
-            vertexModel: workerConfig.vertex.modelByTier.lite,
-            vertexThinkingLevel: null,
-            maxTokens: params.maxTokens,
-          });
-          logger.info(
-            {
-              bookId: book.id,
-              analyzerType: "core_profiles",
-              kind: params.kind,
-              selected_model: result.meta.model,
-              llm_attempt_count: result.meta.attempt,
-              fallback_used: false,
-              latencyMs: result.meta.latencyMs,
-            },
-            "Book expert core profiles refined"
+        const evidenceItems = params.items.map((item) => ({
+          item,
+          evidencePack: buildProfileEvidencePack({
+            kind: params.kind,
+            item: item as never,
+            snapshot: current,
+            sceneOrderById: sceneOrderByChapter,
+          }),
+        }));
+
+        let patches: TPatch[] = evidenceItems
+          .filter((entry) => Boolean(entry.evidencePack.evidenceWeak))
+          .map((entry) => buildFallbackPatch(params.kind, entry.item as never, entry.evidencePack) as unknown as TPatch);
+
+        const strongItems = evidenceItems.filter((entry) => !entry.evidencePack.evidenceWeak);
+        const runProfilePass = async (items: typeof strongItems) => {
+          const batches = chunkIntoBatches(items, PROFILE_BATCH_SIZE);
+          for (const batch of batches) {
+            try {
+              const result = await callStrictJson({
+                phase: "book_core_profiles",
+                prompt: buildProfilesPrompt({
+                  kind: params.kind,
+                  book,
+                  bookBrief: current.bookBrief,
+                  plotSpine: current.plotSpine,
+                  items: batch.map((entry) => ({
+                    id: entry.item.id,
+                    normalizedName: entry.item.normalizedName,
+                    name: entry.item.name,
+                    evidence: entry.evidencePack,
+                  })),
+                }),
+                schema: params.schema,
+                allowedModels: buildVertexAllowedModels("lite", "flash"),
+                disableGlobalFallback: true,
+                maxAttempts: 1,
+                vertexModel: workerConfig.vertex.modelByTier.lite,
+                vertexThinkingLevel: null,
+                maxTokens: params.maxTokens,
+                onAttempt: (attempt) => {
+                  metadataPatch = registerStrictJsonAttempt(metadataPatch, {
+                    model: attempt.model,
+                    usage: attempt.usage,
+                    error: attempt.error,
+                    success: attempt.success,
+                  });
+                },
+              });
+              logger.info(
+                {
+                  bookId: book.id,
+                  analyzerType: "core_profiles",
+                  kind: params.kind,
+                  batchSize: batch.length,
+                  selected_model: result.meta.model,
+                  llm_attempt_count: result.meta.attempt,
+                  fallback_used: false,
+                  latencyMs: result.meta.latencyMs,
+                },
+                "Book expert core profiles refined"
+              );
+              patches = patches.concat(result.result.items);
+            } catch (error) {
+              fallbackUsed = true;
+              metadataPatch = mergeMetadataPatch(metadataPatch, {
+                degraded: true,
+                fallbackKind: "evidence_backed_profiles",
+                lastReason: safeErrorMessage(error),
+                lastValidationError: safeErrorMessage(error),
+              });
+              logger.warn(
+                {
+                  bookId: book.id,
+                  analyzerType: "core_profiles",
+                  kind: params.kind,
+                  batchSize: batch.length,
+                  error: safeErrorMessage(error),
+                },
+                "Book expert core profiles batch failed, falling back to factual profile patches"
+              );
+              patches = patches.concat(batch.map((entry) => buildFallbackPatch(params.kind, entry.item as never, entry.evidencePack) as unknown as TPatch));
+            }
+          }
+        };
+
+        await runProfilePass(strongItems);
+        let mergedItems = params.merge(params.items, patches);
+        let degradedRate = computeResolvedRate(
+          mergedItems.filter((item) => "profileDegraded" in item && Boolean((item as { profileDegraded?: boolean }).profileDegraded)).length,
+          mergedItems.length
+        );
+
+        if (strongItems.length > 0 && degradedRate > 0.5) {
+          const degradedStrongItems = strongItems.filter((entry) =>
+            mergedItems.some((item) => item.id === entry.item.id && "profileDegraded" in item && Boolean((item as { profileDegraded?: boolean }).profileDegraded))
           );
-          return params.merge(params.items, result.result.items);
-        } catch (error) {
-          logger.warn(
-            {
-              bookId: book.id,
-              analyzerType: "core_profiles",
-              kind: params.kind,
-              error: safeErrorMessage(error),
-              fallback_used: true,
-            },
-            "Book expert core profiles refinement failed, falling back to merged semantic cards"
-          );
-          return params.items;
+          if (degradedStrongItems.length > 0) {
+            await runProfilePass(degradedStrongItems);
+            mergedItems = params.merge(params.items, patches);
+            degradedRate = computeResolvedRate(
+              mergedItems.filter((item) => "profileDegraded" in item && Boolean((item as { profileDegraded?: boolean }).profileDegraded)).length,
+              mergedItems.length
+            );
+          }
         }
+
+        return mergedItems;
       };
 
-      const [charactersItems, themesItems, locationsItems] = await Promise.all([
+      const [charactersItems, themesItems, locationsItems, groupsItems] = await Promise.all([
         refineProfiles({
           kind: "characters",
           items: current.characters,
           schema: CharacterBatchSchema,
           merge: mergeCharacterProfilePatches,
-          maxTokens: 2600,
+          maxTokens: 2200,
         }),
         refineProfiles({
           kind: "themes",
           items: current.themes,
           schema: ThemeBatchSchema,
           merge: mergeThemeProfilePatches,
-          maxTokens: 2200,
+          maxTokens: 2000,
         }),
         refineProfiles({
           kind: "locations",
           items: current.locations,
           schema: LocationBatchSchema,
           merge: mergeLocationProfilePatches,
-          maxTokens: 2200,
+          maxTokens: 2000,
+        }),
+        refineProfiles({
+          kind: "groups",
+          items: current.groups,
+          schema: GroupBatchSchema,
+          merge: mergeGroupProfilePatches,
+          maxTokens: 2000,
         }),
       ]);
+
+      const profileSnapshot = BookExpertCoreSnapshotSchema.parse({
+        ...current,
+        characters: charactersItems,
+        themes: themesItems,
+        locations: locationsItems,
+        groups: groupsItems,
+      });
+
+      await persistProfiles(book.id, profileSnapshot);
 
       const nextSnapshot = buildSnapshotWithStage({
         bookId: book.id,
@@ -2750,24 +5192,45 @@ export async function processBookCoreProfiles(payload: StagePayload) {
         stage: "core_profiles",
         durationMs: Date.now() - startedAt.getTime(),
         patch: {
-          characters: charactersItems,
-          themes: themesItems,
-          locations: locationsItems,
+          characters: profileSnapshot.characters,
+          themes: profileSnapshot.themes,
+          locations: profileSnapshot.locations,
+          groups: profileSnapshot.groups,
         },
       });
 
-      await persistProfiles(book.id, nextSnapshot);
+      const allProfiles = [
+        ...profileSnapshot.characters,
+        ...profileSnapshot.themes,
+        ...profileSnapshot.locations,
+        ...profileSnapshot.groups,
+      ];
+      const degradedEntitySummaryRate = computeResolvedRate(
+        allProfiles.filter((item) => item.profileDegraded).length,
+        allProfiles.length
+      );
 
       return {
         snapshot: nextSnapshot,
         nextStage: "core_quotes_finalize",
+        metadataPatch: mergeMetadataPatch(
+          fallbackUsed
+            ? mergeMetadataPatch(metadataPatch, {
+                degraded: true,
+                fallbackKind: "evidence_backed_profiles",
+              })
+            : metadataPatch,
+          {
+            degradedEntitySummaryRate,
+          }
+        ),
       };
     },
   });
 }
 
 export async function processBookCoreQuotesFinalize(payload: StagePayload) {
-  await runStage({
+  return runStage({
     analyzerType: "core_quotes_finalize",
     bookId: payload.bookId,
     handler: async ({ book, chapters, snapshot, startedAt }) => {
@@ -2776,27 +5239,97 @@ export async function processBookCoreQuotesFinalize(payload: StagePayload) {
         throw new Error("core_quotes_finalize requires semantic core snapshot");
       }
 
-      await persistProfiles(book.id, current);
-      await persistQuotes(book.id, current, chapters);
+      let metadataPatch: Partial<BookAnalyzerTaskMetadata> = {};
+      let quoteSnapshot = current;
+
+      try {
+        const runQuoteRefinement = async (snapshotForRun: typeof current) => {
+          const refinedQuoteBank = await refineQuoteBankMentions({
+            book,
+            snapshot: snapshotForRun,
+            onAttempt: (attempt) => {
+              metadataPatch = registerStrictJsonAttempt(metadataPatch, {
+                model: attempt.model,
+                usage: attempt.usage,
+                error: attempt.error,
+                success: attempt.success,
+              });
+            },
+          });
+          const resolved = resolveSnapshotRefs({
+            ...snapshotForRun,
+            quoteBank: refinedQuoteBank,
+          });
+          return BookExpertCoreSnapshotSchema.parse({
+            ...snapshotForRun,
+            quoteBank: resolved.quoteBank,
+          });
+        };
+
+        quoteSnapshot = await runQuoteRefinement(current);
+        const mentionTotal = quoteSnapshot.quoteBank.reduce((sum, quote) => sum + quote.mentions.length, 0);
+        const mentionResolved = quoteSnapshot.quoteBank.reduce(
+          (sum, quote) => sum + quote.mentions.filter((mention) => mention.resolutionStatus === "resolved").length,
+          0
+        );
+        if (mentionTotal > 0 && computeResolvedRate(mentionResolved, mentionTotal) < 0.35) {
+          metadataPatch = mergeMetadataPatch(metadataPatch, {
+            degraded: true,
+            fallbackKind: "quote_refinement_retry",
+            lastReason: "Resolved quote mention rate below safe baseline after first pass",
+          });
+          quoteSnapshot = await runQuoteRefinement(quoteSnapshot);
+        }
+      } catch (error) {
+        metadataPatch = mergeMetadataPatch(metadataPatch, {
+          degraded: true,
+          fallbackKind: "window_quote_mentions",
+          lastReason: safeErrorMessage(error),
+          lastValidationError: safeErrorMessage(error),
+        });
+        logger.warn(
+          {
+            bookId: book.id,
+            analyzerType: "core_quotes_finalize",
+            error: safeErrorMessage(error),
+            fallback_used: true,
+          },
+          "Book expert core quote mention refinement failed, keeping window-scan mentions"
+        );
+      }
+
+      await persistProfiles(book.id, quoteSnapshot);
+      await persistQuotes(book.id, quoteSnapshot, chapters);
 
       const nextSnapshot = buildSnapshotWithStage({
         bookId: book.id,
         previous: current,
         stage: "core_quotes_finalize",
         durationMs: Date.now() - startedAt.getTime(),
-        patch: {},
+        patch: {
+          quoteBank: quoteSnapshot.quoteBank,
+        },
       });
+
+      const quoteMentionTotal = quoteSnapshot.quoteBank.reduce((sum, quote) => sum + quote.mentions.length, 0);
+      const quoteMentionResolved = quoteSnapshot.quoteBank.reduce(
+        (sum, quote) => sum + quote.mentions.filter((mention) => mention.resolutionStatus === "resolved").length,
+        0
+      );
 
       return {
         snapshot: nextSnapshot,
         nextStage: "core_literary",
+        metadataPatch: mergeMetadataPatch(metadataPatch, {
+          resolvedQuoteMentionRate: computeResolvedRate(quoteMentionResolved, quoteMentionTotal),
+        }),
       };
     },
   });
 }
 
 export async function processBookCoreLiterary(payload: StagePayload) {
-  await runStage({
+  return runStage({
     analyzerType: "core_literary",
     bookId: payload.bookId,
     handler: async ({ book, snapshot, startedAt }) => {
@@ -2808,6 +5341,7 @@ export async function processBookCoreLiterary(payload: StagePayload) {
         throw new Error("core_literary requires quote bank");
       }
 
+      let metadataPatch: Partial<BookAnalyzerTaskMetadata> = {};
       let patternMap: LiteraryPatternMap;
       let patternFallbackUsed = false;
       try {
@@ -2815,12 +5349,20 @@ export async function processBookCoreLiterary(payload: StagePayload) {
           phase: "book_core_literary_pattern",
           prompt: buildLiteraryPatternPrompt(current),
           schema: LooseLiteraryPatternSchema,
-          allowedModels: [workerConfig.vertex.modelByTier.lite],
+          allowedModels: buildVertexAllowedModels("lite", "flash"),
           disableGlobalFallback: true,
           maxAttempts: 1,
           vertexModel: workerConfig.vertex.modelByTier.lite,
           vertexThinkingLevel: null,
           maxTokens: 2200,
+          onAttempt: (attempt) => {
+            metadataPatch = registerStrictJsonAttempt(metadataPatch, {
+              model: attempt.model,
+              usage: attempt.usage,
+              error: attempt.error,
+              success: attempt.success,
+            });
+          },
         });
         patternMap = normalizeLiteraryPatternMap(current, patternMapCall.result);
         logger.info(
@@ -2837,6 +5379,12 @@ export async function processBookCoreLiterary(payload: StagePayload) {
         );
       } catch (error) {
         patternFallbackUsed = true;
+        metadataPatch = mergeMetadataPatch(metadataPatch, {
+          degraded: true,
+          fallbackKind: "deterministic_pattern_map",
+          lastReason: safeErrorMessage(error),
+          lastValidationError: safeErrorMessage(error),
+        });
         logger.warn(
           {
             bookId: book.id,
@@ -2850,49 +5398,92 @@ export async function processBookCoreLiterary(payload: StagePayload) {
         patternMap = buildDeterministicPatternMap(current);
       }
 
-      let literarySections: NonNullable<BookExpertCoreSnapshot["literarySections"]>;
-      let sectionsFallbackUsed = false;
-      try {
-        const sectionsCall = await callStrictJson({
-          phase: "book_core_literary_synthesis",
-          prompt: buildLiterarySectionsPrompt(current, patternMap),
-          schema: LooseLiterarySectionsResultSchema,
-          allowedModels: [workerConfig.vertex.modelByTier.lite],
-          disableGlobalFallback: true,
-          maxAttempts: 1,
-          vertexModel: workerConfig.vertex.modelByTier.lite,
-          vertexThinkingLevel: null,
-          maxTokens: workerConfig.vertex.literaryMaxTokens,
-        });
-        literarySections = normalizeLiterarySections(current, patternMap, sectionsCall.result);
-        logger.info(
-          {
-            bookId: book.id,
-            analyzerType: "core_literary",
-            stage: "sections",
-            selected_model: sectionsCall.meta.model,
-            llm_attempt_count: sectionsCall.meta.attempt,
-            fallback_used: false,
-            latencyMs: sectionsCall.meta.latencyMs,
-            pattern_fallback_used: patternFallbackUsed,
-          },
-          "Book expert core literary sections built"
-        );
-      } catch (error) {
-        sectionsFallbackUsed = true;
-        logger.warn(
-          {
-            bookId: book.id,
-            analyzerType: "core_literary",
-            stage: "sections",
-            error: safeErrorMessage(error),
-            fallback_used: true,
-            pattern_fallback_used: patternFallbackUsed,
-          },
-          "Book expert core literary sections failed, using deterministic fallback"
-        );
-        literarySections = buildDeterministicLiterarySections(current, patternMap);
+      const fallbackSections: LiterarySectionsRecord = normalizeLiterarySectionsRecord(
+        buildDeterministicLiterarySections(current, patternMap)
+      );
+      const quoteIdSet = new Set(current.quoteBank.map((quote) => quote.id));
+      const sectionFallbackKeys: LiterarySectionKey[] = [];
+      const literarySections: LiterarySectionsRecord = { ...fallbackSections };
+
+      for (const sectionKey of BOOK_EXPERT_CORE_LITERARY_SECTION_KEYS) {
+        try {
+          const sectionCall = await callStrictJson({
+            phase: "book_core_literary_synthesis",
+            prompt: buildLiterarySectionPrompt({
+              snapshot: current,
+              patternMap,
+              fallbackSections,
+              sectionKey,
+            }),
+            schema: LooseLiterarySectionPatchSchema,
+            allowedModels: buildVertexAllowedModels("lite", "flash"),
+            disableGlobalFallback: true,
+            maxAttempts: 1,
+            vertexModel: workerConfig.vertex.modelByTier.lite,
+            vertexThinkingLevel: null,
+            maxTokens: Math.min(1_800, workerConfig.vertex.literaryMaxTokens),
+            onAttempt: (attempt) => {
+              metadataPatch = registerStrictJsonAttempt(metadataPatch, {
+                model: attempt.model,
+                usage: attempt.usage,
+                error: attempt.error,
+                success: attempt.success,
+              });
+            },
+          });
+
+          literarySections[sectionKey] = normalizeLiterarySection(fallbackSections[sectionKey], {
+            key: sectionKey,
+            title: sectionCall.result.title,
+            summary: sectionCall.result.summary,
+            bodyMarkdown: sectionCall.result.bodyMarkdown,
+            bullets: sectionCall.result.bullets,
+            evidenceQuoteIds: dedupeStrings(
+              (sectionCall.result.evidenceQuoteIds || []).filter((quoteId) => quoteIdSet.has(quoteId)),
+              10
+            ),
+            confidence: clampUnitInterval(sectionCall.result.confidence, fallbackSections[sectionKey].confidence),
+          });
+
+          logger.info(
+            {
+              bookId: book.id,
+              analyzerType: "core_literary",
+              stage: "section",
+              sectionKey,
+              selected_model: sectionCall.meta.model,
+              llm_attempt_count: sectionCall.meta.attempt,
+              fallback_used: false,
+              latencyMs: sectionCall.meta.latencyMs,
+              pattern_fallback_used: patternFallbackUsed,
+            },
+            "Book expert core literary section built"
+          );
+        } catch (error) {
+          sectionFallbackKeys.push(sectionKey);
+          metadataPatch = mergeMetadataPatch(metadataPatch, {
+            degraded: true,
+            fallbackKind: patternFallbackUsed ? "deterministic_pattern_and_sections" : "deterministic_sections",
+            lastReason: safeErrorMessage(error),
+            lastValidationError: safeErrorMessage(error),
+          });
+          logger.warn(
+            {
+              bookId: book.id,
+              analyzerType: "core_literary",
+              stage: "section",
+              sectionKey,
+              error: safeErrorMessage(error),
+              fallback_used: true,
+              pattern_fallback_used: patternFallbackUsed,
+            },
+            "Book expert core literary section failed, using deterministic fallback"
+          );
+          literarySections[sectionKey] = fallbackSections[sectionKey];
+        }
       }
+
+      const normalizedSections = normalizeLiterarySectionsRecord(literarySections);
 
       const nextSnapshot = buildSnapshotWithStage({
         bookId: book.id,
@@ -2900,7 +5491,7 @@ export async function processBookCoreLiterary(payload: StagePayload) {
         stage: "core_literary",
         durationMs: Date.now() - startedAt.getTime(),
         patch: {
-          literarySections,
+          literarySections: normalizedSections,
         },
       });
 
@@ -2908,17 +5499,42 @@ export async function processBookCoreLiterary(payload: StagePayload) {
         where: { bookId: book.id },
         create: {
           bookId: book.id,
-          sectionsJson: literarySections,
+          sectionsJson: normalizedSections,
         },
         update: {
-          sectionsJson: literarySections,
+          sectionsJson: normalizedSections,
         },
       });
 
       return {
         snapshot: nextSnapshot,
         nextStage: null,
+        metadataPatch: mergeMetadataPatch(metadataPatch, {
+          degraded: patternFallbackUsed || sectionFallbackKeys.length > 0,
+          fallbackKind:
+            sectionFallbackKeys.length > 0
+              ? patternFallbackUsed
+                ? "deterministic_pattern_and_sections"
+                : "deterministic_sections"
+              : patternFallbackUsed
+                ? "deterministic_pattern_map"
+                : metadataPatch.fallbackKind,
+          lastReason:
+            sectionFallbackKeys.length > 0
+              ? `Literary fallback used for sections: ${sectionFallbackKeys.join(", ")}`
+              : metadataPatch.lastReason,
+        }),
       };
     },
   });
 }
+
+export const __processBookExpertCoreTestUtils = {
+  mergeWindowScans,
+  normalizeWindowScan,
+  resolveSnapshotRefs,
+  applyQuoteMentionRefinement,
+  applyRelationCandidateRefinement,
+  buildDeterministicProfilePatch,
+  mergeCharacterProfilePatches,
+};

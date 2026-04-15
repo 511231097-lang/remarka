@@ -1,5 +1,5 @@
-import { BookThemeIdea } from "@/components/BookThemeIdea";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function BookMainIdeaPage() {
-  return <BookThemeIdea />;
+  return <BookAnalysisPlaceholder title="Главная идея" />;
 }

@@ -10,6 +10,11 @@ import {
 } from "@remarka/contracts";
 import { workerConfig } from "../config";
 import {
+  completedExecution,
+  deferredLockExecution,
+  type AnalyzerExecutionResult,
+} from "../analyzerExecution";
+import {
   runBookChapterCharacters,
   runBookCharacterProfileSynthesis,
 } from "../extractionV2";
@@ -168,7 +173,7 @@ class DisjointSet {
   }
 }
 
-export async function processBookCharacters(payload: ProcessBookCharactersPayload) {
+export async function processBookCharacters(payload: ProcessBookCharactersPayload): Promise<AnalyzerExecutionResult> {
   const bookId = String(payload.bookId || "").trim();
   if (!bookId) {
     throw new Error("Invalid book characters payload: bookId is required");
@@ -178,7 +183,12 @@ export async function processBookCharacters(payload: ProcessBookCharactersPayloa
   const lockRows =
     await prisma.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_lock(hashtext(${lockKey})::bigint) AS locked`;
   const locked = Boolean(lockRows?.[0]?.locked);
-  if (!locked) return;
+  if (!locked) {
+    return deferredLockExecution(
+      `Book characters stage deferred because advisory lock is busy for ${bookId}`,
+      workerConfig.outbox.deferredLockDelayMs
+    );
+  }
 
   try {
     const existingBook = await prisma.book.findUnique({
@@ -195,7 +205,7 @@ export async function processBookCharacters(payload: ProcessBookCharactersPayloa
         },
       },
     });
-    if (!existingBook) return;
+    if (!existingBook) return completedExecution(`book ${bookId} not found for characters stage`);
 
     const existingTaskState = existingBook.analyzerTasks[0]?.state || null;
     if (existingTaskState === "completed") {
@@ -203,7 +213,7 @@ export async function processBookCharacters(payload: ProcessBookCharactersPayloa
         where: { bookId },
       });
       if (existingCharactersCount > 0) {
-        return;
+        return completedExecution("book characters already built");
       }
     }
 
@@ -589,6 +599,7 @@ export async function processBookCharacters(payload: ProcessBookCharactersPayloa
       },
       "Book characters analysis completed"
     );
+    return completedExecution();
   } catch (error) {
     const message = safeErrorMessage(error);
     await prisma.bookAnalyzerTask.upsert({

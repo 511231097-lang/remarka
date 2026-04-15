@@ -1,5 +1,5 @@
-import { BookProblems } from "@/components/BookProblems";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function BookTakeawaysPage() {
-  return <BookProblems />;
+  return <BookAnalysisPlaceholder title="Что важно вынести" />;
 }

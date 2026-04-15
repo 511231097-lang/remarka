@@ -1,4 +1,6 @@
-import { BOOK_CHAT_GRAPH_STAGE_KEYS } from "@remarka/contracts";
+import {
+  BOOK_PIPELINE_STAGE_KEYS,
+} from "@/lib/books";
 import type {
   BookAnalysisViewKeyDTO,
   BookAnalyzerStateDTO,
@@ -9,11 +11,19 @@ import type {
   BookPipelineStageKeyDTO,
 } from "@/lib/books";
 
-export const CHAT_READINESS_STAGE_ORDER = [...BOOK_CHAT_GRAPH_STAGE_KEYS] as const;
+export const CHAT_READINESS_STAGE_ORDER = [...BOOK_PIPELINE_STAGE_KEYS] as const;
 
 export type ChatReadinessStageKey = (typeof CHAT_READINESS_STAGE_ORDER)[number];
 
 const CHAT_READINESS_STAGE_LABELS: Record<ChatReadinessStageKey, string> = {
+  core_window_scan: "Семантическое извлечение",
+  core_merge: "Сборка semantic core",
+  core_resolve: "Канонический resolve",
+  core_entity_mentions: "Явные упоминания сущностей",
+  core_profiles: "Профили сущностей",
+  core_quotes_finalize: "Нормализация цитат",
+  core_literary: "Литературный слой",
+  chat_index: "Чатовый индекс",
   canonical_text: "Канонический текст",
   scene_build: "Сцены книги",
   entity_graph: "Граф сущностей",
@@ -99,6 +109,14 @@ function markCompletedIfPresent(status: BookAnalyzerStatusDTO, present: boolean)
 
 export function createEmptyPipelineAnalyzers(): Record<BookPipelineStageKeyDTO, BookAnalyzerStatusDTO> {
   return {
+    core_window_scan: createEmptyAnalyzerStatus(),
+    core_merge: createEmptyAnalyzerStatus(),
+    core_resolve: createEmptyAnalyzerStatus(),
+    core_entity_mentions: createEmptyAnalyzerStatus(),
+    core_profiles: createEmptyAnalyzerStatus(),
+    core_quotes_finalize: createEmptyAnalyzerStatus(),
+    core_literary: createEmptyAnalyzerStatus(),
+    chat_index: createEmptyAnalyzerStatus(),
     canonical_text: createEmptyAnalyzerStatus(),
     scene_build: createEmptyAnalyzerStatus(),
     entity_graph: createEmptyAnalyzerStatus(),

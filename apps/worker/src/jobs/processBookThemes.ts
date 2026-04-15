@@ -10,6 +10,11 @@ import {
 } from "@remarka/contracts";
 import { workerConfig } from "../config";
 import {
+  completedExecution,
+  deferredLockExecution,
+  type AnalyzerExecutionResult,
+} from "../analyzerExecution";
+import {
   runBookChapterThemes,
   runBookThemeProfileSynthesis,
 } from "../extractionV2";
@@ -165,7 +170,7 @@ class DisjointSet {
   }
 }
 
-export async function processBookThemes(payload: ProcessBookThemesPayload) {
+export async function processBookThemes(payload: ProcessBookThemesPayload): Promise<AnalyzerExecutionResult> {
   const bookId = String(payload.bookId || "").trim();
   if (!bookId) {
     throw new Error("Invalid book themes payload: bookId is required");
@@ -175,7 +180,12 @@ export async function processBookThemes(payload: ProcessBookThemesPayload) {
   const lockRows =
     await prisma.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_lock(hashtext(${lockKey})::bigint) AS locked`;
   const locked = Boolean(lockRows?.[0]?.locked);
-  if (!locked) return;
+  if (!locked) {
+    return deferredLockExecution(
+      `Book themes stage deferred because advisory lock is busy for ${bookId}`,
+      workerConfig.outbox.deferredLockDelayMs
+    );
+  }
 
   try {
     const existingBook = await prisma.book.findUnique({
@@ -192,7 +202,7 @@ export async function processBookThemes(payload: ProcessBookThemesPayload) {
         },
       },
     });
-    if (!existingBook) return;
+    if (!existingBook) return completedExecution(`book ${bookId} not found for themes stage`);
 
     const existingTaskState = existingBook.analyzerTasks[0]?.state || null;
     if (existingTaskState === "completed") {
@@ -200,7 +210,7 @@ export async function processBookThemes(payload: ProcessBookThemesPayload) {
         where: { bookId },
       });
       if (existingThemesCount > 0) {
-        return;
+        return completedExecution("book themes already built");
       }
     }
 
@@ -587,6 +597,7 @@ export async function processBookThemes(payload: ProcessBookThemesPayload) {
       },
       "Book themes analysis completed"
     );
+    return completedExecution();
   } catch (error) {
     const message = safeErrorMessage(error);
     await prisma.bookAnalyzerTask.upsert({

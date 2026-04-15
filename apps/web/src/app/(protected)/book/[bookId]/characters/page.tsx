@@ -1,5 +1,5 @@
-import { BookCharactersAnalysis } from "@/components/BookCharactersAnalysis";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function BookCharactersAnalysisPage() {
-  return <BookCharactersAnalysis />;
+  return <BookAnalysisPlaceholder title="Персонажи" />;
 }

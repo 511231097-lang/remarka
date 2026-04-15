@@ -23,6 +23,8 @@ const DEFAULT_BOOKS_S3_KEY_PREFIX = "remarka/books";
 const UPLOAD_BOOK_PIPELINE_TASKS = [
   "core_window_scan",
   "core_merge",
+  "core_resolve",
+  "core_entity_mentions",
   "core_profiles",
   "core_quotes_finalize",
   "core_literary",

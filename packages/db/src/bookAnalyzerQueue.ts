@@ -17,12 +17,14 @@ export async function enqueueBookAnalyzerStage(params: {
   analyzerType: BookAnalyzerType | string;
   publishEvent?: boolean;
   force?: boolean;
+  availableAt?: Date | null;
 }): Promise<void> {
   const client = params.client || prisma;
   const bookId = String(params.bookId || "").trim();
   const analyzerType = String(params.analyzerType || "").trim();
   const publishEvent = params.publishEvent !== false;
   const force = params.force === true;
+  const availableAt = params.availableAt || new Date();
   if (!bookId) throw new Error("enqueueBookAnalyzerStage requires bookId");
   if (!analyzerType) throw new Error("enqueueBookAnalyzerStage requires analyzerType");
 
@@ -79,10 +81,23 @@ export async function enqueueBookAnalyzerStage(params: {
     select: {
       id: true,
       payloadJson: true,
+      availableAt: true,
     },
   });
 
-  if (pendingEvents.some((event) => matchesAnalyzerEventPayload(event.payloadJson, { bookId, analyzerType }))) {
+  const pendingEvent = pendingEvents.find((event) =>
+    matchesAnalyzerEventPayload(event.payloadJson, { bookId, analyzerType })
+  );
+
+  if (pendingEvent) {
+    if (pendingEvent.availableAt.getTime() > availableAt.getTime()) {
+      await client.outbox.update({
+        where: { id: pendingEvent.id },
+        data: {
+          availableAt,
+        },
+      });
+    }
     return;
   }
 
@@ -95,6 +110,7 @@ export async function enqueueBookAnalyzerStage(params: {
         bookId,
         analyzerType,
       },
+      availableAt,
     },
   });
 }

@@ -1,5 +1,5 @@
-import { QuotesView } from "@/components/QuotesView";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function QuotesPage() {
-  return <QuotesView />;
+  return <BookAnalysisPlaceholder title="Цитаты" />;
 }

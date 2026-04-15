@@ -27,6 +27,7 @@ export const BOOK_CHAT_PLAN_INTENTS = [
 ] as const;
 
 export const BOOK_CHAT_PLAN_SCOPES = ["scene", "chapter", "full_book", "unknown"] as const;
+export const BOOK_CHAT_SCOPE_MODES = ["book_only", "book_plus_meta"] as const;
 export const BOOK_CHAT_PLAN_DEPTHS = ["fast", "deep"] as const;
 export const BOOK_CHAT_ANSWER_MODES = [
   "factual",
@@ -41,9 +42,34 @@ export const BOOK_CHAT_STATE_ACTIONS = ["keep", "narrow", "reset"] as const;
 
 export type BookChatPlanIntent = (typeof BOOK_CHAT_PLAN_INTENTS)[number];
 export type BookChatPlanScope = (typeof BOOK_CHAT_PLAN_SCOPES)[number];
+export type BookChatScopeMode = (typeof BOOK_CHAT_SCOPE_MODES)[number];
 export type BookChatPlanDepth = (typeof BOOK_CHAT_PLAN_DEPTHS)[number];
 export type BookChatAnswerMode = (typeof BOOK_CHAT_ANSWER_MODES)[number];
 export type BookChatStateAction = (typeof BOOK_CHAT_STATE_ACTIONS)[number];
+
+export const BookChatFollowupAnswerItemSchema = z
+  .object({
+    id: z.string().trim().min(1).max(80),
+    ordinal: z.number().int().min(1).max(12).nullable().default(null),
+    label: z.string().trim().min(1).max(240),
+    summary: z.string().trim().min(1).max(600),
+    linkedEntityIds: z.array(z.string().trim().min(1).max(80)).max(8).default([]),
+    linkedEvidenceIds: z.array(z.string().trim().min(1).max(120)).max(8).default([]),
+  })
+  .strict();
+
+export type BookChatFollowupAnswerItem = z.infer<typeof BookChatFollowupAnswerItemSchema>;
+
+export const BookChatFollowupRefsSchema = z
+  .object({
+    primaryEntityId: z.string().trim().min(1).max(80).nullable().default(null),
+    activeEntityIds: z.array(z.string().trim().min(1).max(80)).max(16).default([]),
+    lastAssistantMessageId: z.string().trim().min(1).max(80).nullable().default(null),
+    answerItems: z.array(BookChatFollowupAnswerItemSchema).max(8).default([]),
+  })
+  .strict();
+
+export type BookChatFollowupRefs = z.infer<typeof BookChatFollowupRefsSchema>;
 
 export const BookChatTurnStateSchema = z
   .object({
@@ -55,7 +81,7 @@ export const BookChatTurnStateSchema = z
     lastScope: z.enum(BOOK_CHAT_PLAN_SCOPES).nullable().default(null),
     lastAnswerMode: z.enum(BOOK_CHAT_ANSWER_MODES).nullable().default(null),
     lastCompareSet: z.array(z.string().trim().min(1).max(80)).max(8).default([]),
-    pronounAnchors: z.record(z.string(), z.string().trim().min(1).max(80)).default({}),
+    followupRefs: BookChatFollowupRefsSchema.nullable().default(null),
     sectionContext: z.string().trim().min(1).max(80).nullable().default(null),
     lastUserQuestion: z.string().trim().min(1).max(600).nullable().default(null),
   })
@@ -68,6 +94,7 @@ export const BookChatPlanSchema = z
     intent: z.enum(BOOK_CHAT_PLAN_INTENTS),
     targets: z.array(z.string().trim().min(1).max(160)).max(8).default([]),
     scope: z.enum(BOOK_CHAT_PLAN_SCOPES),
+    scopeMode: z.enum(BOOK_CHAT_SCOPE_MODES).default("book_only"),
     timeRef: z.string().trim().min(1).max(160).nullable().default(null),
     depth: z.enum(BOOK_CHAT_PLAN_DEPTHS),
     needQuote: z.boolean().default(false),

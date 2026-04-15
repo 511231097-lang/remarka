@@ -1,51 +1,25 @@
 "use client";
 
 import { motion } from "motion/react";
-import {
-  AlertCircle,
-  ArrowRight,
-  BookMarked,
-  CheckCircle,
-  FileText,
-  Lightbulb,
-  MapPin,
-  Palette,
-  Swords,
-  User,
-  Users,
-} from "lucide-react";
-import Link from "next/link";
+import { MessageSquare, Wrench } from "lucide-react";
 import { useParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { BookNavigation } from "./BookNavigation";
+import { ChatReadinessGate } from "./BookChatReadiness";
 import { BookSettings } from "./BookSettings";
 import { ChatPreview } from "./ChatPreview";
-import { DownloadAnalysisPdfButton } from "./DownloadAnalysisPdfButton";
-import {
-  getBook,
-  getBookAnalysisStatus,
-  getBookLiteraryAnalysis,
-  type BookAnalyzerState,
-} from "@/lib/booksClient";
-import { displayAuthor, type BookCoreDTO, type BookLiteraryAnalysisDTO, type LiterarySectionKeyDTO } from "@/lib/books";
-
-function resolveState(value: BookAnalyzerState): BookAnalyzerState {
-  if (value === "queued" || value === "running" || value === "completed" || value === "failed" || value === "not_requested") {
-    return value;
-  }
-  return "not_requested";
-}
+import { getBook } from "@/lib/booksClient";
+import { displayAuthor, type BookCoreDTO } from "@/lib/books";
+import { useBookChatReadiness } from "@/lib/useBookChatReadiness";
 
 export function BookOverview() {
   const params = useParams<{ bookId: string }>();
   const bookId = String(params.bookId || "");
 
   const [book, setBook] = useState<BookCoreDTO | null>(null);
-  const [analysis, setAnalysis] = useState<BookLiteraryAnalysisDTO | null>(null);
-  const [literaryState, setLiteraryState] = useState<BookAnalyzerState>("not_requested");
-  const [quotesState, setQuotesState] = useState<BookAnalyzerState>("not_requested");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const { readiness, loading: readinessLoading, error: readinessError } = useBookChatReadiness(bookId);
 
   useEffect(() => {
     if (!bookId) return;
@@ -55,33 +29,15 @@ export function BookOverview() {
       setLoading(true);
       setError(null);
 
-      const [bookResult, statusResult, analysisResult] = await Promise.allSettled([
-        getBook(bookId),
-        getBookAnalysisStatus(bookId),
-        getBookLiteraryAnalysis(bookId),
-      ]);
+      const bookResult = await Promise.allSettled([getBook(bookId)]);
 
       if (!active) return;
 
-      if (bookResult.status === "fulfilled") {
-        setBook(bookResult.value);
+      if (bookResult[0]?.status === "fulfilled") {
+        setBook(bookResult[0].value);
       } else {
         setBook(null);
-        setError(bookResult.reason instanceof Error ? bookResult.reason.message : "Не удалось загрузить книгу");
-      }
-
-      if (statusResult.status === "fulfilled") {
-        setLiteraryState(resolveState(statusResult.value.views.literary.state));
-        setQuotesState(resolveState(statusResult.value.views.quotes.state));
-      } else {
-        setLiteraryState("not_requested");
-        setQuotesState("not_requested");
-      }
-
-      if (analysisResult.status === "fulfilled") {
-        setAnalysis(analysisResult.value);
-      } else {
-        setAnalysis(null);
+        setError(bookResult[0]?.reason instanceof Error ? bookResult[0].reason.message : "Не удалось загрузить книгу");
       }
 
       setLoading(false);
@@ -92,121 +48,6 @@ export function BookOverview() {
       active = false;
     };
   }, [bookId]);
-
-  useEffect(() => {
-    if (!bookId) return;
-    const shouldPoll = literaryState === "queued" || literaryState === "running" || quotesState === "queued" || quotesState === "running";
-    if (!shouldPoll) return;
-
-    let active = true;
-    let pollTimer: ReturnType<typeof setTimeout> | null = null;
-
-    const schedulePoll = (delayMs: number) => {
-      pollTimer = setTimeout(() => {
-        void pollOnce();
-      }, Math.max(1000, delayMs));
-    };
-
-    async function pollOnce() {
-      try {
-        const status = await getBookAnalysisStatus(bookId);
-        if (!active) return;
-
-        const nextLiteraryState = resolveState(status.views.literary.state);
-        const nextQuotesState = resolveState(status.views.quotes.state);
-        setLiteraryState(nextLiteraryState);
-        setQuotesState(nextQuotesState);
-
-        if (nextLiteraryState === "completed") {
-          try {
-            const nextAnalysis = await getBookLiteraryAnalysis(bookId);
-            if (!active) return;
-            setAnalysis(nextAnalysis);
-          } catch {
-            // keep previous state, poll loop may continue if needed
-          }
-        }
-
-        if (nextLiteraryState === "queued" || nextLiteraryState === "running" || nextQuotesState === "queued" || nextQuotesState === "running") {
-          schedulePoll(status.pollIntervalMs || 3000);
-        }
-      } catch {
-        if (!active) return;
-        schedulePoll(4000);
-      }
-    }
-
-    schedulePoll(2000);
-
-    return () => {
-      active = false;
-      if (pollTimer) {
-        clearTimeout(pollTimer);
-      }
-    };
-  }, [bookId, literaryState, quotesState]);
-
-  const sections = useMemo(
-    () => [
-      {
-        key: "what_is_really_going_on" as const,
-        title: "Что на самом деле происходит",
-        icon: FileText,
-        path: `/book/${bookId}/what-is-really-going-on`,
-      },
-      { key: "main_idea" as const, title: "Главная идея", icon: Lightbulb, path: `/book/${bookId}/main-idea` },
-      { key: "how_it_works" as const, title: "Как это работает", icon: BookMarked, path: `/book/${bookId}/how-it-works` },
-      { key: "hidden_details" as const, title: "Скрытые детали", icon: User, path: `/book/${bookId}/hidden-details` },
-      { key: "characters" as const, title: "Персонажи", icon: Users, path: `/book/${bookId}/characters` },
-      { key: "conflicts" as const, title: "Конфликты", icon: Swords, path: `/book/${bookId}/conflicts` },
-      { key: "structure" as const, title: "Структура", icon: MapPin, path: `/book/${bookId}/structure` },
-      { key: "important_turns" as const, title: "Важные повороты", icon: Palette, path: `/book/${bookId}/important-turns` },
-      { key: "takeaways" as const, title: "Что важно вынести", icon: AlertCircle, path: `/book/${bookId}/takeaways` },
-      { key: "conclusion" as const, title: "Вывод", icon: CheckCircle, path: `/book/${bookId}/conclusion` },
-    ],
-    [bookId]
-  );
-
-  const previewByKey = useMemo(() => {
-    const map = new Map<LiterarySectionKeyDTO, string>();
-    if (analysis) {
-      for (const section of sections) {
-        const summary = analysis.sections[section.key]?.summary || "";
-        if (summary) map.set(section.key, summary);
-      }
-    }
-
-    const fallbackText =
-      literaryState === "failed"
-        ? "Не удалось сформировать раздел"
-        : literaryState === "queued" || literaryState === "running"
-          ? "Раздел формируется..."
-          : quotesState === "queued" || quotesState === "running"
-            ? "Сначала формируем слой цитат..."
-            : "Раздел пока недоступен";
-
-    for (const section of sections) {
-      if (!map.has(section.key)) {
-        map.set(section.key, fallbackText);
-      }
-    }
-
-    return map;
-  }, [analysis, literaryState, quotesState, sections]);
-
-  const downloadDisabledReason = useMemo(() => {
-    if (literaryState === "completed") return null;
-    if (literaryState === "queued" || literaryState === "running") {
-      return "Литературный анализ еще формируется";
-    }
-    if (quotesState === "queued" || quotesState === "running") {
-      return "Сначала формируется слой цитат";
-    }
-    if (literaryState === "failed") {
-      return "Экспорт станет доступен после успешного анализа";
-    }
-    return "Анализ еще недоступен";
-  }, [literaryState, quotesState]);
 
   return (
     <div className="min-h-screen bg-background">
@@ -233,11 +74,6 @@ export function BookOverview() {
                   <p className="text-lg lg:text-xl text-muted-foreground">{displayAuthor(book.author)}</p>
                 </div>
                 <div className="flex items-center gap-2">
-                  <DownloadAnalysisPdfButton
-                    bookId={bookId}
-                    disabled={Boolean(downloadDisabledReason)}
-                    disabledReason={downloadDisabledReason || undefined}
-                  />
                   <BookSettings
                     book={book}
                     onBookUpdated={(updatedBook) => {
@@ -254,39 +90,70 @@ export function BookOverview() {
               transition={{ delay: 0.1 }}
               className="mb-12"
             >
-              <ChatPreview bookId={bookId} bookTitle={book.title} />
+              <div className="mb-4">
+                <h2 className="text-xl text-foreground">Статус анализа</h2>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Здесь видно, какие этапы уже готовы для чата и что еще достраивается в фоне.
+                </p>
+              </div>
+
+              {readinessError && !readiness ? (
+                <div className="rounded-2xl border border-destructive/30 bg-destructive/10 p-4 text-sm text-destructive">
+                  {readinessError}
+                </div>
+              ) : null}
+
+              {readinessLoading && !readiness ? (
+                <div className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
+                  Загружаем статус анализа...
+                </div>
+              ) : null}
+
+              {readiness ? <ChatReadinessGate readiness={readiness} /> : null}
             </motion.div>
 
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              {sections.map((section, index) => (
-                <motion.div
-                  key={section.path}
-                  initial={{ opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: 0.2 + index * 0.05 }}
-                >
-                  <Link
-                    href={section.path}
-                    className="group block p-5 bg-card border border-border rounded-lg hover:border-primary/30 transition-colors h-full"
-                  >
-                    <div className="flex items-start gap-4 mb-3">
-                      <div className="p-2 bg-secondary rounded-lg flex-shrink-0">
-                        <section.icon className="w-5 h-5 text-primary" />
-                      </div>
-                      <div className="flex-1">
-                        <h3 className="text-lg text-foreground mb-2 flex items-center gap-2">
-                          {section.title}
-                          <ArrowRight className="w-4 h-4 ml-auto opacity-0 group-hover:opacity-100 transition-opacity" />
-                        </h3>
-                        <p className="text-sm text-muted-foreground line-clamp-2">
-                          {previewByKey.get(section.key)}
-                        </p>
-                      </div>
-                    </div>
-                  </Link>
-                </motion.div>
-              ))}
-            </div>
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.12 }}
+              className="mb-12"
+            >
+              <ChatPreview
+                bookId={bookId}
+                bookTitle={book.title}
+                readiness={readiness}
+                readinessLoading={readinessLoading}
+                readinessError={readinessError}
+              />
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.15 }}
+              className="rounded-3xl border border-border bg-card/90 p-6 lg:p-8"
+            >
+              <div className="flex items-start gap-4">
+                <div className="rounded-2xl bg-primary/10 p-3">
+                  <Wrench className="h-6 w-6 text-primary" />
+                </div>
+                <div className="max-w-3xl">
+                  <h2 className="text-2xl text-foreground">Аналитические витрины отключены</h2>
+                  <p className="mt-3 text-sm leading-7 text-muted-foreground">
+                    Старые отдельные разделы анализа, отчеты и специализированные карточки больше не развиваются как
+                    самостоятельный интерфейс. Основной сценарий работы по книге теперь идет через чат.
+                  </p>
+                  <p className="mt-3 text-sm leading-7 text-muted-foreground">
+                    Если нужен разбор персонажа, сцены, темы, цитаты или вопрос по структуре книги, лучше задавать это
+                    прямо в чате. Текущий pipeline оптимизирован именно под этот режим.
+                  </p>
+                  <div className="mt-5 inline-flex items-center gap-2 rounded-full border border-border bg-background px-4 py-2 text-sm text-foreground">
+                    <MessageSquare className="h-4 w-4 text-primary" />
+                    Основной режим: chat-first
+                  </div>
+                </div>
+              </div>
+            </motion.div>
           </>
         ) : null}
       </div>

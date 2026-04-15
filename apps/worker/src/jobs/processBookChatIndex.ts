@@ -10,6 +10,16 @@ import {
   type ParsedChapter,
 } from "@remarka/contracts";
 import { workerConfig } from "../config";
+import {
+  completedExecution,
+  deferredLockExecution,
+  type AnalyzerExecutionResult,
+} from "../analyzerExecution";
+import {
+  claimQueuedAnalyzerTaskExecution,
+  markBookAnalysisRunning,
+  refreshBookAnalysisLifecycle,
+} from "../bookAnalysisLifecycle";
 import { logger } from "../logger";
 
 interface ProcessBookChatIndexPayload {
@@ -132,6 +142,56 @@ function getSafeConcurrency(value: number): number {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return 1;
   return Math.max(1, Math.floor(parsed));
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function parseRetryAfterMs(value: string | null | undefined, nowMs = Date.now()): number | null {
+  const raw = String(value || "").trim();
+  if (!raw) return null;
+
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.round(seconds * 1000);
+  }
+
+  const timestamp = Date.parse(raw);
+  if (!Number.isFinite(timestamp)) return null;
+  return Math.max(0, timestamp - nowMs);
+}
+
+function isRetryableEmbeddingStatus(status: number): boolean {
+  return status === 429 || status === 500 || status === 502 || status === 503 || status === 504;
+}
+
+function isRetryableEmbeddingError(error: unknown): boolean {
+  if (!error) return false;
+  if (error instanceof Error) {
+    const name = String(error.name || "").trim();
+    if (name === "AbortError" || name === "TimeoutError") return true;
+    if ("status" in error) {
+      const status = Number((error as { status?: unknown }).status);
+      if (Number.isFinite(status) && isRetryableEmbeddingStatus(status)) return true;
+    }
+    return error instanceof TypeError;
+  }
+  return false;
+}
+
+function computeEmbeddingBackoffDelayMs(params: {
+  attempt: number;
+  retryAfterMs?: number | null;
+  randomFraction?: number;
+}): number {
+  const retryAfterMs = params.retryAfterMs ?? null;
+  const randomFraction = Number.isFinite(params.randomFraction) ? Math.max(0, params.randomFraction as number) : Math.random();
+  const jitterMs = Math.floor(Math.min(1, randomFraction) * 1000);
+  const exponentialMs = Math.min(2 ** Math.max(0, params.attempt) * 1000, 32_000);
+  const fallbackMs = exponentialMs + jitterMs;
+  if (retryAfterMs === null) return fallbackMs;
+  return Math.min(Math.max(retryAfterMs, fallbackMs), 32_000);
 }
 
 function splitIntoBatches<T>(items: T[], batchSize: number): T[][] {
@@ -280,47 +340,92 @@ async function embedChunkText(params: {
       autoTruncate: true,
     },
   };
+  const maxRetries = Math.max(0, workerConfig.vertex.maxRetries);
+  let lastError: Error | null = null;
 
-  const response = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-proxy-source": workerConfig.vertex.proxySource,
-    },
-    body: JSON.stringify(body),
-  });
+  for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), workerConfig.vertex.timeoutMs);
 
-  const text = await response.text();
-  let parsed: VertexEmbeddingResponse | null = null;
-  try {
-    parsed = text ? (JSON.parse(text) as VertexEmbeddingResponse) : null;
-  } catch {
-    parsed = null;
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-proxy-source": workerConfig.vertex.proxySource,
+        },
+        body: JSON.stringify(body),
+        signal: controller.signal,
+      });
+
+      const text = await response.text();
+      let parsed: VertexEmbeddingResponse | null = null;
+      try {
+        parsed = text ? (JSON.parse(text) as VertexEmbeddingResponse) : null;
+      } catch {
+        parsed = null;
+      }
+
+      if (!response.ok) {
+        const message =
+          (parsed &&
+            typeof parsed === "object" &&
+            (parsed as { error?: { message?: string } }).error?.message) ||
+          text ||
+          `Vertex embedding request failed with status ${response.status}`;
+        const retryableError = new Error(String(message)) as Error & {
+          status?: number;
+          retryAfterMs?: number | null;
+        };
+        retryableError.status = response.status;
+        retryableError.retryAfterMs = parseRetryAfterMs(response.headers.get("retry-after"));
+        throw retryableError;
+      }
+
+      const valuesRaw = parsed?.predictions?.[0]?.embeddings?.values;
+      if (!Array.isArray(valuesRaw) || valuesRaw.length === 0) {
+        throw new Error("Vertex embedding response has no values");
+      }
+
+      const values = valuesRaw
+        .map((item) => Number(item))
+        .filter((item) => Number.isFinite(item));
+      if (values.length === 0) {
+        throw new Error("Vertex embedding response contains invalid values");
+      }
+
+      return clampDimensions(values, params.outputDimensionality);
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      const isLast = attempt >= maxRetries;
+      if (isLast || !isRetryableEmbeddingError(lastError)) {
+        break;
+      }
+
+      const retryAfterMs =
+        "retryAfterMs" in lastError ? Number((lastError as { retryAfterMs?: unknown }).retryAfterMs) : null;
+      const delayMs = computeEmbeddingBackoffDelayMs({
+        attempt,
+        retryAfterMs: Number.isFinite(retryAfterMs) ? retryAfterMs : null,
+      });
+
+      logger.warn(
+        {
+          model: params.model,
+          attempt: attempt + 1,
+          retryInMs: delayMs,
+          status: "status" in lastError ? (lastError as { status?: unknown }).status : null,
+          error: lastError.message,
+        },
+        "Vertex embedding request failed, retrying with backoff"
+      );
+      await sleep(delayMs);
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
-  if (!response.ok) {
-    const message =
-      (parsed &&
-        typeof parsed === "object" &&
-        (parsed as { error?: { message?: string } }).error?.message) ||
-      text ||
-      `Vertex embedding request failed with status ${response.status}`;
-    throw new Error(String(message));
-  }
-
-  const valuesRaw = parsed?.predictions?.[0]?.embeddings?.values;
-  if (!Array.isArray(valuesRaw) || valuesRaw.length === 0) {
-    throw new Error("Vertex embedding response has no values");
-  }
-
-  const values = valuesRaw
-    .map((item) => Number(item))
-    .filter((item) => Number.isFinite(item));
-  if (values.length === 0) {
-    throw new Error("Vertex embedding response contains invalid values");
-  }
-
-  return clampDimensions(values, params.outputDimensionality);
+  throw lastError || new Error("Vertex embedding request failed");
 }
 
 function buildChunkCandidates(params: {
@@ -361,17 +466,11 @@ function buildChunkCandidates(params: {
   return out;
 }
 
-export async function processBookChatIndex(payload: ProcessBookChatIndexPayload) {
+export async function processBookChatIndex(payload: ProcessBookChatIndexPayload): Promise<AnalyzerExecutionResult> {
   const bookId = String(payload.bookId || "").trim();
   if (!bookId) {
     throw new Error("Invalid book chat_index payload: bookId is required");
   }
-
-  const lockKey = `book-analyzer:chat_index:${bookId}`;
-  const lockRows =
-    await prisma.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_lock(hashtext(${lockKey})::bigint) AS locked`;
-  const locked = Boolean(lockRows?.[0]?.locked);
-  if (!locked) return;
 
   try {
     const existingBook = await prisma.book.findUnique({
@@ -389,7 +488,7 @@ export async function processBookChatIndex(payload: ProcessBookChatIndexPayload)
       },
     });
 
-    if (!existingBook) return;
+    if (!existingBook) return completedExecution(`book ${bookId} not found for chat_index stage`);
 
     const existingTaskState = existingBook.analyzerTasks[0]?.state || null;
     if (existingTaskState === "completed") {
@@ -399,33 +498,40 @@ export async function processBookChatIndex(payload: ProcessBookChatIndexPayload)
         WHERE "bookId" = ${bookId}
       `;
       if (Number(existingChunkCount[0]?.count || 0) > 0) {
-        return;
+        return completedExecution("book chat index already built");
       }
-    }
 
-    const startedAt = new Date();
-    await prisma.bookAnalyzerTask.upsert({
-      where: {
-        bookId_analyzerType: {
+      await prisma.bookAnalyzerTask.updateMany({
+        where: {
           bookId,
           analyzerType: "chat_index",
         },
-      },
-      create: {
-        bookId,
-        analyzerType: "chat_index",
-        state: "running",
-        error: null,
-        startedAt,
-        completedAt: null,
-      },
-      update: {
-        state: "running",
-        error: null,
-        startedAt,
-        completedAt: null,
-      },
+        data: {
+          state: "queued",
+          error: null,
+          startedAt: null,
+          completedAt: null,
+        },
+      });
+    }
+
+    const startedAt = new Date();
+    const claim = await claimQueuedAnalyzerTaskExecution({
+      bookId,
+      analyzerType: "chat_index",
+      startedAt,
     });
+    if (claim === "completed") {
+      return completedExecution("book chat index already built");
+    }
+    if (claim === "running") {
+      return deferredLockExecution(
+        `Book chat_index stage deferred because task is already running for ${bookId}`,
+        workerConfig.outbox.deferredLockDelayMs
+      );
+    }
+
+    await markBookAnalysisRunning(bookId, startedAt);
 
     const format = resolveUploadFormat(existingBook.fileName);
     if (!format) {
@@ -535,6 +641,8 @@ export async function processBookChatIndex(payload: ProcessBookChatIndexPayload)
       },
       "Book chat_index analysis completed"
     );
+    await refreshBookAnalysisLifecycle(bookId);
+    return completedExecution();
   } catch (error) {
     const message = safeErrorMessage(error);
     await prisma.bookAnalyzerTask.upsert({
@@ -566,7 +674,12 @@ export async function processBookChatIndex(payload: ProcessBookChatIndexPayload)
       },
       "Book chat_index analysis failed"
     );
-  } finally {
-    await prisma.$queryRaw`SELECT pg_advisory_unlock(hashtext(${lockKey})::bigint)`;
+    throw error;
   }
 }
+
+export const __processBookChatIndexTestUtils = {
+  computeEmbeddingBackoffDelayMs,
+  isRetryableEmbeddingStatus,
+  parseRetryAfterMs,
+};

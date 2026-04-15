@@ -4,6 +4,7 @@ import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
 import { resolveAccessibleBook, resolveOwnedChatSession } from "@/lib/chatAccess";
 import {
+  attachAssistantMessageIdToTurnState,
   runManagedBookChatTurn,
   resolveChatTopK,
 } from "@/lib/chatRuntime";
@@ -120,10 +121,16 @@ export async function POST(request: Request, context: RouteContext) {
     entryContext,
   });
 
+  const assistantState = attachAssistantMessageIdToTurnState(turn.turnState, "pending");
   const storagePayload = {
-    version: 4,
+    version: 7,
+    model: turn.model,
+    rawAnswer: turn.rawAnswer,
     evidence: turn.evidence,
     citations: turn.citations,
+    inlineCitations: turn.inlineCitations,
+    answerItems: turn.answerItems,
+    referenceResolution: turn.referenceResolution,
     usedSources: turn.usedSources,
     confidence: turn.confidence,
     mode: turn.mode,
@@ -135,7 +142,8 @@ export async function POST(request: Request, context: RouteContext) {
     activeEntityIds: turn.activeEntityIds,
     mustCarryFacts: turn.mustCarryFacts,
     turnKind: turn.turnKind,
-    turnState: turn.turnState,
+    turnState: assistantState,
+    followupRefs: assistantState.followupRefs,
     planner: turn.planner,
     bundleStats: turn.bundleStats,
     requiredFactIds: turn.requiredFactIds,
@@ -154,6 +162,19 @@ export async function POST(request: Request, context: RouteContext) {
       completionTokens: turn.completionTokens,
     },
   });
+  const finalTurnState = attachAssistantMessageIdToTurnState(turn.turnState, assistant.id);
+  const finalizedPayload = {
+    ...storagePayload,
+    turnState: finalTurnState,
+    followupRefs: finalTurnState.followupRefs,
+  };
+
+  await prisma.bookChatMessage.update({
+    where: { id: assistant.id },
+    data: {
+      citationsJson: finalizedPayload as unknown as Prisma.InputJsonValue,
+    },
+  });
 
   await prisma.bookChatSession.update({
     where: { id: session.id },
@@ -167,15 +188,18 @@ export async function POST(request: Request, context: RouteContext) {
     create: {
       sessionId: session.id,
       bookId,
-      stateJson: turn.turnState as unknown as Prisma.InputJsonValue,
+      stateJson: finalTurnState as unknown as Prisma.InputJsonValue,
     },
     update: {
-      stateJson: turn.turnState as unknown as Prisma.InputJsonValue,
+      stateJson: finalTurnState as unknown as Prisma.InputJsonValue,
     },
   });
 
   return NextResponse.json({
     sessionId: session.id,
-    message: toBookChatMessageDTO(assistant),
+    message: toBookChatMessageDTO({
+      ...assistant,
+      citationsJson: finalizedPayload as unknown as Prisma.JsonValue,
+    }),
   });
 }

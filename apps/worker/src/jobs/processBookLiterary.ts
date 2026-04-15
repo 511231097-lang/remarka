@@ -9,6 +9,11 @@ import {
 } from "@remarka/contracts";
 import { workerConfig } from "../config";
 import {
+  completedExecution,
+  deferredLockExecution,
+  type AnalyzerExecutionResult,
+} from "../analyzerExecution";
+import {
   runBookChapterStructuralFacts,
   runBookLiteraryPatternPass,
   runBookLiterarySynthesisFromChapterFacts,
@@ -117,7 +122,7 @@ function compactPatternsForStorage(patterns: BookLiteraryPattern[]) {
   }));
 }
 
-export async function processBookLiterary(payload: ProcessBookLiteraryPayload) {
+export async function processBookLiterary(payload: ProcessBookLiteraryPayload): Promise<AnalyzerExecutionResult> {
   const bookId = String(payload.bookId || "").trim();
   if (!bookId) {
     throw new Error("Invalid book literary payload: bookId is required");
@@ -127,7 +132,12 @@ export async function processBookLiterary(payload: ProcessBookLiteraryPayload) {
   const lockRows =
     await prisma.$queryRaw<Array<{ locked: boolean }>>`SELECT pg_try_advisory_lock(hashtext(${lockKey})::bigint) AS locked`;
   const locked = Boolean(lockRows?.[0]?.locked);
-  if (!locked) return;
+  if (!locked) {
+    return deferredLockExecution(
+      `Book literary stage deferred because advisory lock is busy for ${bookId}`,
+      workerConfig.outbox.deferredLockDelayMs
+    );
+  }
 
   try {
     const existingBook = await prisma.book.findUnique({
@@ -150,11 +160,11 @@ export async function processBookLiterary(payload: ProcessBookLiteraryPayload) {
       },
     });
 
-    if (!existingBook) return;
+    if (!existingBook) return completedExecution(`book ${bookId} not found for literary stage`);
 
     const literaryTaskState = existingBook.analyzerTasks[0]?.state || null;
     if (literaryTaskState === "completed" && existingBook.literaryAnalysis) {
-      return;
+      return completedExecution("book literary analysis already built");
     }
 
     const startedAt = new Date();
@@ -329,6 +339,7 @@ export async function processBookLiterary(payload: ProcessBookLiteraryPayload) {
       },
       "Book literary analysis completed with chapter-facts + pattern-pass pipeline"
     );
+    return completedExecution();
   } catch (error) {
     const message = safeErrorMessage(error);
     await prisma.bookAnalyzerTask.upsert({

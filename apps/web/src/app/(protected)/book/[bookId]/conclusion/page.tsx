@@ -1,5 +1,5 @@
-import { BookConclusion } from "@/components/BookConclusion";
+import { BookAnalysisPlaceholder } from "@/components/BookAnalysisPlaceholder";
 
 export default function BookConclusionPage() {
-  return <BookConclusion />;
+  return <BookAnalysisPlaceholder title="Вывод" />;
 }
