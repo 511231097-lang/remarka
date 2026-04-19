@@ -6,65 +6,6 @@ export const BOOK_FORMATS = ["fb2", "fb2_zip"] as const;
 export type BookFormat = (typeof BOOK_FORMATS)[number];
 export const BookFormatSchema = z.enum(BOOK_FORMATS);
 
-export const PROJECT_IMPORT_STATES = ["queued", "running", "completed", "failed"] as const;
-export type ProjectImportState = (typeof PROJECT_IMPORT_STATES)[number];
-export const ProjectImportStateSchema = z.enum(PROJECT_IMPORT_STATES);
-
-export const PROJECT_IMPORT_STAGES = [
-  "queued",
-  "loading_source",
-  "parsing",
-  "persisting",
-  "scheduling_analysis",
-  "completed",
-  "failed",
-] as const;
-export type ProjectImportStage = (typeof PROJECT_IMPORT_STAGES)[number];
-export const ProjectImportStageSchema = z.enum(PROJECT_IMPORT_STAGES);
-
-export const IMPORT_ANALYSIS_MODEL_IDS = [
-  "462a2c83-7b99-4eb8-b73a-284a98547ec0",
-  "a438cea2-68e0-4a3b-81cf-bd5f5aac7510",
-  "a87eb84d-06a9-4216-8d2e-57c3f25a21d1",
-] as const;
-export type ImportAnalysisModelId = (typeof IMPORT_ANALYSIS_MODEL_IDS)[number];
-export const ImportAnalysisModelIdSchema = z.enum(IMPORT_ANALYSIS_MODEL_IDS);
-
-export const IMPORT_ANALYSIS_MODEL_OPTIONS: Array<{
-  id: ImportAnalysisModelId;
-  code: "grok" | "qwen" | "flash";
-  label: string;
-}> = [
-  {
-    id: "462a2c83-7b99-4eb8-b73a-284a98547ec0",
-    code: "grok",
-    label: "Grok",
-  },
-  {
-    id: "a438cea2-68e0-4a3b-81cf-bd5f5aac7510",
-    code: "qwen",
-    label: "Qwen",
-  },
-  {
-    id: "a87eb84d-06a9-4216-8d2e-57c3f25a21d1",
-    code: "flash",
-    label: "Flash",
-  },
-];
-
-export function normalizeImportAnalysisModelId(value: unknown): ImportAnalysisModelId | null {
-  const raw = String(value || "").trim();
-  if (!raw) return null;
-  const parsed = ImportAnalysisModelIdSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
-}
-
-export function getImportAnalysisModelLabel(modelId: string | null | undefined): string | null {
-  const normalized = normalizeImportAnalysisModelId(modelId);
-  if (!normalized) return null;
-  return IMPORT_ANALYSIS_MODEL_OPTIONS.find((item) => item.id === normalized)?.label || null;
-}
-
 export const ParsedInlineMarkSchema = z.enum(["bold", "italic"]);
 export type ParsedInlineMark = z.infer<typeof ParsedInlineMarkSchema>;
 
@@ -107,25 +48,6 @@ export const ParsedBookSchema = z
   })
   .strict();
 export type ParsedBook = z.infer<typeof ParsedBookSchema>;
-
-export const ProjectImportPayloadSchema = z
-  .object({
-    id: z.string(),
-    projectId: z.string(),
-    format: BookFormatSchema,
-    state: ProjectImportStateSchema,
-    stage: ProjectImportStageSchema,
-    error: z.string().nullable(),
-    chapterCount: z.number().int().nullable(),
-    startedAt: z.string().nullable(),
-    completedAt: z.string().nullable(),
-    selectedModelId: ImportAnalysisModelIdSchema.nullable(),
-    selectedModelLabel: z.string().nullable(),
-    createdAt: z.string(),
-    updatedAt: z.string(),
-  })
-  .strict();
-export type ProjectImportPayload = z.infer<typeof ProjectImportPayloadSchema>;
 
 export interface BookParseInput {
   format: BookFormat;

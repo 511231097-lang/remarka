@@ -1,0 +1,826 @@
+{
+  "generatedAt": "2026-04-15T10:39:00.710Z",
+  "corpusVersion": "v1",
+  "books": [
+    {
+      "key": "crime_and_punishment",
+      "label": "Преступление и наказание",
+      "snapshot": {
+        "book": {
+          "id": "cmnzv1j7m0002tw6i1lwxn78n",
+          "title": "Преступление и наказание",
+          "author": "Федор Михайлович Достоевский"
+        },
+        "analysis": {
+          "contentVersionId": "cv_2ee5c1229328459ca2e43bb6",
+          "analysisVersion": 4,
+          "coverage": "partial"
+        },
+        "counts": {
+          "chapters": 7,
+          "paragraphs": 4426,
+          "windows": 1095,
+          "observations": 17503,
+          "validObservations": 17429,
+          "invalidObservations": 74,
+          "entities": 3110,
+          "ambiguousEntities": 2041,
+          "scenes": 7,
+          "events": 7,
+          "relations": 801,
+          "quotes": 3267,
+          "evidenceHits": 6133,
+          "presenceMaps": 4713,
+          "validationFailures": 86
+        },
+        "metrics": {
+          "validationFailureRate": 0.0049,
+          "invalidObservationRate": 0.0042,
+          "ambiguousEntityRatio": 0.6563,
+          "singletonEntityRatio": 0.6563,
+          "scenesPerChapter": 1,
+          "eventsPerScene": 1,
+          "evidenceHitUsefulnessProxy": {
+            "usefulHitRatio": 0.0171,
+            "hitsWithSpanRatio": 1,
+            "hitsWithLinkedObjectsRatio": 1,
+            "hitsWithSnippetRatio": 0.0171,
+            "averageLinkedObjectsPerHit": 1.1443
+          },
+          "topEntityPurityProxy": {
+            "topN": 20,
+            "cleanEntityRatio": 0.55,
+            "duplicateRiskCount": 9,
+            "ambiguousHeadCount": 0,
+            "samples": [
+              {
+                "id": "book_entity_fd8cdf6da4f165f982f13c32",
+                "canonicalName": "Раскольников",
+                "type": "character",
+                "status": "active",
+                "supportCount": 534,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Раскольникова",
+                  "Раскольникову",
+                  "Раскольниковым",
+                  "Но Раскольников",
+                  "Когда Раскольников"
+                ]
+              },
+              {
+                "id": "book_entity_b54c078f30ab7d808e4b3dee",
+                "canonicalName": "Ну",
+                "type": "character",
+                "status": "active",
+                "supportCount": 356,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_d35ad77793594970bc48e5d9",
+                "canonicalName": "Но",
+                "type": "character",
+                "status": "active",
+                "supportCount": 320,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_cdca9ae338163580e10c23bc",
+                "canonicalName": "Соня",
+                "type": "character",
+                "status": "active",
+                "supportCount": 263,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_0b00ccdc00572f0925092f14",
+                "canonicalName": "Разумихин",
+                "type": "character",
+                "status": "active",
+                "supportCount": 226,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Разумихина",
+                  "Разумихину",
+                  "Разумихиным",
+                  "Вразумихин",
+                  "Господин Разумихин"
+                ]
+              },
+              {
+                "id": "book_entity_7bd14f4703dd7a4fad66572c",
+                "canonicalName": "Не",
+                "type": "character",
+                "status": "active",
+                "supportCount": 203,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_0a43964e739ce9c6b969c413",
+                "canonicalName": "Ведь",
+                "type": "character",
+                "status": "active",
+                "supportCount": 137,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_328f17cbe7d98c080ed0fd56",
+                "canonicalName": "Дуня",
+                "type": "character",
+                "status": "active",
+                "supportCount": 135,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_42f3897f2bd7e2ca1f914c62",
+                "canonicalName": "Свидригайлов",
+                "type": "character",
+                "status": "active",
+                "supportCount": 134,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Свидригайлова",
+                  "Свидригайловым",
+                  "Свидригайлову",
+                  "Аркадий Иванович Свидригайлов",
+                  "Свидригайловых"
+                ]
+              },
+              {
+                "id": "book_entity_8fa14124fe217c8d41bd7349",
+                "canonicalName": "Все",
+                "type": "character",
+                "status": "active",
+                "supportCount": 126,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_342edf349b4faf295d889e73",
+                "canonicalName": "Катерина Ивановна",
+                "type": "character",
+                "status": "active",
+                "supportCount": 121,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Катерина Ивановна Раскольникову",
+                  "Ведь Катерина Ивановна",
+                  "Ибо Катерина Ивановна",
+                  "Ивановна",
+                  "Но Катерина Ивановна"
+                ]
+              },
+              {
+                "id": "book_entity_cbb53efdbf5c719d9c0f19ae",
+                "canonicalName": "Петр Петрович",
+                "type": "character",
+                "status": "active",
+                "supportCount": 112,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Петр Петрович Лужин",
+                  "Даже Петр Петрович",
+                  "Но Петр Петрович",
+                  "Петр Петрович-то"
+                ]
+              },
+              {
+                "id": "book_entity_04a4533732d3da80d315bc5a",
+                "canonicalName": "Пульхерия Александровна",
+                "type": "character",
+                "status": "active",
+                "supportCount": 106,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Александровна",
+                  "Пульхерия Александровна Раскольникова",
+                  "Тут Пульхерия Александровна"
+                ]
+              },
+              {
+                "id": "book_entity_996bbf2c8f1b7d62fe308b10",
+                "canonicalName": "Родя",
+                "type": "character",
+                "status": "active",
+                "supportCount": 102,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_3635ee3d394381dfccb8ae9d",
+                "canonicalName": "На",
+                "type": "character",
+                "status": "active",
+                "supportCount": 89,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_d97d8c9c9b43bb5608754fa6",
+                "canonicalName": "Раскольникова",
+                "type": "character",
+                "status": "active",
+                "supportCount": 85,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Раскольников",
+                  "Раскольникову",
+                  "Голос Раскольникова",
+                  "Губы Раскольникова",
+                  "Для Раскольникова"
+                ]
+              },
+              {
+                "id": "book_entity_6724ac7e08528fb5f72eec52",
+                "canonicalName": "Ах",
+                "type": "character",
+                "status": "active",
+                "supportCount": 83,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_12e8edf293cd0c1a8f45f7e3",
+                "canonicalName": "Дунечка",
+                "type": "character",
+                "status": "active",
+                "supportCount": 73,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_67079b949955563042ab2c0e",
+                "canonicalName": "Авдотья Романовна",
+                "type": "character",
+                "status": "active",
+                "supportCount": 72,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Но Авдотья Романовна",
+                  "Будь Авдотья Романовна"
+                ]
+              },
+              {
+                "id": "book_entity_07c1a423ce0268d2de343225",
+                "canonicalName": "Порфирий",
+                "type": "character",
+                "status": "active",
+                "supportCount": 65,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Порфирий Петрович",
+                  "Порфирии",
+                  "Порфирий-то",
+                  "Но Порфирий Петрович",
+                  "Раскольникова Порфирий Петрович"
+                ]
+              }
+            ]
+          }
+        },
+        "validationFailureBreakdown": [
+          {
+            "code": "evidence_quote_mismatch",
+            "count": 41
+          },
+          {
+            "code": "invalid_payload",
+            "count": 27
+          },
+          {
+            "code": "span_out_of_bounds",
+            "count": 18
+          }
+        ]
+      },
+      "qa": {
+        "bookKey": "crime_and_punishment",
+        "totalCases": 5,
+        "passedTop1": 3,
+        "passedTop3": 3,
+        "top1Accuracy": 0.6,
+        "top3Accuracy": 0.6,
+        "cases": [
+          {
+            "id": "cp_raskolnikov",
+            "query": "Раскольников",
+            "passedTop1": true,
+            "passedTop3": true,
+            "topCandidateName": "Раскольникове",
+            "matchedCandidateNames": [
+              "Раскольникове"
+            ],
+            "warnings": [
+              "Analysis coverage is partial."
+            ],
+            "coverage": "partial"
+          },
+          {
+            "id": "cp_sonya",
+            "query": "Соня",
+            "passedTop1": false,
+            "passedTop3": false,
+            "topCandidateName": null,
+            "matchedCandidateNames": [],
+            "warnings": [
+              "Analysis coverage is partial.",
+              "No canonical target matched the query."
+            ],
+            "coverage": "partial"
+          },
+          {
+            "id": "cp_porfiry",
+            "query": "Порфирий",
+            "passedTop1": true,
+            "passedTop3": true,
+            "topCandidateName": "Порфирий",
+            "matchedCandidateNames": [
+              "Порфирий"
+            ],
+            "warnings": [
+              "Analysis coverage is partial."
+            ],
+            "coverage": "partial"
+          },
+          {
+            "id": "cp_svidrigailov",
+            "query": "Свидригайлов",
+            "passedTop1": true,
+            "passedTop3": true,
+            "topCandidateName": "Свидригайлова",
+            "matchedCandidateNames": [
+              "Свидригайлова",
+              "Аркадий Иванович Свидригайлов"
+            ],
+            "warnings": [
+              "Analysis coverage is partial."
+            ],
+            "coverage": "partial"
+          },
+          {
+            "id": "cp_dunya",
+            "query": "Дуня",
+            "passedTop1": false,
+            "passedTop3": false,
+            "topCandidateName": null,
+            "matchedCandidateNames": [],
+            "warnings": [
+              "Analysis coverage is partial.",
+              "No canonical target matched the query."
+            ],
+            "coverage": "partial"
+          }
+        ]
+      }
+    },
+    {
+      "key": "harry_potter_2",
+      "label": "Гарри Поттер и Тайная комната",
+      "snapshot": {
+        "book": {
+          "id": "cmnzx2dtf0002tm4h4d1zv2g6",
+          "title": "Гарри Поттер и Тайная комната",
+          "author": "Джоанн Кэтлин Роулинг"
+        },
+        "analysis": {
+          "contentVersionId": "cmnzx2dtw000mtm4hx1s8pxi8",
+          "analysisVersion": 1,
+          "coverage": "partial"
+        },
+        "counts": {
+          "chapters": 18,
+          "paragraphs": 3294,
+          "windows": 792,
+          "observations": 13655,
+          "validObservations": 13637,
+          "invalidObservations": 18,
+          "entities": 2519,
+          "ambiguousEntities": 1643,
+          "scenes": 18,
+          "events": 18,
+          "relations": 447,
+          "quotes": 2117,
+          "evidenceHits": 4775,
+          "presenceMaps": 4583,
+          "validationFailures": 20
+        },
+        "metrics": {
+          "validationFailureRate": 0.0015,
+          "invalidObservationRate": 0.0013,
+          "ambiguousEntityRatio": 0.6522,
+          "singletonEntityRatio": 0.6522,
+          "scenesPerChapter": 1,
+          "eventsPerScene": 1,
+          "evidenceHitUsefulnessProxy": {
+            "usefulHitRatio": 0.0203,
+            "hitsWithSpanRatio": 1,
+            "hitsWithLinkedObjectsRatio": 1,
+            "hitsWithSnippetRatio": 0.0203,
+            "averageLinkedObjectsPerHit": 1.1388
+          },
+          "topEntityPurityProxy": {
+            "topN": 20,
+            "cleanEntityRatio": 0.35,
+            "duplicateRiskCount": 13,
+            "ambiguousHeadCount": 0,
+            "samples": [
+              {
+                "id": "book_entity_a5b30b5db4ccd367b53979ea",
+                "canonicalName": "Гарри",
+                "type": "character",
+                "status": "active",
+                "supportCount": 1318,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Гарри Поттер",
+                  "Но Гарри",
+                  "Гарри Поттера",
+                  "Гарри Поттеру",
+                  "Рон Гарри"
+                ]
+              },
+              {
+                "id": "book_entity_c29e0e40fa54fe4f599d0edf",
+                "canonicalName": "Рон",
+                "type": "character",
+                "status": "active",
+                "supportCount": 460,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_4ebb96d3f24abdcdc59592e3",
+                "canonicalName": "Но",
+                "type": "character",
+                "status": "active",
+                "supportCount": 206,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_305d1f63e4631f98c3043687",
+                "canonicalName": "Гермиона",
+                "type": "character",
+                "status": "active",
+                "supportCount": 200,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Гермиона Грэйнджер",
+                  "Но Гермиона",
+                  "Наконец Гермиона",
+                  "Сама Гермиона",
+                  "Ты Гермиона Грэйнджер"
+                ]
+              },
+              {
+                "id": "book_entity_444910979ce34bfbeddcdf26",
+                "canonicalName": "Гарри",
+                "type": "location",
+                "status": "active",
+                "supportCount": 142,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Гарри Поттеру",
+                  "Гриффиндор Гарри",
+                  "Хогвартсе Гарри Поттеру"
+                ]
+              },
+              {
+                "id": "book_entity_4f6d408680fcb2fdc82a6cbe",
+                "canonicalName": "Локонс",
+                "type": "character",
+                "status": "active",
+                "supportCount": 129,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Локонса",
+                  "Златопуст Локонс",
+                  "Златопуста Локонса",
+                  "Локонсом",
+                  "Локонсу"
+                ]
+              },
+              {
+                "id": "book_entity_47465a0798cf2d334b2435f1",
+                "canonicalName": "Добби",
+                "type": "character",
+                "status": "active",
+                "supportCount": 123,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Но Добби",
+                  "Добби-домовик",
+                  "Гадкий Добби",
+                  "Обещайте Добби",
+                  "Просто Добби"
+                ]
+              },
+              {
+                "id": "book_entity_2afd4c4439796a9cc07ce62c",
+                "canonicalName": "Не",
+                "type": "character",
+                "status": "active",
+                "supportCount": 116,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_0dc0fa4ede35e5a23c071ee6",
+                "canonicalName": "Уизли",
+                "type": "character",
+                "status": "active",
+                "supportCount": 107,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Мистер Уизли",
+                  "Миссис Уизли",
+                  "Артур Уизли",
+                  "Джинни Уизли",
+                  "Перси Уизли"
+                ]
+              },
+              {
+                "id": "book_entity_f7650695ceb23d505bf6ef9e",
+                "canonicalName": "Джинни",
+                "type": "character",
+                "status": "active",
+                "supportCount": 94,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Джинни Уизли",
+                  "Но Джинни",
+                  "Это Джинни",
+                  "Дурашка Джинни",
+                  "Зато Джинни"
+                ]
+              },
+              {
+                "id": "book_entity_78beed47ef5522028ef5815d",
+                "canonicalName": "На",
+                "type": "character",
+                "status": "active",
+                "supportCount": 93,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_b97e6b0771b6e4ad5db3d692",
+                "canonicalName": "Дамблдор",
+                "type": "character",
+                "status": "active",
+                "supportCount": 92,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Дамблдора",
+                  "Профессор Дамблдор",
+                  "Дамблдору",
+                  "Альбус Дамблдор",
+                  "Выкинуть Дамблдора"
+                ]
+              },
+              {
+                "id": "book_entity_cab75a4cf76fad70e67e6c60",
+                "canonicalName": "Малфой",
+                "type": "character",
+                "status": "active",
+                "supportCount": 90,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Драко Малфой",
+                  "Люциус Малфой",
+                  "Мистер Малфой",
+                  "Малфои",
+                  "Но Малфой"
+                ]
+              },
+              {
+                "id": "book_entity_aedd9cd1a7c5768af49633fa",
+                "canonicalName": "Хагрид",
+                "type": "character",
+                "status": "active",
+                "supportCount": 88,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Хагрида",
+                  "Хагриду",
+                  "Хагридом",
+                  "Домик Хагрида",
+                  "Локонс Хагриду"
+                ]
+              },
+              {
+                "id": "book_entity_c2e527b20d2e27e072c4d513",
+                "canonicalName": "Ну",
+                "type": "character",
+                "status": "active",
+                "supportCount": 80,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_d476db8707eda00f42c22125",
+                "canonicalName": "Реддл",
+                "type": "character",
+                "status": "active",
+                "supportCount": 75,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Реддла",
+                  "Том Реддл",
+                  "Дневник Реддла",
+                  "Реддлом",
+                  "Реддлу"
+                ]
+              },
+              {
+                "id": "book_entity_117e9f309d97b1a1a2a59605",
+                "canonicalName": "Фред",
+                "type": "character",
+                "status": "active",
+                "supportCount": 66,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_d53f4c0024298395425ce492",
+                "canonicalName": "Рона",
+                "type": "character",
+                "status": "active",
+                "supportCount": 60,
+                "aliasCount": 1,
+                "duplicateRisk": false,
+                "duplicateMatches": []
+              },
+              {
+                "id": "book_entity_ed42509652ff6c58b5c9f813",
+                "canonicalName": "Снегг",
+                "type": "character",
+                "status": "active",
+                "supportCount": 60,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Снегга",
+                  "Профессор Снегг",
+                  "Снеггу",
+                  "Взгляд Снегга",
+                  "Если Снегг"
+                ]
+              },
+              {
+                "id": "book_entity_4c7c5730c6bb534254cc8e91",
+                "canonicalName": "МакГонагалл",
+                "type": "character",
+                "status": "active",
+                "supportCount": 59,
+                "aliasCount": 1,
+                "duplicateRisk": true,
+                "duplicateMatches": [
+                  "Профессор МакГонагалл",
+                  "Но МакГонагалл",
+                  "Профессору МакГонагалл"
+                ]
+              }
+            ]
+          }
+        },
+        "validationFailureBreakdown": [
+          {
+            "code": "span_out_of_bounds",
+            "count": 17
+          },
+          {
+            "code": "invalid_payload",
+            "count": 2
+          },
+          {
+            "code": "evidence_quote_mismatch",
+            "count": 1
+          }
+        ]
+      },
+      "qa": {
+        "bookKey": "harry_potter_2",
+        "totalCases": 5,
+        "passedTop1": 3,
+        "passedTop3": 3,
+        "top1Accuracy": 0.6,
+        "top3Accuracy": 0.6,
+        "cases": [
+          {
+            "id": "hp_harry",
+            "query": "Гарри Поттер",
+            "passedTop1": true,
+            "passedTop3": true,
+            "topCandidateName": "Почему Гарри Поттер",
+            "matchedCandidateNames": [
+              "Почему Гарри Поттер"
+            ],
+            "warnings": [
+              "Analysis coverage is partial."
+            ],
+            "coverage": "partial"
+          },
+          {
+            "id": "hp_ron",
+            "query": "Рон Уизли",
+            "passedTop1": false,
+            "passedTop3": false,
+            "topCandidateName": null,
+            "matchedCandidateNames": [],
+            "warnings": [
+              "Analysis coverage is partial.",
+              "No canonical target matched the query."
+            ],
+            "coverage": "partial"
+          },
+          {
+            "id": "hp_hermione",
+            "query": "Гермиона",
+            "passedTop1": true,
+            "passedTop3": true,
+            "topCandidateName": "Сама Гермиона",
+            "matchedCandidateNames": [
+              "Сама Гермиона"
+            ],
+            "warnings": [
+              "Analysis coverage is partial."
+            ],
+            "coverage": "partial"
+          },
+          {
+            "id": "hp_dobby",
+            "query": "Добби",
+            "passedTop1": true,
+            "passedTop3": true,
+            "topCandidateName": "Добби-домовик",
+            "matchedCandidateNames": [
+              "Добби-домовик",
+              "Тогда Добби"
+            ],
+            "warnings": [
+              "Analysis coverage is partial."
+            ],
+            "coverage": "partial"
+          },
+          {
+            "id": "hp_hogwarts",
+            "query": "Хогвартс",
+            "passedTop1": false,
+            "passedTop3": false,
+            "topCandidateName": null,
+            "matchedCandidateNames": [],
+            "warnings": [
+              "Analysis coverage is partial.",
+              "No canonical target matched the query."
+            ],
+            "coverage": "partial"
+          }
+        ]
+      }
+    }
+  ]
+}

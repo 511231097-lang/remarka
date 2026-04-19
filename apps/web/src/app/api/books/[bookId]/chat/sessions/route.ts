@@ -1,13 +1,26 @@
-import { prisma } from "@remarka/db";
-import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
 import { resolveAccessibleBook } from "@/lib/chatAccess";
-import { toBookChatSessionDTO } from "@/lib/books";
-import { BookChatTurnStateSchema } from "@remarka/contracts";
+import { BookChatError, createBookChatThread, listBookChatThreads } from "@/lib/bookChatService";
 
 interface RouteContext {
   params: Promise<{ bookId: string }>;
+}
+
+function toSessionDTO(thread: {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messageCount: number;
+}) {
+  return {
+    id: thread.id,
+    title: thread.title,
+    createdAt: thread.createdAt,
+    updatedAt: thread.updatedAt,
+    lastMessageAt: thread.messageCount > 0 ? thread.updatedAt : null,
+  };
 }
 
 export async function GET(_request: Request, context: RouteContext) {
@@ -21,18 +34,17 @@ export async function GET(_request: Request, context: RouteContext) {
   const book = await resolveAccessibleBook({ bookId, userId: authUser.id });
   if (!book) return NextResponse.json({ error: "Book not found" }, { status: 404 });
 
-  const sessions = await prisma.bookChatSession.findMany({
-    where: {
-      bookId,
-      userId: authUser.id,
-    },
-    orderBy: [{ lastMessageAt: "desc" }, { createdAt: "desc" }],
-    take: 50,
-  });
-
-  return NextResponse.json({
-    items: sessions.map(toBookChatSessionDTO),
-  });
+  try {
+    const threads = await listBookChatThreads(book.id);
+    return NextResponse.json({
+      items: threads.map(toSessionDTO),
+    });
+  } catch (error) {
+    if (error instanceof BookChatError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+    }
+    return NextResponse.json({ error: "Failed to list chat sessions" }, { status: 500 });
+  }
 }
 
 export async function POST(request: Request, context: RouteContext) {
@@ -55,24 +67,19 @@ export async function POST(request: Request, context: RouteContext) {
 
   const title = String(body.title || "").trim().slice(0, 120) || "Новый чат";
 
-  const session = await prisma.bookChatSession.create({
-    data: {
-      bookId,
-      userId: authUser.id,
+  try {
+    const thread = await createBookChatThread({
+      bookId: book.id,
       title,
-      lastMessageAt: null,
-    },
-  });
+    });
 
-  await prisma.bookChatSessionState.create({
-    data: {
-      sessionId: session.id,
-      bookId,
-      stateJson: BookChatTurnStateSchema.parse({}) as unknown as Prisma.InputJsonValue,
-    },
-  });
-
-  return NextResponse.json({
-    session: toBookChatSessionDTO(session),
-  });
+    return NextResponse.json({
+      session: toSessionDTO(thread),
+    });
+  } catch (error) {
+    if (error instanceof BookChatError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+    }
+    return NextResponse.json({ error: "Failed to create chat session" }, { status: 500 });
+  }
 }

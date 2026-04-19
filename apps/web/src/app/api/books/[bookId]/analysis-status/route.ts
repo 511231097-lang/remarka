@@ -1,14 +1,7 @@
 import { prisma } from "@remarka/db";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
-import { BOOK_PIPELINE_STAGE_KEYS, type BookAnalyzerStatusDTO, type BookPipelineStageKeyDTO } from "@/lib/books";
-import {
-  buildAnalysisViews,
-  buildBookChatReadiness,
-  createEmptyAnalyzerStatus,
-  isAnalyzerPending,
-  normalizePipelineAnalyzers,
-} from "@/lib/bookChatReadiness";
+import { buildBookAnalysisStatusDTO } from "@/lib/bookAnalysisStatus";
 
 interface RouteContext {
   params: Promise<{ bookId: string }>;
@@ -32,18 +25,7 @@ export async function GET(_request: Request, context: RouteContext) {
       id: true,
       isPublic: true,
       ownerUserId: true,
-      _count: {
-        select: {
-          paragraphs: true,
-          sentences: true,
-          scenes: true,
-          entities: true,
-          eventsGraph: true,
-          summaryArtifacts: true,
-          evidenceLinks: true,
-          bookQuotes: true,
-        },
-      },
+      analysisStatus: true,
     },
   });
 
@@ -51,78 +33,13 @@ export async function GET(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
 
+  if (book.analysisStatus !== "completed" && book.ownerUserId !== authUser.id) {
+    return NextResponse.json({ error: "Book not found" }, { status: 404 });
+  }
+
   if (!book.isPublic && book.ownerUserId !== authUser.id) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
 
-  const tasks = await prisma.bookAnalyzerTask.findMany({
-    where: {
-      bookId: book.id,
-      analyzerType: { in: [...BOOK_PIPELINE_STAGE_KEYS] },
-    },
-    select: {
-      analyzerType: true,
-      state: true,
-      error: true,
-      startedAt: true,
-      completedAt: true,
-    },
-  });
-
-  const taskByType = new Map<string, (typeof tasks)[number]>(tasks.map((task) => [task.analyzerType, task] as const));
-  const serializeTask = (type: string) => {
-    const task = taskByType.get(type);
-    if (!task) return createEmptyAnalyzerStatus();
-    return {
-      state: task.state,
-      error: task.error || null,
-      startedAt: task.startedAt ? task.startedAt.toISOString() : null,
-      completedAt: task.completedAt ? task.completedAt.toISOString() : null,
-    };
-  };
-
-  const analyzerStatuses = Object.fromEntries(
-    BOOK_PIPELINE_STAGE_KEYS.map((key) => [key, serializeTask(key)])
-  ) as Record<BookPipelineStageKeyDTO, BookAnalyzerStatusDTO>;
-
-  const analyzers = normalizePipelineAnalyzers({
-    analyzers: analyzerStatuses,
-    presence: {
-      paragraphs: book._count.paragraphs > 0,
-      sentences: book._count.sentences > 0,
-      scenes: book._count.scenes > 0,
-      entities: book._count.entities > 0,
-      events: book._count.eventsGraph > 0,
-      summaries: book._count.summaryArtifacts > 0,
-      evidence: book._count.evidenceLinks > 0,
-      quotes: book._count.bookQuotes > 0,
-    },
-  });
-
-  const views = buildAnalysisViews({
-    analyzers,
-    presence: {
-      paragraphs: book._count.paragraphs > 0,
-      sentences: book._count.sentences > 0,
-      scenes: book._count.scenes > 0,
-      entities: book._count.entities > 0,
-      events: book._count.eventsGraph > 0,
-      summaries: book._count.summaryArtifacts > 0,
-      evidence: book._count.evidenceLinks > 0,
-      quotes: book._count.bookQuotes > 0,
-    },
-  });
-
-  const chatReadiness = buildBookChatReadiness(analyzers);
-  const shouldPoll = Object.values(analyzers).some((analyzer) => isAnalyzerPending(analyzer.state));
-  const pollIntervalMs = shouldPoll ? (chatReadiness.canChat ? 4000 : 2500) : 0;
-
-  return NextResponse.json({
-    bookId: book.id,
-    analyzers,
-    views,
-    chatReadiness,
-    shouldPoll,
-    pollIntervalMs,
-  });
+  return NextResponse.json(await buildBookAnalysisStatusDTO(book.id));
 }

@@ -1,4 +1,11 @@
-CREATE EXTENSION IF NOT EXISTS vector;
+DO $$
+BEGIN
+  -- Optional on local dev environments where pgvector is not installed.
+  CREATE EXTENSION IF NOT EXISTS vector;
+EXCEPTION
+  WHEN undefined_file THEN
+    NULL;
+END $$;
 
 ALTER TYPE "BookAnalyzerType" ADD VALUE IF NOT EXISTS 'chat_index';
 
@@ -13,7 +20,7 @@ CREATE TABLE "BookChunk" (
   "startChar" INTEGER NOT NULL,
   "endChar" INTEGER NOT NULL,
   "text" TEXT NOT NULL,
-  "embedding" vector(768) NOT NULL,
+  "embedding" JSONB NOT NULL,
   "embeddingModel" TEXT NOT NULL,
   "metadataJson" JSONB,
   "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -54,9 +61,7 @@ ON "BookChunk"("bookId", "chapterOrderIndex", "chunkIndex");
 CREATE INDEX "BookChunk_bookId_chapter_chunk_idx"
 ON "BookChunk"("bookId", "chapterOrderIndex", "chunkIndex");
 
-CREATE INDEX "BookChunk_embedding_hnsw_idx"
-ON "BookChunk"
-USING hnsw ("embedding" vector_cosine_ops);
+-- HNSW index is skipped on local dev environments without pgvector.
 
 CREATE INDEX "BookChatSession_book_user_lastMessage_idx"
 ON "BookChatSession"("bookId", "userId", "lastMessageAt");

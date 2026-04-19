@@ -3,13 +3,11 @@ import type {
   BookAnalyzerStatusDTO as BookAnalyzerStatusDTOValue,
   BookAnalyzerStateDTO,
   BookChapterDTO,
-  BookChatResponseDTO,
   BookChatCreateSessionResponseDTO,
   BookChatCreateSessionRequestDTO,
   BookChatMessageDTO,
   BookChatMessagesResponseDTO,
   BookChatSessionDTO,
-  BookChatSessionResponseDTO,
   BookChatSessionsResponseDTO,
   BookChatStreamEventDTO,
   BookChatStreamFinalEventDTO,
@@ -178,17 +176,6 @@ export async function createBookChatSession(
   return payload.session;
 }
 
-export async function getBookChatSession(bookId: string, sessionId: string): Promise<BookChatSessionDTO> {
-  const response = await fetch(`/api/books/${bookId}/chat/sessions/${sessionId}`, {
-    method: "GET",
-    cache: "no-store",
-  });
-
-  const safe = await ensureOk(response, "Не удалось загрузить чат");
-  const payload = (await safe.json()) as BookChatSessionResponseDTO;
-  return payload.session;
-}
-
 export async function deleteBookChatSession(bookId: string, sessionId: string): Promise<void> {
   const response = await fetch(`/api/books/${bookId}/chat/sessions/${sessionId}`, {
     method: "DELETE",
@@ -293,6 +280,14 @@ export async function streamBookChatMessage(params: {
         continue;
       }
 
+      if (parsed.event === "status") {
+        params.onEvent?.({
+          type: "status",
+          text: String(payload?.text || ""),
+        });
+        continue;
+      }
+
       if (parsed.event === "error") {
         const errorMessage = String(payload?.error || "Ошибка stream-ответа");
         params.onEvent?.({
@@ -318,26 +313,4 @@ export async function streamBookChatMessage(params: {
   }
 
   return finalPayload;
-}
-
-export async function sendBookChatMessage(
-  bookId: string,
-  input: {
-    message: string;
-    sessionId?: string;
-    topK?: number;
-    sectionKey?: LiterarySectionKeyDTO;
-    entryContext?: "overview" | "section" | "full_chat";
-  }
-): Promise<BookChatResponseDTO> {
-  const response = await fetch(`/api/books/${bookId}/chat`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(input || {}),
-  });
-
-  const safe = await ensureOk(response, "Не удалось получить ответ чата");
-  return safe.json();
 }

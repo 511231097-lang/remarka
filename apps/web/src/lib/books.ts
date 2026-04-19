@@ -20,7 +20,6 @@ import type {
   BookThemeQuote,
   User,
 } from "@prisma/client";
-import { BOOK_CHAT_GRAPH_STAGE_KEYS, BOOK_EXPERT_CORE_STAGE_KEYS } from "@remarka/contracts";
 
 export interface BookOwnerDTO {
   id: string;
@@ -32,6 +31,7 @@ export interface BookCardDTO {
   id: string;
   title: string;
   author: string | null;
+  coverUrl?: string | null;
   isPublic: boolean;
   createdAt: string;
   owner: BookOwnerDTO;
@@ -49,6 +49,7 @@ export interface BookCoreDTO {
   id: string;
   title: string;
   author: string | null;
+  coverUrl?: string | null;
   summary: string | null;
   isPublic: boolean;
   analysisState: BookAnalysisState;
@@ -292,13 +293,26 @@ export type BookChatConfidenceDTO = "high" | "medium" | "low";
 export type BookChatModeDTO = "fast" | "expert" | "degraded";
 export type BookChatEntryContextDTO = "overview" | "section" | "full_chat";
 export type BookAnalyzerStateDTO = "queued" | "running" | "completed" | "failed" | "not_requested";
+export type BookToolCapabilityLevelDTO = "high" | "medium" | "low" | "disabled";
 export const BOOK_PIPELINE_STAGE_KEYS = [
-  ...BOOK_EXPERT_CORE_STAGE_KEYS,
-  "chat_index",
-  ...BOOK_CHAT_GRAPH_STAGE_KEYS,
+  "ingest_normalize",
+  "structural_pass",
+  "local_extraction_mentions",
+  "local_extraction_quotes",
+  "local_extraction_events",
+  "local_extraction_relations",
+  "local_extraction_time_location",
+  "validation_pass",
+  "entity_resolution",
+  "scene_assembly",
+  "event_timeline",
+  "relation_aggregation",
+  "summary_synthesis",
+  "index_build",
+  "repair",
 ] as const;
 export type BookPipelineStageKeyDTO = (typeof BOOK_PIPELINE_STAGE_KEYS)[number];
-export type BookAnalysisViewKeyDTO = "summary" | "characters" | "themes" | "locations" | "quotes" | "literary";
+export type BookAnalysisViewKeyDTO = "source" | "observations" | "canonical" | "read_layer";
 
 export interface BookAnalyzerStatusDTO {
   state: BookAnalyzerStateDTO;
@@ -326,13 +340,92 @@ export interface BookChatReadinessDTO {
   stages: BookChatReadinessStageDTO[];
 }
 
+export interface BookCapabilitySnapshotDTO {
+  bookId: string;
+  analysisVersion: string | null;
+  analysisState: "processing" | "completed" | "failed";
+  coverage: "none" | "partial" | "full";
+  capabilities: {
+    resolve_target: BookToolCapabilityLevelDTO;
+    get_entity: BookToolCapabilityLevelDTO;
+    get_presence: BookToolCapabilityLevelDTO;
+    get_evidence: BookToolCapabilityLevelDTO;
+    read_passages: BookToolCapabilityLevelDTO;
+    get_processing_status: BookToolCapabilityLevelDTO;
+  };
+  trustedTools: {
+    resolve_target: boolean;
+    get_entity: boolean;
+    get_presence: boolean;
+    get_evidence: boolean;
+    read_passages: boolean;
+    get_processing_status: boolean;
+  };
+  warnings: string[];
+}
+
 export interface BookAnalysisStatusDTO {
   bookId: string;
+  contentVersion: number | null;
+  overallState: "queued" | "running" | "completed" | "failed";
+  coverage: "full" | "partial" | "unknown";
+  capabilitySnapshot: BookCapabilitySnapshotDTO;
   analyzers: Record<BookPipelineStageKeyDTO, BookAnalyzerStatusDTO>;
   views: Record<BookAnalysisViewKeyDTO, BookAnalyzerStatusDTO>;
   chatReadiness: BookChatReadinessDTO;
+  counts: {
+    source: {
+      chapters: number;
+      paragraphs: number;
+      windows: number;
+    };
+    observations: {
+      total: number;
+      valid: number;
+      invalid: number;
+    };
+    canonical: {
+      entities: number;
+      scenes: number;
+      events: number;
+      relations: number;
+      quotes: number;
+      summaries: number;
+    };
+    readLayer: {
+      entityCards: number;
+      sceneCards: number;
+      relationCards: number;
+      timelineSlices: number;
+      quoteSlices: number;
+      searchDocuments: number;
+      evidenceHits: number;
+      presenceMaps: number;
+      processingReports: number;
+    };
+  };
+  unresolvedIssues: {
+    paragraphsWithoutScene: number;
+    ambiguousEntities: number;
+    validationFailures: number;
+  };
+  chapterStats: BookAnalysisChapterStatusDTO[];
   shouldPoll: boolean;
   pollIntervalMs: number;
+}
+
+export type BookAnalysisChapterStateDTO = "queued" | "running" | "completed" | "failed";
+
+export interface BookAnalysisChapterStatusDTO {
+  chapterId: string;
+  chapterOrderIndex: number;
+  chapterTitle: string;
+  state: BookAnalysisChapterStateDTO;
+  totalBlocks: number;
+  checkedBlocks: number;
+  remainingBlocks: number;
+  startedAt: string | null;
+  completedAt: string | null;
 }
 
 export interface BookChatEvidenceDTO {
@@ -405,10 +498,6 @@ export interface BookChatSessionsResponseDTO {
   items: BookChatSessionDTO[];
 }
 
-export interface BookChatSessionResponseDTO {
-  session: BookChatSessionDTO;
-}
-
 export interface BookChatMessagesResponseDTO {
   items: BookChatMessageDTO[];
 }
@@ -436,16 +525,11 @@ export interface BookChatStreamFinalEventDTO {
 }
 
 export interface BookChatStreamEventDTO {
-  type: "session" | "token" | "final" | "error";
+  type: "session" | "status" | "token" | "final" | "error";
   sessionId?: string;
   text?: string;
   error?: string;
   final?: BookChatStreamFinalEventDTO;
-}
-
-export interface BookChatResponseDTO {
-  sessionId: string;
-  message: BookChatMessageDTO;
 }
 
 type BookWithOwner = Book & {
@@ -486,6 +570,7 @@ export function toBookCardDTO(book: BookCardProjection, viewerUserId: string): B
     id: book.id,
     title: book.title,
     author: book.author || null,
+    coverUrl: book.coverUrl || null,
     isPublic: book.isPublic,
     createdAt: book.createdAt.toISOString(),
     owner: toBookOwnerDTO(book.owner),
@@ -505,6 +590,7 @@ export function toBookCoreDTO(book: BookWithOwner): BookCoreDTO {
     id: book.id,
     title: book.title,
     author: book.author || null,
+    coverUrl: book.coverUrl || null,
     summary: book.summary || null,
     isPublic: book.isPublic,
     analysisState: book.analysisState,

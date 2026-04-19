@@ -10,3 +10,4 @@ coverage
 apps/web/.env.local
 apps/worker/.env
 packages/db/.env
+evals/corpus-inputs/

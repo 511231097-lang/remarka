@@ -112,6 +112,10 @@ export async function GET(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
 
+  if (book.analysisStatus !== "completed") {
+    return NextResponse.json({ error: "Book not found" }, { status: 404 });
+  }
+
   const dto = toBookCoreDTO(book);
   dto.canManage = book.ownerUserId === authUser.id;
   return NextResponse.json(dto);

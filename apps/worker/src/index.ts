@@ -1,5 +1,4 @@
-import { Prisma } from "@prisma/client";
-import { enqueueBookAnalyzerStage, prisma } from "@remarka/db";
+import { prisma } from "@remarka/db";
 import { workerConfig } from "./config";
 import {
   completedExecution,
@@ -9,29 +8,7 @@ import {
   RetryableAnalyzerError,
   type AnalyzerExecutionResult,
 } from "./analyzerExecution";
-import { mergeBookAnalyzerTaskMetadata } from "./bookAnalyzerTaskMetadata";
-import { processBookChatIndex } from "./jobs/processBookChatIndex";
-import {
-  processBookCoreEntityMentions,
-  processBookCoreLiterary,
-  processBookCoreMerge,
-  processBookCoreProfiles,
-  processBookCoreQuotesFinalize,
-  processBookCoreResolve,
-  processBookCoreWindowScan,
-} from "./jobs/processBookExpertCore";
-import {
-  processBookCanonicalText,
-  processBookEntityGraph,
-  processBookEventRelationGraph,
-  processBookEvidenceStore,
-  processBookQuoteStore,
-  processBookSceneBuild,
-  processBookSummaryStore,
-  processBookTextIndex,
-} from "./jobs/processBookGraph";
-import { processDocumentExtract } from "./jobs/processDocumentExtract";
-import { processProjectImport } from "./jobs/processProjectImport";
+import { markBookAnalysisFailed, runBookAnalysis } from "./analysisPipeline.npz";
 import { logger } from "./logger";
 
 function sleep(ms: number) {
@@ -43,263 +20,56 @@ function safeErrorMessage(error: unknown): string {
   return String(error || "Outbox event failed").slice(0, 2000);
 }
 
-const DISABLED_LEGACY_BOOK_ANALYZERS = new Set([
-  "summary",
-  "characters",
-  "themes",
-  "locations",
-  "quotes",
-  "literary",
-  "events",
-]);
-
-async function markSkippedAnalyzerCompleted(bookId: string, analyzerType: string): Promise<void> {
-  const now = new Date();
-  await prisma.bookAnalyzerTask.upsert({
-    where: {
-      bookId_analyzerType: {
-        bookId,
-        analyzerType: analyzerType as any,
-      },
+function createBookScopedLogger(bookId: string) {
+  return {
+    info(message: string, data?: Record<string, unknown>) {
+      logger.info({ ...(data || {}), bookId }, message);
     },
-    create: {
-      bookId,
-      analyzerType: analyzerType as any,
-      state: "completed",
-      error: null,
-      startedAt: now,
-      completedAt: now,
-      metadataJson: mergeBookAnalyzerTaskMetadata(null, {
-        degraded: true,
-        fallbackKind: "disabled_stage",
-        lastReason: `${analyzerType} skipped by worker configuration`,
-      }) ?? Prisma.JsonNull,
+    warn(message: string, data?: Record<string, unknown>) {
+      logger.warn({ ...(data || {}), bookId }, message);
     },
-    update: {
-      state: "completed",
-      error: null,
-      startedAt: now,
-      completedAt: now,
-      metadataJson: mergeBookAnalyzerTaskMetadata(undefined, {
-        degraded: true,
-        fallbackKind: "disabled_stage",
-        lastReason: `${analyzerType} skipped by worker configuration`,
-      }) ?? Prisma.JsonNull,
+    error(message: string, data?: Record<string, unknown>) {
+      logger.error({ ...(data || {}), bookId }, message);
     },
-  });
-}
-
-async function handleReindexEvent(payload: any) {
-  const documentId = String(payload?.documentId || "").trim();
-  const projectId = String(payload?.projectId || "").trim();
-  const chapterId = String(payload?.chapterId || "").trim();
-  const contentVersion = Number(payload?.contentVersion);
-
-  if (!documentId || !projectId || !chapterId || !Number.isInteger(contentVersion)) {
-    throw new Error("Invalid document.reindex.requested payload");
-  }
-
-  const runId = await prisma.$transaction(async (tx: any) => {
-    const document = await tx.document.findUnique({
-      where: { id: documentId },
-      select: {
-        id: true,
-        contentVersion: true,
-        currentRunId: true,
-      },
-    });
-
-    if (!document) {
-      throw new Error("Document not found");
-    }
-
-    if (document.contentVersion !== contentVersion) {
-      return null;
-    }
-
-    const run = await tx.analysisRun.create({
-      data: {
-        projectId,
-        documentId,
-        chapterId,
-        contentVersion,
-        state: "queued",
-        phase: "queued",
-      },
-      select: {
-        id: true,
-      },
-    });
-
-    await tx.analysisRun.updateMany({
-      where: {
-        documentId,
-        id: { not: run.id },
-        state: {
-          in: ["queued", "running"],
-        },
-      },
-      data: {
-        state: "superseded",
-        phase: "superseded",
-        supersededByRunId: run.id,
-        completedAt: new Date(),
-      },
-    });
-
-    await tx.document.update({
-      where: { id: documentId },
-      data: {
-        currentRunId: run.id,
-      },
-    });
-
-    return run.id;
-  });
-
-  if (runId) {
-    await processDocumentExtract({ runId });
-  }
+  };
 }
 
 async function handleOutboxEvent(entry: any): Promise<AnalyzerExecutionResult> {
   const eventType = String(entry.eventType || "").trim();
   const payload = entry.payloadJson || {};
 
-  const processBookAnalyzer = async (): Promise<AnalyzerExecutionResult> => {
-    const bookId = String(payload?.bookId || "").trim();
-    const analyzerType = String(payload?.analyzerType || "").trim().toLowerCase();
+  if (eventType === "book.npz-analysis.requested" || eventType === "book.analysis.requested") {
+    const bookId = String(payload?.bookId || entry.aggregateId || "").trim();
     if (!bookId) {
-      throw new Error("Invalid book.analyzer.requested payload");
-    }
-    if (!analyzerType) {
-      throw new Error("Invalid book.analyzer.requested payload: analyzerType is required");
+      throw new Error(`Invalid ${eventType} payload`);
     }
 
-    if (DISABLED_LEGACY_BOOK_ANALYZERS.has(analyzerType)) {
-      await markSkippedAnalyzerCompleted(bookId, analyzerType);
+    const scopedLogger = createBookScopedLogger(bookId);
 
-      logger.info(
-        {
-          bookId,
-          analyzerType,
-          outboxId: entry.id,
-        },
-        "Skipping disabled legacy book analyzer stage"
-      );
-      return completedExecution(`${analyzerType} analyzer disabled in current chat pipeline`);
-    }
-
-    if (analyzerType === "chat_index") {
-      return processBookChatIndex({ bookId });
-    }
-
-    if (analyzerType === "core_window_scan") {
-      return processBookCoreWindowScan({ bookId });
-    }
-
-    if (analyzerType === "core_merge") {
-      return processBookCoreMerge({ bookId });
-    }
-
-    if (analyzerType === "core_resolve") {
-      return processBookCoreResolve({ bookId });
-    }
-
-    if (analyzerType === "core_entity_mentions") {
-      return processBookCoreEntityMentions({ bookId });
-    }
-
-    if (analyzerType === "core_profiles") {
-      return processBookCoreProfiles({ bookId });
-    }
-
-    if (analyzerType === "core_quotes_finalize") {
-      return processBookCoreQuotesFinalize({ bookId });
-    }
-
-    if (analyzerType === "core_literary") {
-      return processBookCoreLiterary({ bookId });
-    }
-
-    if (analyzerType === "canonical_text") {
-      return processBookCanonicalText({ bookId });
-    }
-
-    if (analyzerType === "scene_build") {
-      return processBookSceneBuild({ bookId });
-    }
-
-    if (analyzerType === "entity_graph") {
-      return processBookEntityGraph({ bookId });
-    }
-
-    if (analyzerType === "event_relation_graph") {
-      return processBookEventRelationGraph({ bookId });
-    }
-
-    if (analyzerType === "summary_store") {
-      return processBookSummaryStore({ bookId });
-    }
-
-    if (analyzerType === "evidence_store") {
-      return processBookEvidenceStore({ bookId });
-    }
-
-    if (analyzerType === "text_index") {
-      return processBookTextIndex({ bookId });
-    }
-
-    if (analyzerType === "quote_store") {
-      return processBookQuoteStore({ bookId });
-    }
-
-    logger.info(
-      {
+    try {
+      await runBookAnalysis({
         bookId,
-        analyzerType,
-        outboxId: entry.id,
-      },
-      "Skipping unsupported book analyzer type"
-    );
-    return completedExecution(`unsupported analyzer type skipped: ${analyzerType}`);
-  };
+        logger: scopedLogger,
+      });
+      return completedExecution();
+    } catch (error) {
+      const message = safeErrorMessage(error);
+      await markBookAnalysisFailed({
+        bookId,
+        error: message,
+        logger: scopedLogger,
+      });
 
-  if (eventType === "analysis.run.requested") {
-    const runId = String(payload?.runId || "").trim();
-    if (!runId) {
-      throw new Error("Invalid analysis.run.requested payload");
+      logger.error(
+        {
+          outboxId: entry.id,
+          bookId,
+          error: message,
+        },
+        "NPZ book analysis failed"
+      );
+      return completedExecution("npz analysis failed and marked");
     }
-    await processDocumentExtract({ runId });
-    return completedExecution();
-  }
-
-  if (eventType === "project.import.requested") {
-    const importId = String(payload?.importId || "").trim();
-    if (!importId) {
-      throw new Error("Invalid project.import.requested payload");
-    }
-    await processProjectImport({ importId });
-    return completedExecution();
-  }
-
-  if (eventType === "document.reindex.requested") {
-    await handleReindexEvent(payload);
-    return completedExecution();
-  }
-
-  if (eventType === "book.analysis.requested") {
-    logger.info(
-      {
-        outboxId: entry.id,
-      },
-      "Skipping deprecated book.analysis.requested event"
-    );
-    return completedExecution("deprecated book.analysis.requested event skipped");
-  }
-
-  if (eventType === "book.analyzer.requested") {
-    return processBookAnalyzer();
   }
 
   logger.warn({ eventType, outboxId: entry.id }, "Skipping unknown outbox event type");
@@ -319,7 +89,7 @@ function classifyOutboxError(error: unknown): AnalyzerExecutionResult {
   }
 
   if (
-    normalized.includes("invalid ") && normalized.includes("payload") ||
+    (normalized.includes("invalid ") && normalized.includes("payload")) ||
     normalized.includes("unsupported stored book format") ||
     normalized.endsWith(" not found")
   ) {
@@ -327,81 +97,6 @@ function classifyOutboxError(error: unknown): AnalyzerExecutionResult {
   }
 
   return retryableFailureExecution(message, workerConfig.outbox.retryableFailureDelayMs);
-}
-
-async function requeueStaleBookAnalyzerTasks(): Promise<number> {
-  const cutoff = new Date(Date.now() - workerConfig.outbox.staleTaskTtlMs);
-  const staleTasks = await prisma.bookAnalyzerTask.findMany({
-    where: {
-      state: "running",
-      updatedAt: {
-        lt: cutoff,
-      },
-    },
-    select: {
-      bookId: true,
-      analyzerType: true,
-      updatedAt: true,
-      metadataJson: true,
-    },
-    take: workerConfig.outbox.batchSize,
-    orderBy: [{ updatedAt: "asc" }],
-  });
-
-  for (const task of staleTasks) {
-    const reason = `Stale running task requeued by watchdog (${task.updatedAt.toISOString()})`;
-    await prisma.$transaction(async (tx: any) => {
-      await tx.bookAnalyzerTask.update({
-        where: {
-          bookId_analyzerType: {
-            bookId: task.bookId,
-            analyzerType: task.analyzerType,
-          },
-        },
-        data: {
-          state: "queued",
-          error: null,
-          startedAt: null,
-          completedAt: null,
-          metadataJson: mergeBookAnalyzerTaskMetadata(task.metadataJson, {
-            deferredReason: reason,
-            lastReason: reason,
-          }) ?? Prisma.JsonNull,
-        },
-      });
-
-      await tx.book.updateMany({
-        where: { id: task.bookId },
-        data: {
-          analysisState: "running",
-          analysisError: null,
-          analysisCompletedAt: null,
-        },
-      });
-    });
-
-    await enqueueBookAnalyzerStage({
-      bookId: task.bookId,
-      analyzerType: task.analyzerType as any,
-      publishEvent: true,
-      force: true,
-    });
-  }
-
-  if (staleTasks.length > 0) {
-    logger.warn(
-      {
-        staleTasks: staleTasks.map((task) => ({
-          bookId: task.bookId,
-          analyzerType: task.analyzerType,
-          updatedAt: task.updatedAt.toISOString(),
-        })),
-      },
-      "Requeued stale running book analyzer tasks"
-    );
-  }
-
-  return staleTasks.length;
 }
 
 async function processOutboxEntry(entry: any) {
@@ -516,14 +211,11 @@ async function main() {
       claimLeaseMs: workerConfig.outbox.claimLeaseMs,
       maxAttempts: workerConfig.outbox.maxAttempts,
       eventConcurrency: workerConfig.outbox.eventConcurrency,
-      preprocessorUrl: workerConfig.preprocessor.url,
     },
     "Worker started"
   );
 
   let shuttingDown = false;
-  let nextStaleSweepAt = 0;
-
   const shutdown = async (signal: string) => {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -541,11 +233,6 @@ async function main() {
   });
 
   while (!shuttingDown) {
-    const nowMs = Date.now();
-    if (nowMs >= nextStaleSweepAt) {
-      await requeueStaleBookAnalyzerTasks();
-      nextStaleSweepAt = nowMs + workerConfig.outbox.staleTaskSweepIntervalMs;
-    }
     const processed = await pollOutboxOnce();
     if (processed === 0) {
       await sleep(workerConfig.outbox.pollIntervalMs);

@@ -289,11 +289,11 @@ export const workerConfig = {
     bookChunkOverlapChars: getIntEnv("BOOK_CHUNK_OVERLAP_CHARS", 200),
     bookEmbeddingConcurrency: getIntEnv("BOOK_EMBEDDING_CONCURRENCY", 8),
     bookChunkInsertBatchSize: getIntEnv("BOOK_CHUNK_INSERT_BATCH_SIZE", 200),
-  },
-  preprocessor: {
-    url: String(process.env.PREPROCESSOR_URL || "http://127.0.0.1:8010").replace(/\/+$/, ""),
-    timeoutMs: getIntEnv("PREPROCESSOR_TIMEOUT_MS", 20_000),
-    retries: getIntEnv("PREPROCESSOR_RETRIES", 3),
+    bookSceneEdgeBatchSize: getIntEnv("BOOK_SCENE_EDGE_BATCH_SIZE", 12),
+    bookSceneEdgeBatchConcurrency: getIntEnv("BOOK_SCENE_EDGE_BATCH_CONCURRENCY", 6),
+    bookSceneEdgeCharLimit: getIntEnv("BOOK_SCENE_EDGE_CHAR_LIMIT", 180),
+    bookSceneEdgeMaxTokens: getIntEnv("BOOK_SCENE_EDGE_MAX_TOKENS", 4096),
+    bookSceneEdgeMaxAttempts: getIntEnv("BOOK_SCENE_EDGE_MAX_ATTEMPTS", 1),
   },
   extraction: {
     provider: configuredExtractProvider,

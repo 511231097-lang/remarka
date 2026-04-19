@@ -1,4 +1,4 @@
-import { LocalBlobStore, S3BlobStore, enqueueBookAnalyzerStage, type BlobStore, prisma } from "@remarka/db";
+import { LocalBlobStore, S3BlobStore, enqueueOutboxEvent, type BlobStore, prisma } from "@remarka/db";
 import {
   BookImportError,
   detectBookFormatFromFileName,
@@ -11,7 +11,8 @@ import {
 import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
-import { toBookCardDTO, toBookCoreDTO } from "@/lib/books";
+import { enrichBookCardsWithGoogleCovers } from "@/lib/bookCoverResolver";
+import { toBookCardDTO, toBookCoreDTO, type BookCardDTO } from "@/lib/books";
 
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 50;
@@ -20,25 +21,50 @@ const DEFAULT_IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES = 50 * 1024 * 1024;
 const DEFAULT_LOCAL_BLOB_ROOT = "/tmp/remarka-imports";
 const DEFAULT_BOOKS_S3_REGION = "us-east-1";
 const DEFAULT_BOOKS_S3_KEY_PREFIX = "remarka/books";
-const UPLOAD_BOOK_PIPELINE_TASKS = [
-  "core_window_scan",
-  "core_merge",
-  "core_resolve",
-  "core_entity_mentions",
-  "core_profiles",
-  "core_quotes_finalize",
-  "core_literary",
-  "canonical_text",
-  "scene_build",
-  "entity_graph",
-  "event_relation_graph",
-  "summary_store",
-  "evidence_store",
-  "text_index",
-  "quote_store",
-] as const;
-const UPLOAD_BOOK_INITIAL_OUTBOX = ["core_window_scan", "canonical_text"] as const;
-const UPLOAD_BOOK_INITIAL_OUTBOX_SET = new Set<string>(UPLOAD_BOOK_INITIAL_OUTBOX);
+const COVER_RESOLVE_TIMEOUT_MS = 6000;
+
+async function resolveInitialBookCoverUrl(params: {
+  title: string;
+  author: string | null;
+  ownerId: string;
+}): Promise<string | null> {
+  const normalizedTitle = String(params.title || "").trim();
+  if (!normalizedTitle) return null;
+
+  const probeCard: BookCardDTO = {
+    id: `tmp:${normalizedTitle}:${params.author || ""}`,
+    title: normalizedTitle,
+    author: params.author || null,
+    coverUrl: null,
+    isPublic: true,
+    createdAt: new Date().toISOString(),
+    owner: {
+      id: params.ownerId,
+      name: params.ownerId,
+      image: null,
+    },
+    status: "ready",
+    chaptersCount: 0,
+    charactersCount: 0,
+    themesCount: 0,
+    locationsCount: 0,
+    likesCount: 0,
+    isLiked: false,
+    canLike: false,
+  };
+
+  try {
+    const resolved = await Promise.race([
+      enrichBookCardsWithGoogleCovers([probeCard]),
+      new Promise<BookCardDTO[]>((resolve) => setTimeout(() => resolve([probeCard]), COVER_RESOLVE_TIMEOUT_MS)),
+    ]);
+
+    const candidate = resolved[0]?.coverUrl;
+    return candidate ? String(candidate) : null;
+  } catch {
+    return null;
+  }
+}
 
 function parsePositiveInt(value: string | null, fallback: number): number {
   const parsed = Number.parseInt(String(value || ""), 10);
@@ -95,6 +121,25 @@ function resolveMimeType(format: BookFormat, fileType: string): string {
 function resolveChapterTitle(chapter: ParsedChapter, orderIndex: number): string {
   const title = String(chapter.title || "").trim();
   return title || `Глава ${orderIndex}`;
+}
+
+function normalizeWhitespace(value: string): string {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+}
+
+function resolveChapterRawText(chapter: ParsedChapter): string {
+  const blocks = Array.isArray(chapter.blocks) ? chapter.blocks : [];
+  const chunks = blocks
+    .map((block) => {
+      const inlines = Array.isArray(block?.inlines) ? block.inlines : [];
+      return inlines.map((inline) => String(inline?.text || "")).join("").trim();
+    })
+    .filter(Boolean);
+
+  return normalizeWhitespace(chunks.join("\n\n"));
 }
 
 function resolveLocalBooksBlobRoot(): string {
@@ -155,6 +200,8 @@ export async function GET(request: Request) {
   const skip = (page - 1) * pageSize;
 
   const andFilters: Prisma.BookWhereInput[] = [];
+  andFilters.push({ analysisStatus: "completed" });
+
   if (scope === "library") {
     andFilters.push({ ownerUserId: authUser.id });
   } else if (scope === "favorites") {
@@ -222,8 +269,10 @@ export async function GET(request: Request) {
     }),
   ]);
 
+  const cards = rows.map((row) => toBookCardDTO(row, authUser.id));
+
   return NextResponse.json({
-    items: rows.map((row) => toBookCardDTO(row, authUser.id)),
+    items: cards,
     page,
     pageSize,
     total,
@@ -264,7 +313,8 @@ export async function POST(request: Request) {
 
   let parsedTitle: string | null = null;
   let parsedAuthor: string | null = null;
-  let chaptersToCreate: Array<{ orderIndex: number; title: string; summary: string | null }> = [];
+  let parsedSummary: string | null = null;
+  let chaptersToCreate: Array<{ orderIndex: number; title: string; summary: string | null; rawText: string }> = [];
 
   try {
     const parsed = await parseBook({
@@ -277,6 +327,7 @@ export async function POST(request: Request) {
     const normalizedBook = ensureParsedBookHasChapters(parsed);
     parsedTitle = String(normalizedBook.metadata.title || "").trim() || null;
     parsedAuthor = String(normalizedBook.metadata.author || "").trim() || null;
+    parsedSummary = String(normalizedBook.metadata.annotation || "").trim() || null;
 
     chaptersToCreate = normalizedBook.chapters.map((chapter, index) => {
       const orderIndex = index + 1;
@@ -284,6 +335,7 @@ export async function POST(request: Request) {
         orderIndex,
         title: resolveChapterTitle(chapter, orderIndex),
         summary: null,
+        rawText: resolveChapterRawText(chapter),
       };
     });
   } catch (error) {
@@ -305,18 +357,35 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Failed to store uploaded file" }, { status: 500 });
   }
 
+  const resolvedBookTitle = parsedTitle || inferBookTitleFromFileName(fileEntry.name) || "Без названия";
+  const resolvedCoverUrl = await resolveInitialBookCoverUrl({
+    title: resolvedBookTitle,
+    author: parsedAuthor,
+    ownerId: authUser.id,
+  });
+
   const created = await prisma.$transaction(async (tx) => {
     const createdBook = await tx.book.create({
       data: {
         ownerUserId: authUser.id,
-        title: parsedTitle || inferBookTitleFromFileName(fileEntry.name) || "Без названия",
+        title: resolvedBookTitle,
         author: parsedAuthor,
-        summary: null,
+        coverUrl: resolvedCoverUrl,
+        summary: parsedSummary,
         chapterCount: chaptersToCreate.length,
         isPublic: parseIsPublic(formData.get("isPublic")) ?? authUser.defaultBookVisibilityPublic,
         analysisState: "queued",
+        analysisStatus: "queued",
         analysisError: null,
+        analysisTotalBlocks: 0,
+        analysisCheckedBlocks: 0,
+        analysisPromptTokens: 0,
+        analysisCompletionTokens: 0,
+        analysisTotalTokens: 0,
+        analysisChapterStatsJson: [],
+        analysisRequestedAt: new Date(),
         analysisStartedAt: null,
+        analysisFinishedAt: null,
         analysisCompletedAt: null,
         fileName: fileEntry.name,
         mimeType: resolveMimeType(format, fileEntry.type),
@@ -340,24 +409,25 @@ export async function POST(request: Request) {
       },
     });
 
-    for (const analyzerType of UPLOAD_BOOK_PIPELINE_TASKS) {
-      await enqueueBookAnalyzerStage({
-        client: tx,
+    await enqueueOutboxEvent({
+      client: tx,
+      aggregateType: "book",
+      aggregateId: createdBook.id,
+      eventType: "book.npz-analysis.requested",
+      payloadJson: {
         bookId: createdBook.id,
-        analyzerType,
-        publishEvent: UPLOAD_BOOK_INITIAL_OUTBOX_SET.has(analyzerType),
-      });
-    }
+        requestedAt: new Date().toISOString(),
+        source: "auto_upload",
+      },
+    });
 
     return createdBook;
   });
 
   const dto = toBookCoreDTO(created);
   dto.canManage = true;
-  console.info("[book-core-scheduled]", {
+  console.info("[book-analysis-queued]", {
     bookId: created.id,
-    analyzers: UPLOAD_BOOK_PIPELINE_TASKS,
-    initialOutbox: UPLOAD_BOOK_INITIAL_OUTBOX,
     chapterCount: created.chapterCount,
   });
   return NextResponse.json(dto, { status: 201 });

@@ -7,12 +7,11 @@
     "dev": "tsx --env-file=.env watch src/index.ts",
     "start": "tsx --env-file=.env src/index.ts",
     "test": "node --import tsx --test src/**/*.test.ts",
-    "typecheck": "tsc --noEmit",
-    "analytics:extraction": "TMPDIR=/tmp DATABASE_URL=${DATABASE_URL:-postgresql://postgres:postgres@127.0.0.1:5432/remarka} tsx src/scripts/extractionAnalytics.ts",
-    "requeue:book-analyzer": "tsx --env-file=.env src/scripts/requeueBookAnalyzer.ts"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@prisma/client": "^5.20.0",
+    "@remarka/ai": "*",
     "@remarka/contracts": "*",
     "@remarka/db": "*",
     "openai": "6.25.0",

@@ -5,33 +5,34 @@ import type {
   BookAnalysisViewKeyDTO,
   BookAnalyzerStateDTO,
   BookAnalyzerStatusDTO,
+  BookCapabilitySnapshotDTO,
   BookChatModeDTO,
   BookChatReadinessDTO,
   BookChatReadinessStageDTO,
   BookPipelineStageKeyDTO,
 } from "@/lib/books";
+import { canUseMvpBookChat } from "@/lib/bookCapabilitySnapshot";
 
 export const CHAT_READINESS_STAGE_ORDER = [...BOOK_PIPELINE_STAGE_KEYS] as const;
 
 export type ChatReadinessStageKey = (typeof CHAT_READINESS_STAGE_ORDER)[number];
 
 const CHAT_READINESS_STAGE_LABELS: Record<ChatReadinessStageKey, string> = {
-  core_window_scan: "Семантическое извлечение",
-  core_merge: "Сборка semantic core",
-  core_resolve: "Канонический resolve",
-  core_entity_mentions: "Явные упоминания сущностей",
-  core_profiles: "Профили сущностей",
-  core_quotes_finalize: "Нормализация цитат",
-  core_literary: "Литературный слой",
-  chat_index: "Чатовый индекс",
-  canonical_text: "Канонический текст",
-  scene_build: "Сцены книги",
-  entity_graph: "Граф сущностей",
-  event_relation_graph: "Граф событий и связей",
-  summary_store: "Иерархия summary",
-  evidence_store: "Опоры и доказательства",
-  text_index: "Текстовый индекс",
-  quote_store: "Цитаты",
+  ingest_normalize: "Нормализация source layer",
+  structural_pass: "Структурный проход",
+  local_extraction_mentions: "Наблюдения: сущности",
+  local_extraction_quotes: "Наблюдения: цитаты",
+  local_extraction_events: "Наблюдения: события",
+  local_extraction_relations: "Наблюдения: отношения",
+  local_extraction_time_location: "Наблюдения: время и локации",
+  validation_pass: "Валидация observations",
+  entity_resolution: "Канонические сущности",
+  scene_assembly: "Сборка сцен",
+  event_timeline: "События и таймлайн",
+  relation_aggregation: "Агрегация отношений",
+  summary_synthesis: "Канонические summary",
+  index_build: "Read layer и индексы",
+  repair: "Repair и финальная проверка",
 };
 
 const PENDING_STATES = new Set<BookAnalyzerStateDTO>(["queued", "running"]);
@@ -88,7 +89,7 @@ function buildStage(
     key,
     label: CHAT_READINESS_STAGE_LABELS[key],
     state: status.state,
-    requiredForFast: key === "scene_build" || key === "entity_graph" || key === "summary_store" || key === "text_index",
+    requiredForFast: key === "index_build" || key === "repair",
     error: status.error,
     startedAt: status.startedAt,
     completedAt: status.completedAt,
@@ -109,33 +110,30 @@ function markCompletedIfPresent(status: BookAnalyzerStatusDTO, present: boolean)
 
 export function createEmptyPipelineAnalyzers(): Record<BookPipelineStageKeyDTO, BookAnalyzerStatusDTO> {
   return {
-    core_window_scan: createEmptyAnalyzerStatus(),
-    core_merge: createEmptyAnalyzerStatus(),
-    core_resolve: createEmptyAnalyzerStatus(),
-    core_entity_mentions: createEmptyAnalyzerStatus(),
-    core_profiles: createEmptyAnalyzerStatus(),
-    core_quotes_finalize: createEmptyAnalyzerStatus(),
-    core_literary: createEmptyAnalyzerStatus(),
-    chat_index: createEmptyAnalyzerStatus(),
-    canonical_text: createEmptyAnalyzerStatus(),
-    scene_build: createEmptyAnalyzerStatus(),
-    entity_graph: createEmptyAnalyzerStatus(),
-    event_relation_graph: createEmptyAnalyzerStatus(),
-    summary_store: createEmptyAnalyzerStatus(),
-    evidence_store: createEmptyAnalyzerStatus(),
-    text_index: createEmptyAnalyzerStatus(),
-    quote_store: createEmptyAnalyzerStatus(),
+    ingest_normalize: createEmptyAnalyzerStatus(),
+    structural_pass: createEmptyAnalyzerStatus(),
+    local_extraction_mentions: createEmptyAnalyzerStatus(),
+    local_extraction_quotes: createEmptyAnalyzerStatus(),
+    local_extraction_events: createEmptyAnalyzerStatus(),
+    local_extraction_relations: createEmptyAnalyzerStatus(),
+    local_extraction_time_location: createEmptyAnalyzerStatus(),
+    validation_pass: createEmptyAnalyzerStatus(),
+    entity_resolution: createEmptyAnalyzerStatus(),
+    scene_assembly: createEmptyAnalyzerStatus(),
+    event_timeline: createEmptyAnalyzerStatus(),
+    relation_aggregation: createEmptyAnalyzerStatus(),
+    summary_synthesis: createEmptyAnalyzerStatus(),
+    index_build: createEmptyAnalyzerStatus(),
+    repair: createEmptyAnalyzerStatus(),
   };
 }
 
 export function createEmptyAnalysisViews(): Record<BookAnalysisViewKeyDTO, BookAnalyzerStatusDTO> {
   return {
-    summary: createEmptyAnalyzerStatus(),
-    characters: createEmptyAnalyzerStatus(),
-    themes: createEmptyAnalyzerStatus(),
-    locations: createEmptyAnalyzerStatus(),
-    quotes: createEmptyAnalyzerStatus(),
-    literary: createEmptyAnalyzerStatus(),
+    source: createEmptyAnalyzerStatus(),
+    observations: createEmptyAnalyzerStatus(),
+    canonical: createEmptyAnalyzerStatus(),
+    read_layer: createEmptyAnalyzerStatus(),
   };
 }
 
@@ -148,15 +146,6 @@ export function normalizePipelineAnalyzers(params: {
     out[key] = cloneStatus(params.analyzers[key]);
   }
 
-  out.canonical_text = markCompletedIfPresent(out.canonical_text, params.presence.paragraphs && params.presence.sentences);
-  out.scene_build = markCompletedIfPresent(out.scene_build, params.presence.scenes);
-  out.entity_graph = markCompletedIfPresent(out.entity_graph, params.presence.entities);
-  out.event_relation_graph = markCompletedIfPresent(out.event_relation_graph, params.presence.events);
-  out.summary_store = markCompletedIfPresent(out.summary_store, params.presence.summaries);
-  out.evidence_store = markCompletedIfPresent(out.evidence_store, params.presence.evidence);
-  out.text_index = markCompletedIfPresent(out.text_index, params.presence.scenes);
-  out.quote_store = markCompletedIfPresent(out.quote_store, params.presence.quotes);
-
   return out;
 }
 
@@ -166,65 +155,69 @@ export function buildAnalysisViews(params: {
 }): Record<BookAnalysisViewKeyDTO, BookAnalyzerStatusDTO> {
   const out = createEmptyAnalysisViews();
 
-  out.summary = markCompletedIfPresent(cloneStatus(params.analyzers.summary_store), params.presence.summaries);
-  out.characters = markCompletedIfPresent(cloneStatus(params.analyzers.entity_graph), params.presence.entities);
-  out.themes = markCompletedIfPresent(cloneStatus(params.analyzers.entity_graph), params.presence.entities);
-  out.locations = markCompletedIfPresent(cloneStatus(params.analyzers.entity_graph), params.presence.entities);
-  out.quotes = markCompletedIfPresent(cloneStatus(params.analyzers.quote_store), params.presence.quotes);
-  out.literary = markCompletedIfPresent(cloneStatus(params.analyzers.summary_store), params.presence.summaries);
+  out.source = markCompletedIfPresent(cloneStatus(params.analyzers.ingest_normalize), params.presence.paragraphs);
+  out.observations = markCompletedIfPresent(
+    cloneStatus(params.analyzers.validation_pass),
+    params.presence.entities || params.presence.quotes || params.presence.evidence
+  );
+  out.canonical = markCompletedIfPresent(
+    cloneStatus(params.analyzers.summary_synthesis),
+    params.presence.scenes || params.presence.entities || params.presence.events || params.presence.summaries
+  );
+  out.read_layer = markCompletedIfPresent(
+    cloneStatus(params.analyzers.index_build),
+    params.presence.evidence || params.presence.summaries
+  );
 
   return out;
 }
 
-export function buildBookChatReadiness(analyzers: Record<BookPipelineStageKeyDTO, BookAnalyzerStatusDTO>): BookChatReadinessDTO {
+export function buildBookChatReadiness(
+  analyzers: Record<BookPipelineStageKeyDTO, BookAnalyzerStatusDTO>,
+  capabilitySnapshot?: BookCapabilitySnapshotDTO
+): BookChatReadinessDTO {
   const stages = CHAT_READINESS_STAGE_ORDER.map((key) => buildStage(key, analyzers[key]));
-  const fastStages = stages.filter((stage) => stage.requiredForFast);
-  const canChat = fastStages.every((stage) => isAnalyzerCompleted(stage.state));
   const allCompleted = stages.every((stage) => isAnalyzerCompleted(stage.state));
   const hasFailure = stages.some((stage) => isAnalyzerFailed(stage.state));
   const hasPending = stages.some((stage) => isAnalyzerPending(stage.state));
   const hasMissing = stages.some((stage) => stage.state === "not_requested");
 
-  if (!canChat) {
+  if (capabilitySnapshot && canUseMvpBookChat(capabilitySnapshot)) {
     return {
-      mode: "indexing",
-      canChat: false,
-      summary: "Строим сценовую структуру, граф сущностей и быстрый текстовый индекс. Чат откроется автоматически, как только будет готов fast lane.",
-      stages,
-    };
-  }
-
-  if (allCompleted) {
-    return {
-      mode: "expert",
+      mode: capabilitySnapshot.analysisState === "completed" ? "fast" : "degraded",
       canChat: true,
-      summary: "Экспертный режим готов: сцены, граф, summary-слой, доказательства и цитаты доступны.",
-      stages,
-    };
-  }
-
-  if (hasFailure) {
-    return {
-      mode: "degraded",
-      canChat: true,
-      summary: "Чат работает в fast lane, но часть graph/expert stages собрана с ошибками.",
+      summary:
+        capabilitySnapshot.analysisState === "completed"
+          ? "MVP-чат доступен: сущности, присутствие и доказательные фрагменты включены. Scene/timeline/relation слои пока выключены."
+          : "MVP-чат уже доступен, но анализ еще идет. Отвечаем только через entity/presence/evidence/passages и честно показываем ограничения.",
       stages,
     };
   }
 
   if (hasPending || hasMissing) {
     return {
-      mode: "fast",
-      canChat: true,
-      summary: "Fast lane готов. Глубокий graph и слой доказательств продолжают собираться в фоне.",
+      mode: "indexing",
+      canChat: false,
+      summary: "Строим evidence-first data layer: source, observations, canonical graph и read layer. MVP-чат включится, когда будут готовы entity/presence/evidence tools.",
+      stages,
+    };
+  }
+
+  if (allCompleted || hasFailure) {
+    return {
+      mode: hasFailure ? "degraded" : "indexing",
+      canChat: false,
+      summary: hasFailure
+        ? "Evidence-first pipeline завершен с ошибками. Чат остается выключенным, пока MVP tool set не станет надежным."
+        : "Evidence-first pipeline собран, но MVP tool set еще не стал надежным для чата.",
       stages,
     };
   }
 
   return {
     mode: "degraded",
-    canChat: true,
-    summary: "Чат доступен, но часть graph-слоя пока недоступна.",
+    canChat: false,
+    summary: "Evidence-first pipeline еще не переведен в чатовый runtime.",
     stages,
   };
 }

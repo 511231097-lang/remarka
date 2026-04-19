@@ -82,7 +82,7 @@ CREATE TABLE "BookScene" (
     "startChar" INTEGER NOT NULL,
     "endChar" INTEGER NOT NULL,
     "text" TEXT NOT NULL,
-    "embedding" vector(768),
+    "embedding" JSONB,
     "embeddingModel" TEXT,
     "metadataJson" JSONB,
     "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,

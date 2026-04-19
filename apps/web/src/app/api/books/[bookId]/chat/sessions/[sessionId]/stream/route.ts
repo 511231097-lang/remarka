@@ -1,14 +1,7 @@
-import { prisma } from "@remarka/db";
-import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
-import { resolveAccessibleBook, resolveOwnedChatSession } from "@/lib/chatAccess";
-import {
-  attachAssistantMessageIdToTurnState,
-  runManagedBookChatTurn,
-  resolveChatTopK,
-} from "@/lib/chatRuntime";
-import { LITERARY_SECTION_KEYS, type BookChatEntryContextDTO, type LiterarySectionKeyDTO } from "@/lib/books";
+import { resolveAccessibleBook } from "@/lib/chatAccess";
+import { BookChatError, streamBookChatThreadReply } from "@/lib/bookChatService";
 
 export const runtime = "nodejs";
 
@@ -16,18 +9,42 @@ interface RouteContext {
   params: Promise<{ bookId: string; sessionId: string }>;
 }
 
-function asSectionKey(value: unknown): LiterarySectionKeyDTO | undefined {
-  if (typeof value !== "string") return undefined;
-  return LITERARY_SECTION_KEYS.includes(value as LiterarySectionKeyDTO) ? (value as LiterarySectionKeyDTO) : undefined;
-}
-
-function asEntryContext(value: unknown): BookChatEntryContextDTO | undefined {
-  if (value === "overview" || value === "section" || value === "full_chat") return value;
-  return undefined;
-}
-
 function toSseEvent(event: string, payload: Record<string, unknown>): string {
   return `event: ${event}\ndata: ${JSON.stringify(payload)}\n\n`;
+}
+
+function statusForToolCall(toolName: string): string {
+  const normalized = String(toolName || "").trim().toLowerCase();
+  if (normalized === "search_paragraphs_hybrid" || normalized === "search_paragraphs_lexical") {
+    return "Ищу подходящий параграф";
+  }
+  if (normalized === "search_scenes") {
+    return "Ищу подходящую сцену";
+  }
+  if (normalized === "get_scene_context") {
+    return "Детально изучаю сцену";
+  }
+  if (normalized === "get_paragraph_slice") {
+    return "Проверяю контекст фрагмента";
+  }
+  return "Проверяю релевантные фрагменты";
+}
+
+function statusForToolResult(toolName: string): string {
+  const normalized = String(toolName || "").trim().toLowerCase();
+  if (normalized === "search_paragraphs_hybrid" || normalized === "search_paragraphs_lexical") {
+    return "Нашёл релевантные абзацы, собираю ответ";
+  }
+  if (normalized === "search_scenes") {
+    return "Сцена найдена, собираю опорный контекст";
+  }
+  if (normalized === "get_scene_context") {
+    return "Сцена изучена, формулирую вывод";
+  }
+  if (normalized === "get_paragraph_slice") {
+    return "Контекст проверен, формулирую ответ";
+  }
+  return "Собираю ответ";
 }
 
 export async function POST(request: Request, context: RouteContext) {
@@ -44,13 +61,6 @@ export async function POST(request: Request, context: RouteContext) {
   const book = await resolveAccessibleBook({ bookId, userId: authUser.id });
   if (!book) return NextResponse.json({ error: "Book not found" }, { status: 404 });
 
-  const session = await resolveOwnedChatSession({
-    sessionId,
-    bookId,
-    userId: authUser.id,
-  });
-  if (!session) return NextResponse.json({ error: "Session not found" }, { status: 404 });
-
   let body: Record<string, unknown> = {};
   try {
     body = (await request.json()) as Record<string, unknown>;
@@ -63,181 +73,77 @@ export async function POST(request: Request, context: RouteContext) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
   }
 
-  const topK = resolveChatTopK(body?.topK);
-  const sectionKey = asSectionKey(body?.sectionKey);
-  const entryContext = asEntryContext(body?.entryContext);
-
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
-      void (async () => {
-        const sendEvent = (event: string, payload: Record<string, unknown>) => {
-          controller.enqueue(encoder.encode(toSseEvent(event, payload)));
-        };
+      const sendEvent = (event: string, payload: Record<string, unknown>) => {
+        controller.enqueue(encoder.encode(toSseEvent(event, payload)));
+      };
+      let lastStatus = "";
+      const sendStatus = (status: string) => {
+        const text = String(status || "").trim();
+        if (!text || text === lastStatus) return;
+        lastStatus = text;
+        sendEvent("status", { text });
+      };
 
+      void (async () => {
         try {
           sendEvent("session", {
-            sessionId: session.id,
+            sessionId,
           });
+          sendStatus("Разбираю вопрос и подбираю опоры в тексте");
 
-          const now = new Date();
-          const userMessage = await prisma.bookChatMessage.create({
-            data: {
-              sessionId: session.id,
-              role: "user",
-              content: message,
-              citationsJson: [],
-              promptTokens: null,
-              completionTokens: null,
+          const result = await streamBookChatThreadReply({
+            bookId: book.id,
+            threadId: sessionId,
+            userText: message,
+            onToolCall: async (event) => {
+              sendStatus(statusForToolCall(event.toolName));
             },
-          });
-
-          await prisma.bookChatSession.update({
-            where: { id: session.id },
-            data: {
-              lastMessageAt: now,
-              title:
-                session.title === "Новый чат"
-                  ? message.slice(0, 80)
-                  : session.title,
+            onToolResult: async (event) => {
+              sendStatus(statusForToolResult(event.toolName));
             },
-          });
-
-          const historyRows = await prisma.bookChatMessage.findMany({
-            where: {
-              sessionId: session.id,
-              id: {
-                not: userMessage.id,
-              },
-            },
-            orderBy: [{ createdAt: "desc" }],
-            take: 10,
-          });
-
-          const history = [...historyRows]
-            .reverse()
-            .map((entry) => ({
-              role: (entry.role === "assistant" ? "assistant" : "user") as "assistant" | "user",
-              content: entry.content,
-              payload:
-                entry.citationsJson && typeof entry.citationsJson === "object" && !Array.isArray(entry.citationsJson)
-                  ? (entry.citationsJson as Record<string, unknown>)
-                  : null,
-            }));
-
-          const turn = await runManagedBookChatTurn({
-            sessionId: session.id,
-            bookId,
-            question: message,
-            history,
-            topK,
-            sectionKey,
-            entryContext,
-            onToken: (token) => {
-              sendEvent("token", {
-                text: token,
-              });
-            },
-          });
-
-          const assistantState = attachAssistantMessageIdToTurnState(turn.turnState, "pending");
-          const storagePayload = {
-            version: 7,
-            model: turn.model,
-            rawAnswer: turn.rawAnswer,
-            evidence: turn.evidence,
-            citations: turn.citations,
-            inlineCitations: turn.inlineCitations,
-            answerItems: turn.answerItems,
-            referenceResolution: turn.referenceResolution,
-            usedSources: turn.usedSources,
-            confidence: turn.confidence,
-            mode: turn.mode,
-            intent: turn.intent,
-            focusEntities: turn.focusEntities,
-            directEvidenceIds: turn.directEvidenceIds,
-            contextEvidenceIds: turn.contextEvidenceIds,
-            activeIncidentIds: turn.activeIncidentIds,
-            activeEntityIds: turn.activeEntityIds,
-            mustCarryFacts: turn.mustCarryFacts,
-            turnKind: turn.turnKind,
-            turnState: assistantState,
-            followupRefs: assistantState.followupRefs,
-            planner: turn.planner,
-            bundleStats: turn.bundleStats,
-            requiredFactIds: turn.requiredFactIds,
-            usedEvidenceIds: turn.usedEvidenceIds,
-            stateDelta: turn.stateDelta,
-            verifier: turn.verifier,
-          };
-
-          const assistant = await prisma.bookChatMessage.create({
-            data: {
-              sessionId: session.id,
-              role: "assistant",
-              content: turn.answer,
-              citationsJson: storagePayload as unknown as Prisma.InputJsonValue,
-              promptTokens: turn.promptTokens,
-              completionTokens: turn.completionTokens,
-            },
-          });
-          const finalTurnState = attachAssistantMessageIdToTurnState(turn.turnState, assistant.id);
-
-          await prisma.bookChatMessage.update({
-            where: { id: assistant.id },
-            data: {
-              citationsJson: {
-                ...storagePayload,
-                turnState: finalTurnState,
-                followupRefs: finalTurnState.followupRefs,
-              } as unknown as Prisma.InputJsonValue,
-            },
-          });
-
-          await prisma.bookChatSession.update({
-            where: { id: session.id },
-            data: {
-              lastMessageAt: assistant.createdAt,
-            },
-          });
-
-          await prisma.bookChatSessionState.upsert({
-            where: { sessionId: session.id },
-            create: {
-              sessionId: session.id,
-              bookId,
-              stateJson: finalTurnState as unknown as Prisma.InputJsonValue,
-            },
-            update: {
-              stateJson: finalTurnState as unknown as Prisma.InputJsonValue,
+            onDelta: async (delta) => {
+              if (!delta) return;
+              sendEvent("token", { text: delta });
             },
           });
 
           sendEvent("final", {
-            sessionId: session.id,
-            messageId: assistant.id,
-            answer: turn.answer,
-            rawAnswer: turn.rawAnswer,
-            evidence: turn.evidence,
-            usedSources: turn.usedSources,
-            confidence: turn.confidence,
-            mode: turn.mode,
-            citations: turn.citations,
-            inlineCitations: turn.inlineCitations,
-            answerItems: turn.answerItems,
-            referenceResolution: turn.referenceResolution,
+            sessionId,
+            messageId: result.assistantMessage.id,
+            answer: result.assistantMessage.content,
+            rawAnswer: result.assistantMessage.content,
+            evidence: [],
+            usedSources: [],
+            confidence: null,
+            mode: "fast",
+            citations: [],
+            inlineCitations: [],
+            answerItems: [],
+            referenceResolution: null,
           });
 
           controller.close();
         } catch (error) {
-          const message = error instanceof Error ? error.message : "Chat stream failed";
-          sendEvent("error", {
-            error: message,
-          });
+          if (error instanceof BookChatError) {
+            sendEvent("error", {
+              error: error.message,
+              code: error.code,
+            });
+          } else {
+            sendEvent("error", {
+              error: error instanceof Error ? error.message : "Chat stream failed",
+            });
+          }
           controller.close();
         }
       })();
+    },
+    cancel() {
+      // Client can disconnect while backend keeps processing.
     },
   });
 

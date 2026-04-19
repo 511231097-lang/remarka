@@ -1,0 +1,29 @@
+-- Drop legacy project/document extraction schema that is no longer used by the NPZ book runtime.
+
+DROP TABLE IF EXISTS "LocationContainment" CASCADE;
+DROP TABLE IF EXISTS "CharacterAppearanceEvidence" CASCADE;
+DROP TABLE IF EXISTS "CharacterAppearanceObservation" CASCADE;
+DROP TABLE IF EXISTS "CharacterActStat" CASCADE;
+DROP TABLE IF EXISTS "CharacterChapterStat" CASCADE;
+DROP TABLE IF EXISTS "Mention" CASCADE;
+DROP TABLE IF EXISTS "MentionCandidate" CASCADE;
+DROP TABLE IF EXISTS "EntityAlias" CASCADE;
+DROP TABLE IF EXISTS "Act" CASCADE;
+DROP TABLE IF EXISTS "Entity" CASCADE;
+DROP TABLE IF EXISTS "PatchDecision" CASCADE;
+DROP TABLE IF EXISTS "AnalysisRun" CASCADE;
+DROP TABLE IF EXISTS "Document" CASCADE;
+DROP TABLE IF EXISTS "Chapter" CASCADE;
+DROP TABLE IF EXISTS "ProjectImport" CASCADE;
+DROP TABLE IF EXISTS "SourceAsset" CASCADE;
+DROP TABLE IF EXISTS "Project" CASCADE;
+
+DROP TYPE IF EXISTS "ProjectImportStage" CASCADE;
+DROP TYPE IF EXISTS "ProjectImportState" CASCADE;
+DROP TYPE IF EXISTS "AppearanceScope" CASCADE;
+DROP TYPE IF EXISTS "MentionCandidateType" CASCADE;
+DROP TYPE IF EXISTS "MentionDecisionStatus" CASCADE;
+DROP TYPE IF EXISTS "MentionRouting" CASCADE;
+DROP TYPE IF EXISTS "AnalysisRunPhase" CASCADE;
+DROP TYPE IF EXISTS "AnalysisRunState" CASCADE;
+DROP TYPE IF EXISTS "EntityType" CASCADE;

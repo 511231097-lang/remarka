@@ -39,6 +39,15 @@ export const BOOK_CHAT_ANSWER_MODES = [
   "answer_with_proof",
 ] as const;
 export const BOOK_CHAT_STATE_ACTIONS = ["keep", "narrow", "reset"] as const;
+export const BOOK_CHAT_GROUNDING_MODES = ["book_strict", "book_with_meta", "meta_only", "general"] as const;
+export const BOOK_CHAT_QUESTION_CLASSES = [
+  "entity_lookup",
+  "presence_lookup",
+  "evidence_lookup",
+  "analysis_meta",
+  "mixed",
+  "general",
+] as const;
 
 export type BookChatPlanIntent = (typeof BOOK_CHAT_PLAN_INTENTS)[number];
 export type BookChatPlanScope = (typeof BOOK_CHAT_PLAN_SCOPES)[number];
@@ -46,6 +55,8 @@ export type BookChatScopeMode = (typeof BOOK_CHAT_SCOPE_MODES)[number];
 export type BookChatPlanDepth = (typeof BOOK_CHAT_PLAN_DEPTHS)[number];
 export type BookChatAnswerMode = (typeof BOOK_CHAT_ANSWER_MODES)[number];
 export type BookChatStateAction = (typeof BOOK_CHAT_STATE_ACTIONS)[number];
+export type BookChatGroundingMode = (typeof BOOK_CHAT_GROUNDING_MODES)[number];
+export type BookChatQuestionClass = (typeof BOOK_CHAT_QUESTION_CLASSES)[number];
 
 export const BookChatFollowupAnswerItemSchema = z
   .object({
@@ -73,10 +84,26 @@ export type BookChatFollowupRefs = z.infer<typeof BookChatFollowupRefsSchema>;
 
 export const BookChatTurnStateSchema = z
   .object({
+    currentBookId: z.string().trim().min(1).max(80).nullable().default(null),
     activeEntityIds: z.array(z.string().trim().min(1).max(80)).max(16).default([]),
+    activeTargets: z
+      .array(
+        z
+          .object({
+            id: z.string().trim().min(1).max(80),
+            name: z.string().trim().min(1).max(240),
+            type: z.string().trim().min(1).max(80),
+          })
+          .strict()
+      )
+      .max(8)
+      .default([]),
+    activeEvidenceIds: z.array(z.string().trim().min(1).max(120)).max(24).default([]),
     activeSceneIds: z.array(z.string().trim().min(1).max(80)).max(12).default([]),
     activeEventIds: z.array(z.string().trim().min(1).max(80)).max(12).default([]),
     activeRelationIds: z.array(z.string().trim().min(1).max(80)).max(12).default([]),
+    lastGroundingMode: z.enum(BOOK_CHAT_GROUNDING_MODES).nullable().default(null),
+    lastQuestionClass: z.enum(BOOK_CHAT_QUESTION_CLASSES).nullable().default(null),
     lastIntent: z.enum(BOOK_CHAT_PLAN_INTENTS).nullable().default(null),
     lastScope: z.enum(BOOK_CHAT_PLAN_SCOPES).nullable().default(null),
     lastAnswerMode: z.enum(BOOK_CHAT_ANSWER_MODES).nullable().default(null),

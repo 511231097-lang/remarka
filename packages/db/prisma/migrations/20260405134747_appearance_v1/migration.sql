@@ -80,8 +80,21 @@ ALTER TABLE "CharacterAppearanceObservation" ADD CONSTRAINT "CharacterAppearance
 -- AddForeignKey
 ALTER TABLE "CharacterAppearanceObservation" ADD CONSTRAINT "CharacterAppearanceObservation_characterId_fkey" FOREIGN KEY ("characterId") REFERENCES "Entity"("id") ON DELETE CASCADE ON UPDATE CASCADE;
 
--- AddForeignKey
-ALTER TABLE "CharacterAppearanceObservation" ADD CONSTRAINT "CharacterAppearanceObservation_actId_fkey" FOREIGN KEY ("actId") REFERENCES "Act"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+-- AddForeignKey (guarded: Act table is created in a later migration in this repo)
+DO $$
+BEGIN
+  IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = 'Act') THEN
+    IF NOT EXISTS (
+      SELECT 1
+      FROM pg_constraint
+      WHERE conname = 'CharacterAppearanceObservation_actId_fkey'
+    ) THEN
+      ALTER TABLE "CharacterAppearanceObservation"
+        ADD CONSTRAINT "CharacterAppearanceObservation_actId_fkey"
+        FOREIGN KEY ("actId") REFERENCES "Act"("id") ON DELETE SET NULL ON UPDATE CASCADE;
+    END IF;
+  END IF;
+END $$;
 
 -- AddForeignKey
 ALTER TABLE "CharacterAppearanceEvidence" ADD CONSTRAINT "CharacterAppearanceEvidence_observationId_fkey" FOREIGN KEY ("observationId") REFERENCES "CharacterAppearanceObservation"("id") ON DELETE CASCADE ON UPDATE CASCADE;

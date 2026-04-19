@@ -1,11 +1,33 @@
-import { prisma } from "@remarka/db";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
-import { resolveAccessibleBook, resolveOwnedChatSession } from "@/lib/chatAccess";
-import { toBookChatMessageDTO } from "@/lib/books";
+import { resolveAccessibleBook } from "@/lib/chatAccess";
+import { BookChatError, listBookChatMessages } from "@/lib/bookChatService";
 
 interface RouteContext {
   params: Promise<{ bookId: string; sessionId: string }>;
+}
+
+function toMessageDTO(message: {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  createdAt: string;
+}) {
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    rawAnswer: message.role === "assistant" ? message.content : null,
+    evidence: [],
+    usedSources: [],
+    confidence: null,
+    mode: null,
+    citations: [],
+    inlineCitations: [],
+    answerItems: [],
+    referenceResolution: null,
+    createdAt: message.createdAt,
+  };
 }
 
 export async function GET(_request: Request, context: RouteContext) {
@@ -22,21 +44,19 @@ export async function GET(_request: Request, context: RouteContext) {
   const book = await resolveAccessibleBook({ bookId, userId: authUser.id });
   if (!book) return NextResponse.json({ error: "Book not found" }, { status: 404 });
 
-  const session = await resolveOwnedChatSession({
-    sessionId,
-    bookId,
-    userId: authUser.id,
-  });
-  if (!session) return NextResponse.json({ error: "Session not found" }, { status: 404 });
+  try {
+    const messages = await listBookChatMessages({
+      bookId: book.id,
+      threadId: sessionId,
+    });
 
-  const messages = await prisma.bookChatMessage.findMany({
-    where: {
-      sessionId: session.id,
-    },
-    orderBy: [{ createdAt: "asc" }],
-  });
-
-  return NextResponse.json({
-    items: messages.map(toBookChatMessageDTO),
-  });
+    return NextResponse.json({
+      items: messages.map(toMessageDTO),
+    });
+  } catch (error) {
+    if (error instanceof BookChatError) {
+      return NextResponse.json({ error: error.message, code: error.code }, { status: error.status });
+    }
+    return NextResponse.json({ error: "Failed to list chat messages" }, { status: 500 });
+  }
 }

@@ -14,7 +14,6 @@
     "web:prod": "npm run web:build && npm run web:start",
     "worker:dev": "npm --prefix apps/worker run dev",
     "worker:start": "npm --prefix apps/worker run start",
-    "analytics:extraction": "npm --prefix apps/worker run analytics:extraction --",
     "db:generate": "npm --prefix packages/db run prisma:generate",
     "db:migrate": "npm --prefix packages/db run prisma:migrate:dev",
     "db:migrate:deploy": "npm --prefix packages/db run prisma:migrate:deploy",

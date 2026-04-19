@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: postgres
     ports:
-      - "5432:5432"
+      - "${DB_HOST_PORT:-5432}:5432"
     volumes:
       - remarka_postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -28,8 +28,8 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
     command: ["server", "/data", "--console-address", ":9001"]
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_API_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - remarka_minio_data:/data
     healthcheck:
@@ -105,28 +105,14 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
+      minio:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
     ports:
       - "3000:3000"
     volumes:
-      - remarka_import_blobs:/var/remarka/imports
-    restart: unless-stopped
-
-  preprocessor:
-    build:
-      context: .
-      dockerfile: apps/preprocessor/Dockerfile
-    environment:
-      PYTHONUNBUFFERED: "1"
-    healthcheck:
-      test:
-        - CMD
-        - python
-        - -c
-        - import urllib.request; urllib.request.urlopen("http://127.0.0.1:8010/health").read()
-      interval: 5s
-      timeout: 5s
-      retries: 20
-      start_period: 5s
+      - ${IMPORTS_HOST_DIR:-/tmp/remarka-imports}:/var/remarka/imports
     restart: unless-stopped
 
   worker:
@@ -143,7 +129,6 @@ services:
       VERTEX_CHAT_MODEL: gemini-3.1-flash-lite-preview
       BOOK_QUOTES_ANALYZER_ENABLED: "true"
       BOOK_LITERARY_ANALYZER_ENABLED: "true"
-      PREPROCESSOR_URL: http://preprocessor:8010
       OUTBOX_POLL_INTERVAL_MS: "1200"
       IMPORT_BLOB_DIR: /var/remarka/imports
       BOOKS_STORAGE_PROVIDER: ${BOOKS_STORAGE_PROVIDER:-s3}
@@ -161,17 +146,14 @@ services:
         condition: service_healthy
       migrate:
         condition: service_completed_successfully
-      preprocessor:
-        condition: service_healthy
       minio:
         condition: service_healthy
       minio-init:
         condition: service_completed_successfully
     volumes:
-      - remarka_import_blobs:/var/remarka/imports
+      - ${IMPORTS_HOST_DIR:-/tmp/remarka-imports}:/var/remarka/imports
     restart: unless-stopped
 
 volumes:
   remarka_postgres_data:
-  remarka_import_blobs:
   remarka_minio_data:

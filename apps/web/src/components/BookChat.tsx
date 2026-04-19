@@ -16,7 +16,7 @@ import {
   listBookChatSessions,
   streamBookChatMessage,
 } from "@/lib/booksClient";
-import type { BookChatMessageDTO, BookChatSessionDTO, BookCoreDTO } from "@/lib/books";
+import type { BookChatMessageDTO, BookChatSessionDTO, BookChatStreamFinalEventDTO, BookCoreDTO } from "@/lib/books";
 import { useBookChatReadiness } from "@/lib/useBookChatReadiness";
 
 interface UiMessage extends BookChatMessageDTO {
@@ -50,6 +50,24 @@ function makeGreeting(bookTitle: string): UiMessage {
   };
 }
 
+function toAssistantMessageFromFinal(final: BookChatStreamFinalEventDTO): UiMessage {
+  return {
+    id: final.messageId || `local:assistant:${Date.now()}`,
+    role: "assistant",
+    content: final.answer || "",
+    rawAnswer: final.rawAnswer || null,
+    evidence: Array.isArray(final.evidence) ? final.evidence : [],
+    usedSources: Array.isArray(final.usedSources) ? final.usedSources : [],
+    confidence: final.confidence || null,
+    mode: final.mode || null,
+    citations: Array.isArray(final.citations) ? final.citations : [],
+    inlineCitations: Array.isArray(final.inlineCitations) ? final.inlineCitations : [],
+    answerItems: Array.isArray(final.answerItems) ? final.answerItems : [],
+    referenceResolution: final.referenceResolution || null,
+    createdAt: new Date().toISOString(),
+  };
+}
+
 export function BookChat() {
   const params = useParams<{ bookId: string; sessionId?: string }>();
   const bookId = String(params.bookId || "");
@@ -67,6 +85,7 @@ export function BookChat() {
 
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
+  const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const { readiness, loading: readinessLoading, error: readinessError } = useBookChatReadiness(bookId);
 
   const currentSession = useMemo(
@@ -273,6 +292,7 @@ export function BookChat() {
 
     setInputValue("");
     setIsLoading(true);
+    setStreamStatus("Разбираю вопрос и подбираю опоры в тексте");
 
     try {
       const sessionId = options?.forcedSessionId || (await ensureActiveSession());
@@ -292,26 +312,11 @@ export function BookChat() {
         createdAt: new Date().toISOString(),
       };
       const assistantDraftId = `local:assistant:${Date.now() + 1}`;
+      let assistantStarted = false;
 
       setMessages((current) => [
         ...current.filter((message) => !message.pending),
         optimisticUserMessage,
-        {
-          id: assistantDraftId,
-          role: "assistant",
-          content: "",
-          rawAnswer: null,
-          evidence: [],
-          usedSources: [],
-          confidence: null,
-          mode: null,
-          citations: [],
-          inlineCitations: [],
-          answerItems: [],
-          referenceResolution: null,
-          createdAt: new Date().toISOString(),
-          pending: true,
-        },
       ]);
 
       await streamBookChatMessage({
@@ -322,43 +327,58 @@ export function BookChat() {
           entryContext: options?.entryContext || "full_chat",
         },
         onEvent: (event) => {
+          if (event.type === "status") {
+            if (assistantStarted) return;
+            const text = String(event.text || "").trim();
+            if (text) setStreamStatus(text);
+            return;
+          }
+
           if (event.type === "token") {
             const token = String(event.text || "");
             if (!token) return;
+            assistantStarted = true;
+            setStreamStatus(null);
             setMessages((current) =>
-              current.map((message) =>
-                message.id === assistantDraftId
-                  ? {
-                      ...message,
-                      content: `${message.content}${token}`,
-                    }
-                  : message
-              )
+              current.some((message) => message.id === assistantDraftId)
+                ? current.map((message) =>
+                    message.id === assistantDraftId
+                      ? {
+                          ...message,
+                          content: `${message.content}${token}`,
+                        }
+                      : message
+                  )
+                : [
+                    ...current,
+                    {
+                      id: assistantDraftId,
+                      role: "assistant",
+                      content: token,
+                      rawAnswer: null,
+                      evidence: [],
+                      usedSources: [],
+                      confidence: null,
+                      mode: null,
+                      citations: [],
+                      inlineCitations: [],
+                      answerItems: [],
+                      referenceResolution: null,
+                      createdAt: new Date().toISOString(),
+                      pending: true,
+                    },
+                  ]
             );
             return;
           }
 
           if (event.type === "final" && event.final) {
+            setStreamStatus(null);
+            const finalMessage = toAssistantMessageFromFinal(event.final);
             setMessages((current) =>
-              current.map((message) =>
-                message.id === assistantDraftId
-                  ? {
-                      id: event.final?.messageId || message.id,
-                      role: "assistant",
-                      content: String(event.final?.answer || ""),
-                      rawAnswer: event.final?.rawAnswer || null,
-                      evidence: Array.isArray(event.final?.evidence) ? event.final.evidence : [],
-                      usedSources: Array.isArray(event.final?.usedSources) ? event.final.usedSources : [],
-                      confidence: event.final?.confidence || null,
-                      mode: event.final?.mode || null,
-                      citations: Array.isArray(event.final?.citations) ? event.final.citations : [],
-                      inlineCitations: Array.isArray(event.final?.inlineCitations) ? event.final.inlineCitations : [],
-                      answerItems: Array.isArray(event.final?.answerItems) ? event.final.answerItems : [],
-                      referenceResolution: event.final?.referenceResolution || null,
-                      createdAt: new Date().toISOString(),
-                    }
-                  : message
-              )
+              assistantStarted && current.some((message) => message.id === assistantDraftId)
+                ? current.map((message) => (message.id === assistantDraftId ? finalMessage : message))
+                : [...current, finalMessage]
             );
           }
         },
@@ -367,6 +387,7 @@ export function BookChat() {
       await Promise.all([refreshSessions(sessionId), loadMessages(sessionId)]);
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : "Не удалось получить ответ";
+      setStreamStatus(null);
       setMessages((current) => [
         ...current.filter((message) => !message.pending),
         {
@@ -387,6 +408,7 @@ export function BookChat() {
       ]);
     } finally {
       setIsLoading(false);
+      setStreamStatus(null);
     }
   };
 
@@ -572,7 +594,7 @@ export function BookChat() {
                         }`}
                       >
                         <ChatMessageMarkdown
-                          content={message.content || (message.pending ? "..." : "")}
+                          content={message.content}
                           inlineCitations={message.inlineCitations}
                           className={message.role === "user" ? "text-primary-foreground" : "text-foreground"}
                         />
@@ -590,10 +612,10 @@ export function BookChat() {
                     </div>
                   ))}
 
-                  {isLoading ? (
+                  {isLoading && streamStatus ? (
                     <div className="flex gap-2 items-center text-xs text-muted-foreground">
                       <MessageSquare className="w-4 h-4" />
-                      Ответ формируется...
+                      {streamStatus}
                     </div>
                   ) : null}
 
