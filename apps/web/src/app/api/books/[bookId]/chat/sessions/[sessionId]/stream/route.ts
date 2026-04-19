@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { isBookChatToolName, type BookChatToolName } from "@/lib/bookChatTools";
 import { resolveAuthUser } from "@/lib/authUser";
 import { resolveAccessibleBook } from "@/lib/chatAccess";
 import { BookChatError, streamBookChatThreadReply } from "@/lib/bookChatService";
@@ -73,6 +74,34 @@ export async function POST(request: Request, context: RouteContext) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
   }
 
+  let selectedTools: BookChatToolName[] | undefined;
+  if (body.selectedTools !== undefined) {
+    if (!Array.isArray(body.selectedTools)) {
+      return NextResponse.json({ error: "selectedTools must be an array" }, { status: 400 });
+    }
+
+    const invalidTools = body.selectedTools
+      .map((item) => String(item || "").trim())
+      .filter((item) => item && !isBookChatToolName(item));
+    if (invalidTools.length > 0) {
+      return NextResponse.json(
+        { error: `Unsupported tools: ${invalidTools.join(", ")}` },
+        { status: 400 }
+      );
+    }
+
+    selectedTools = Array.from(
+      new Set(
+        body.selectedTools
+          .map((item) => String(item || "").trim())
+          .filter((item): item is BookChatToolName => isBookChatToolName(item))
+      )
+    );
+    if (selectedTools.length === 0) {
+      return NextResponse.json({ error: "At least one tool must be selected" }, { status: 400 });
+    }
+  }
+
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream<Uint8Array>({
@@ -99,6 +128,7 @@ export async function POST(request: Request, context: RouteContext) {
             bookId: book.id,
             threadId: sessionId,
             userText: message,
+            selectedTools,
             onToolCall: async (event) => {
               sendStatus(statusForToolCall(event.toolName));
             },

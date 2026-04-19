@@ -4,6 +4,13 @@ import { createNpzPrismaAdapter, prisma as basePrisma } from "@remarka/db";
 import type { Prisma } from "@prisma/client";
 import { generateText, stepCountIs, streamText, tool, type LanguageModelUsage } from "ai";
 import { z } from "zod";
+import {
+  BOOK_CHAT_TOOL_META,
+  BOOK_CHAT_TOOL_NAMES,
+  DEFAULT_ENABLED_BOOK_CHAT_TOOLS,
+  isBookChatToolName,
+  type BookChatToolName,
+} from "./bookChatTools";
 import { convertUsd, readCurrencyRates, resolveTokenPricing } from "./modelPricing";
 
 const prisma = createNpzPrismaAdapter(basePrisma);
@@ -40,6 +47,15 @@ export type BookChatToolboxRunResult = {
   outputMeta: Record<string, unknown>;
   output: Record<string, unknown>;
 };
+
+function normalizeEnabledBookChatTools(value?: readonly BookChatToolName[] | null): BookChatToolName[] {
+  if (value === undefined || value === null) {
+    return [...DEFAULT_ENABLED_BOOK_CHAT_TOOLS];
+  }
+
+  const selected = new Set(value.filter((tool): tool is BookChatToolName => isBookChatToolName(tool)));
+  return BOOK_CHAT_TOOL_NAMES.filter((tool) => selected.has(tool));
+}
 
 export type ChatMetrics = {
   chatModel: string;
@@ -2276,105 +2292,98 @@ function deriveCitationsFromToolCapture(capture: BookChatToolCapture): ChatCitat
   return [];
 }
 
-function createBookChatSystemPrompt(bookTitle: string): string {
-  return `Ты литературный ассистент по одной книге: "${bookTitle}".
+function createBookChatSystemPrompt(bookTitle: string, enabledTools: readonly BookChatToolName[]): string {
+  const normalizedTools = normalizeEnabledBookChatTools(enabledTools);
+  const available = new Set(normalizedTools);
+  const lines = [
+    `Ты литературный ассистент по одной книге: "${bookTitle}".`,
+    "",
+    "Ты работаешь только по данным, полученным через инструменты.",
+    "Не используй память, внешние знания, другие книги, фильмы, фанатские знания или догадки.",
+  ];
 
-Ты работаешь только по данным, полученным через инструменты.
-Не используй память, внешние знания, другие книги, фильмы, фанатские знания или догадки.
+  if (!normalizedTools.length) {
+    lines.push("", "Инструменты отключены. Честно скажи, что без инструментов по книге ответить нельзя.");
+    return lines.join("\n");
+  }
 
-Доступные инструменты:
-- search_paragraphs_hybrid(query, topK): гибридный поиск по абзацам (семантика + лексика). Возвращает точечные попадания с рангами и текстом абзаца.
-- search_scenes(query, topK): гибридный поиск сцен по книге (семантика + лексика, объединённые ранжированием).
-- get_scene_context(sceneIds, neighborWindow, maxScenes): расширенный контекст по найденным сценам и соседним сценам.
-- get_paragraph_slice(chapterId, paragraphStart, paragraphEnd): дословный текст конкретного диапазона абзацев.
+  lines.push("", "Доступные инструменты:");
+  for (const tool of normalizedTools) {
+    lines.push(`- ${tool}: ${BOOK_CHAT_TOOL_META[tool].description}`);
+  }
 
-Общие правила:
-- Для факт-чека, вопросов "как именно", "почему", "правда ли", "когда именно", "чем подтверждается" сначала вызывай search_paragraphs_hybrid.
-- Для вопросов о сценах и эпизодах (структура сюжета, первое появление, список эпизодов) сначала вызывай search_scenes.
-- Не отвечай, пока не получишь достаточно данных из инструментов.
-- Если найденных сцен мало или ответ может быть неполным, продолжай поиск.
-- Если вопрос требует точности, сравнения или проверки нескольких эпизодов, не останавливайся на первой найденной сцене.
-- Избегай бесконечных переформулировок одного и того же запроса; обычно достаточно 1-3 поисков.
-- После 6 инструментальных вызовов дай лучший возможный ответ по уже найденным данным.
-- Отвечай только на основе результатов инструментов.
-- Не выдумывай факты, которых нет в книге.
-- Если данных не хватает, прямо скажи об этом.
-- Отвечай на русском, коротко и по делу.
+  lines.push(
+    "",
+    "Общие правила:",
+    "- Не отвечай, пока не получишь достаточно данных из инструментов.",
+    "- Отвечай только на основе результатов инструментов.",
+    "- Не выдумывай факты, которых нет в книге.",
+    "- Если данных не хватает, прямо скажи об этом.",
+    "- Избегай бесконечных переформулировок одного и того же запроса; обычно достаточно 1-3 поисков.",
+    "- После 6 инструментальных вызовов дай лучший возможный ответ по уже найденным данным.",
+    "- Отвечай на русском, коротко и по делу."
+  );
 
-Правила маршрутизации:
+  lines.push("", "Правила маршрутизации:");
+  if (available.has("search_paragraphs_hybrid")) {
+    lines.push(
+      '- Для факт-чека, вопросов "как именно", "почему", "правда ли", "когда именно", "чем подтверждается" сначала вызывай search_paragraphs_hybrid.',
+      '- Для вопросов "впервые", "где появляется", "когда именно", "правда ли", "почему" проверяй несколько paragraph hits, а не один.'
+    );
+  }
 
-1. Факт-чек и точная проверка формулировки
-Примеры:
-- как именно...
-- почему...
-- правда ли...
-- чем подтверждается...
-Действия:
-- сначала вызови search_paragraphs_hybrid
-- проверь несколько top-абзацев
-- при необходимости расширь контекст через get_paragraph_slice
-- только после этого формулируй ответ
+  if (available.has("search_scenes")) {
+    lines.push(
+      '- Для вопросов о сценах и эпизодах (структура сюжета, локальный эпизод, список эпизодов) сначала вызывай search_scenes.',
+      '- Для вопросов "впервые", "где появляется", "в каких сценах", "кто участвует" ищи несколько сцен и сравнивай их по порядку в книге.'
+    );
+    if (available.has("get_scene_context")) {
+      lines.push(
+        "- После поиска сцен добирай get_scene_context, когда нужен расширенный состав участников, соседние сцены или локальный контекст."
+      );
+    } else {
+      lines.push("- Если get_scene_context недоступен, работай только по самим найденным сценам и не выдумывай соседний контекст.");
+    }
+  } else if (available.has("search_paragraphs_hybrid")) {
+    lines.push(
+      "- Поиск сцен отключен. Для вопросов о сценах и эпизодах отвечай по найденным абзацам и явно опирайся на paragraph evidence, а не на scene graph."
+    );
+  }
 
-2. Локальный вопрос о сцене или эпизоде
-Примеры:
-- что происходит в сцене...
-- где...
-- кто участвует...
-Действия:
-- вызови search_scenes
-- затем get_scene_context для лучших сцен
-- ответь по найденному контексту
+  if (available.has("get_scene_context") && !available.has("search_scenes")) {
+    lines.push("- get_scene_context используй только если sceneIds уже даны явно; иначе не трать шаг на этот инструмент.");
+  }
 
-3. Вопросы типа "когда впервые", "где впервые", "первое появление", "первый раз"
-Действия:
-- ищи несколько кандидатов, а не одну сцену
-- учитывай, что самая релевантная сцена не обязательно самая ранняя
-- после search_scenes сравни несколько найденных сцен по порядку в книге
-- при необходимости добери соседний контекст через get_scene_context
-- только потом отвечай, какая сцена самая ранняя из валидных
+  if (available.has("get_paragraph_slice")) {
+    lines.push(
+      "- Для дословной цитаты, точной формулировки или проверки спорного места сначала найди релевантный фрагмент, затем вызови get_paragraph_slice."
+    );
+  } else {
+    lines.push("- Если нужен дословный фрагмент, а get_paragraph_slice недоступен, честно скажи, что точную цитату ты не проверил.");
+  }
 
-4. Вопросы типа "где появляется", "в каких сценах", "все важные моменты"
-Действия:
-- ищи несколько сцен
-- не останавливайся на одном результате
-- в ответе перечисляй несколько релевантных эпизодов, если вопрос это подразумевает
+  lines.push(
+    "",
+    "Дефолты инструментов:",
+    ...(available.has("search_paragraphs_hybrid")
+      ? ['- search_paragraphs_hybrid: topK=10 для факт-чека и вопросов "как именно/почему/правда ли/когда именно".']
+      : []),
+    ...(available.has("search_scenes")
+      ? [
+          "- search_scenes: topK=8 для простых локальных вопросов.",
+          '- search_scenes: topK=12 для вопросов "впервые", "где появляется", "в каких сценах", "кто участвует", "почему", "когда именно", "правда ли".',
+        ]
+      : []),
+    ...(available.has("get_scene_context") ? ["- get_scene_context: обычно neighborWindow=1..2."] : []),
+    "",
+    "Формат ответа:",
+    "- коротко",
+    "- по существу",
+    "- без упоминания внутренних шагов, если пользователь этого не просил",
+    "- если уверенность ограничена найденными данными, прямо скажи это"
+  );
 
-5. Вопросы о составе участников сцены
-Действия:
-- после поиска сцены обязательно вызывай get_scene_context
-- учитывай, что важный участник может появиться в соседней связанной сцене
-
-6. Вопросы с просьбой о цитате, дословном фрагменте или точной формулировке
-Действия:
-- сначала найди сцену и контекст
-- затем вызови get_paragraph_slice
-- цитируй только после чтения точных абзацев
-
-7. Если вопрос двусмысленный
-Действия:
-- выбери наиболее вероятную трактовку
-- при нехватке данных честно укажи неопределенность
-- не заполняй пробелы догадками
-
-Правило полноты:
-- Если вопрос звучит так, будто пользователь хочет не один эпизод, а полный охват, не ограничивайся первым совпадением.
-- Если вопрос про "впервые", "кто участвует", "где появляется", "когда именно", "правда ли", "почему", проверяй несколько сцен, если это нужно для надежного ответа.
-
-Правило точности:
-- Даже при гибридном поиске семантический сигнал может вернуть поздний или неполный эпизод.
-- Для вопросов о первом появлении, полном составе или серии появлений всегда проверяй несколько кандидатов.
-
-Дефолты инструментов:
-- search_paragraphs_hybrid: topK=10 для факт-чека и вопросов "как именно/почему/правда ли/когда именно".
-- search_scenes: topK=8 для простых локальных вопросов.
-- search_scenes: topK=12 для вопросов "впервые", "где появляется", "в каких сценах", "кто участвует", "почему", "когда именно", "правда ли".
-- get_scene_context: обычно neighborWindow=1..2.
-
-Формат ответа:
-- коротко
-- по существу
-- без упоминания внутренних шагов, если пользователь этого не просил
-- если уверенность ограничена найденными данными, прямо скажи это`;
+  return lines.join("\n");
 }
 
 function createBookChatTools(params: {
@@ -2382,7 +2391,10 @@ function createBookChatTools(params: {
   client: ReturnType<typeof createVertexClient>;
   toolRuns: ChatToolRun[];
   capture: BookChatToolCapture;
+  enabledTools?: readonly BookChatToolName[];
 }) {
+  const enabledTools = normalizeEnabledBookChatTools(params.enabledTools);
+  const enabled = new Set(enabledTools);
   let searchContextPromise: Promise<BookSearchContext> | null = null;
   const getSearchContext = () => {
     if (!searchContextPromise) {
@@ -2392,7 +2404,9 @@ function createBookChatTools(params: {
   };
 
   return {
-    search_scenes: tool({
+    ...(enabled.has("search_scenes")
+      ? {
+          search_scenes: tool({
       description:
         'Гибридный поиск релевантных сцен книги: семантика и лексика всегда используются вместе, затем объединяются одним ранжированием. Используй первым шагом. Важно: top results могут быть неполными, поздними или не самыми ранними. Для вопросов "впервые", "где появляется", "в каких сценах", "кто участвует" запрашивай несколько кандидатов.',
       inputSchema: z.object({
@@ -2463,8 +2477,12 @@ function createBookChatTools(params: {
           semanticConfidence: search.semanticConfidence,
         };
       },
-    }),
-    search_paragraphs_hybrid: tool({
+          }),
+        }
+      : {}),
+    ...(enabled.has("search_paragraphs_hybrid")
+      ? {
+          search_paragraphs_hybrid: tool({
       description:
         'Гибридный поиск по абзацам (семантика + лексика). Используй первым шагом для факт-чека и вопросов "как именно", "почему", "правда ли", "когда именно". Возвращает точечные абзацы с рангами.',
       inputSchema: z.object({
@@ -2531,8 +2549,12 @@ function createBookChatTools(params: {
           queryTerms: search.queryTerms,
         };
       },
-    }),
-    get_scene_context: tool({
+          }),
+        }
+      : {}),
+    ...(enabled.has("get_scene_context")
+      ? {
+          get_scene_context: tool({
       description:
         "Возвращает расширенный контекст по найденным сценам и соседним сценам. Используй, когда нужен полный состав участников, связанный эпизод или проверка локального контекста.",
       inputSchema: z.object({
@@ -2594,8 +2616,12 @@ function createBookChatTools(params: {
           scenes: formatContextForPrompt(contextScenes),
         };
       },
-    }),
-    get_paragraph_slice: tool({
+          }),
+        }
+      : {}),
+    ...(enabled.has("get_paragraph_slice")
+      ? {
+          get_paragraph_slice: tool({
       description:
         "Возвращает точный текст абзацев. Используй для цитат, дословных формулировок и финальной проверки спорного места.",
       inputSchema: z.object({
@@ -2634,7 +2660,9 @@ function createBookChatTools(params: {
           slice: slice ? formatSlicesForPrompt([slice])[0] : null,
         };
       },
-    }),
+          }),
+        }
+      : {}),
   };
 }
 
@@ -2927,6 +2955,7 @@ export async function runBookChatToolboxTool(params: {
 export async function answerBookChatQuestion(params: {
   bookId: string;
   messages: ChatInputMessage[];
+  enabledTools?: readonly BookChatToolName[];
 }): Promise<BookChatAnswer> {
   const preparedMessages = sanitizeMessages(params.messages || []);
   if (!preparedMessages.length) {
@@ -2968,13 +2997,15 @@ export async function answerBookChatQuestion(params: {
     client,
     toolRuns,
     capture,
+    enabledTools: params.enabledTools,
   });
+  const enabledTools = normalizeEnabledBookChatTools(params.enabledTools);
 
   const completion = await withSemaphore(chatCallSemaphore, async () =>
     generateText({
       model: chatModel,
       temperature: 0.2,
-      system: createBookChatSystemPrompt(book.title),
+      system: createBookChatSystemPrompt(book.title, enabledTools),
       messages: preparedMessages.map((message) => ({
         role: message.role,
         content: message.content,
@@ -3331,6 +3362,7 @@ export async function listBookChatMessages(params: {
 async function streamBookChatAnswer(params: {
   bookId: string;
   messages: ChatInputMessage[];
+  enabledTools?: readonly BookChatToolName[];
   onDelta: (delta: string) => void | Promise<void>;
   onReasoning?: (delta: string) => void | Promise<void>;
   onToolCall?: (event: BookChatStreamToolCallEvent) => void | Promise<void>;
@@ -3373,7 +3405,9 @@ async function streamBookChatAnswer(params: {
     client,
     toolRuns,
     capture,
+    enabledTools: params.enabledTools,
   });
+  const enabledTools = normalizeEnabledBookChatTools(params.enabledTools);
 
   let streamedAnswer = "";
   try {
@@ -3383,7 +3417,7 @@ async function streamBookChatAnswer(params: {
       const streamResult = streamText({
         model: chatModel,
         temperature: 0.2,
-        system: createBookChatSystemPrompt(book.title),
+        system: createBookChatSystemPrompt(book.title, enabledTools),
         messages: preparedMessages.map((message) => ({
           role: message.role,
           content: message.content,
@@ -3476,7 +3510,7 @@ async function streamBookChatAnswer(params: {
       generateText({
         model: chatModel,
         temperature: 0.2,
-        system: createBookChatSystemPrompt(book.title),
+        system: createBookChatSystemPrompt(book.title, enabledTools),
         messages: preparedMessages.map((message) => ({
           role: message.role,
           content: message.content,
@@ -3519,6 +3553,7 @@ export async function streamBookChatThreadReply(params: {
   bookId: string;
   threadId: string;
   userText: string;
+  selectedTools?: readonly BookChatToolName[];
   onDelta: (delta: string) => void | Promise<void>;
   onReasoning?: (delta: string) => void | Promise<void>;
   onToolCall?: (event: BookChatStreamToolCallEvent) => void | Promise<void>;
@@ -3604,6 +3639,7 @@ export async function streamBookChatThreadReply(params: {
   const answer = await streamBookChatAnswer({
     bookId: params.bookId,
     messages: modelMessages,
+    enabledTools: params.selectedTools,
     onDelta: params.onDelta,
     onReasoning: params.onReasoning,
     onToolCall: params.onToolCall,

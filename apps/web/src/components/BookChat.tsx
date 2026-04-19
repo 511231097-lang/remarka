@@ -1,13 +1,20 @@
 "use client";
 
 import { motion } from "motion/react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { ArrowLeft, Bot, MessageSquare, Plus, Send, Trash2, User } from "lucide-react";
 import { ChatModePill } from "./BookChatReadiness";
 import { BookSettings } from "./BookSettings";
 import { ChatMessageMarkdown } from "./ChatMessageMarkdown";
+import {
+  BOOK_CHAT_TOOL_META,
+  BOOK_CHAT_TOOL_NAMES,
+  DEFAULT_ENABLED_BOOK_CHAT_TOOLS,
+  isBookChatToolName,
+  type BookChatToolName,
+} from "@/lib/bookChatTools";
 import {
   createBookChatSession,
   deleteBookChatSession,
@@ -68,6 +75,24 @@ function toAssistantMessageFromFinal(final: BookChatStreamFinalEventDTO): UiMess
   };
 }
 
+function getBookChatToolsStorageKey(bookId: string): string {
+  return `book-chat-enabled-tools:${bookId}`;
+}
+
+function normalizeStoredToolSelection(value: unknown): BookChatToolName[] {
+  if (!Array.isArray(value)) return [...DEFAULT_ENABLED_BOOK_CHAT_TOOLS];
+
+  const selected = Array.from(
+    new Set(
+      value
+        .filter((item): item is BookChatToolName => isBookChatToolName(item))
+        .map((item) => item)
+    )
+  );
+
+  return selected;
+}
+
 export function BookChat() {
   const params = useParams<{ bookId: string; sessionId?: string }>();
   const bookId = String(params.bookId || "");
@@ -82,6 +107,7 @@ export function BookChat() {
   const [sessions, setSessions] = useState<BookChatSessionDTO[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [messages, setMessages] = useState<UiMessage[]>([]);
+  const [selectedTools, setSelectedTools] = useState<BookChatToolName[]>([...DEFAULT_ENABLED_BOOK_CHAT_TOOLS]);
 
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -92,10 +118,36 @@ export function BookChat() {
     () => sessions.find((session) => session.id === currentSessionId) || null,
     [sessions, currentSessionId]
   );
+  const selectedToolSet = useMemo(() => new Set(selectedTools), [selectedTools]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
+
+  useLayoutEffect(() => {
+    if (!bookId) return;
+    try {
+      const raw = window.localStorage.getItem(getBookChatToolsStorageKey(bookId));
+      if (!raw) {
+        setSelectedTools([...DEFAULT_ENABLED_BOOK_CHAT_TOOLS]);
+        return;
+      }
+      const parsed = JSON.parse(raw);
+      const normalized = normalizeStoredToolSelection(parsed);
+      setSelectedTools(normalized.length ? normalized : []);
+    } catch {
+      setSelectedTools([...DEFAULT_ENABLED_BOOK_CHAT_TOOLS]);
+    }
+  }, [bookId]);
+
+  useEffect(() => {
+    if (!bookId) return;
+    try {
+      window.localStorage.setItem(getBookChatToolsStorageKey(bookId), JSON.stringify(selectedTools));
+    } catch {
+      // Ignore storage failures in private mode / restricted environments.
+    }
+  }, [bookId, selectedTools]);
 
   const refreshSessions = async (preferredSessionId?: string | null): Promise<string | null> => {
     if (!bookId) return null;
@@ -288,7 +340,7 @@ export function BookChat() {
   ) => {
     if (!bookId || !readiness?.canChat) return;
     const question = String(questionRaw || "").trim();
-    if (!question || isLoading) return;
+    if (!question || isLoading || selectedTools.length === 0) return;
 
     setInputValue("");
     setIsLoading(true);
@@ -325,6 +377,7 @@ export function BookChat() {
         input: {
           message: question,
           entryContext: options?.entryContext || "full_chat",
+          selectedTools,
         },
         onEvent: (event) => {
           if (event.type === "status") {
@@ -410,6 +463,12 @@ export function BookChat() {
       setIsLoading(false);
       setStreamStatus(null);
     }
+  };
+
+  const toggleTool = (tool: BookChatToolName) => {
+    setSelectedTools((current) =>
+      current.includes(tool) ? current.filter((item) => item !== tool) : [...current, tool]
+    );
   };
 
   useEffect(() => {
@@ -624,6 +683,38 @@ export function BookChat() {
               </div>
 
               <div className="shrink-0 border-t border-border bg-background/95 pt-4 pb-[calc(env(safe-area-inset-bottom)+0.25rem)] backdrop-blur supports-[backdrop-filter]:bg-background/80">
+                <div className="mb-3 flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted-foreground">Инструменты чата:</span>
+                  {BOOK_CHAT_TOOL_NAMES.map((tool) => {
+                    const active = selectedToolSet.has(tool);
+                    return (
+                      <button
+                        key={tool}
+                        type="button"
+                        onClick={() => {
+                          toggleTool(tool);
+                        }}
+                        className={`rounded-full border px-3 py-1 text-xs transition-colors ${
+                          active
+                            ? "border-primary/40 bg-primary/10 text-primary"
+                            : "border-border bg-card text-muted-foreground hover:text-foreground"
+                        }`}
+                        title={BOOK_CHAT_TOOL_META[tool].description}
+                      >
+                        {BOOK_CHAT_TOOL_META[tool].label}
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  В следующий запрос уйдут только отмеченные инструменты, и системный prompt будет подстроен под этот
+                  набор.
+                </p>
+                {selectedTools.length === 0 ? (
+                  <div className="mb-3 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
+                    Выбери хотя бы один инструмент, иначе чат не сможет опираться на данные книги.
+                  </div>
+                ) : null}
                 <div className="flex gap-3">
                   <textarea
                     value={inputValue}
@@ -643,7 +734,7 @@ export function BookChat() {
                     onClick={() => {
                       void sendMessage(inputValue, { entryContext: "full_chat" });
                     }}
-                    disabled={!inputValue.trim() || isLoading || !readiness?.canChat}
+                    disabled={!inputValue.trim() || isLoading || !readiness?.canChat || selectedTools.length === 0}
                     className="self-end rounded-2xl bg-primary px-8 py-4 text-primary-foreground transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
                   >
                     <Send className="w-5 h-5" />

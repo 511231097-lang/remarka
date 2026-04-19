@@ -20,6 +20,7 @@ import type {
   BookThemeQuote,
   User,
 } from "@prisma/client";
+import type { BookChatToolName } from "./bookChatTools";
 
 export interface BookOwnerDTO {
   id: string;
@@ -507,6 +508,7 @@ export interface BookChatStreamRequestDTO {
   topK?: number;
   sectionKey?: LiterarySectionKeyDTO;
   entryContext?: BookChatEntryContextDTO;
+  selectedTools?: BookChatToolName[];
 }
 
 export interface BookChatStreamFinalEventDTO {
