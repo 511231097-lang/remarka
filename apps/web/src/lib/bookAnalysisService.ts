@@ -1,5 +1,11 @@
 import type { Prisma } from "@prisma/client";
-import { createNpzPrismaAdapter, enqueueOutboxEvent, prisma as basePrisma } from "@remarka/db";
+import {
+  createArtifactBlobStoreFromEnv,
+  createNpzPrismaAdapter,
+  enqueueOutboxEvent,
+  getArtifactPayload,
+  prisma as basePrisma,
+} from "@remarka/db";
 import {
   toBookAnalysisArtifactDTO,
   toBookAnalysisDTO,
@@ -32,6 +38,7 @@ async function readBookAnalysisRecord(bookId: string) {
     where: { id: bookId },
     select: {
       id: true,
+      latestAnalysisRunId: true,
       analysisStatus: true,
       analysisError: true,
       analysisTotalBlocks: true,
@@ -78,23 +85,23 @@ async function readBookAnalysisRecord(bookId: string) {
   });
 }
 
-async function readBookAnalysisArtifactSummary(bookId: string) {
+async function readBookAnalysisArtifactSummary(bookId: string, runId?: string | null) {
+  const where = {
+    bookId,
+    ...(runId ? { runId } : {}),
+  };
   const [total, failed, latest] = await Promise.all([
     prisma.bookAnalysisArtifact.count({
-      where: {
-        bookId,
-      },
+      where,
     }),
     prisma.bookAnalysisArtifact.count({
       where: {
-        bookId,
+        ...where,
         status: "error",
       },
     }),
     prisma.bookAnalysisArtifact.findFirst({
-      where: {
-        bookId,
-      },
+      where,
       orderBy: {
         createdAt: "desc",
       },
@@ -112,8 +119,9 @@ async function readBookAnalysisArtifactSummary(bookId: string) {
 }
 
 export async function getBookAnalysis(bookId: string): Promise<BookAnalysisDTO | null> {
-  const [row, artifactSummary] = await Promise.all([readBookAnalysisRecord(bookId), readBookAnalysisArtifactSummary(bookId)]);
+  const row = await readBookAnalysisRecord(bookId);
   if (!row) return null;
+  const artifactSummary = await readBookAnalysisArtifactSummary(bookId, row.latestAnalysisRunId);
 
   return toBookAnalysisDTO({
     configured: hasVertexApiKey(),
@@ -126,6 +134,8 @@ export async function getBookAnalysis(bookId: string): Promise<BookAnalysisDTO |
 export async function getBookAnalysisArtifacts(params: {
   bookId: string;
   limit?: number;
+  runId?: string | null;
+  includePayload?: boolean;
 }): Promise<BookAnalysisArtifactListDTO | null> {
   const bookId = String(params.bookId || "").trim();
   if (!bookId) return null;
@@ -134,16 +144,19 @@ export async function getBookAnalysisArtifacts(params: {
     where: { id: bookId },
     select: {
       id: true,
+      latestAnalysisRunId: true,
     },
   });
   if (!book) return null;
 
   const limit = Math.min(200, Math.max(1, Number(params.limit || 50)));
+  const runId = String(params.runId || "").trim() || String(book.latestAnalysisRunId || "").trim() || null;
   const [summary, rows] = await Promise.all([
-    readBookAnalysisArtifactSummary(bookId),
+    readBookAnalysisArtifactSummary(bookId, runId),
     prisma.bookAnalysisArtifact.findMany({
       where: {
         bookId,
+        ...(runId ? { runId } : {}),
       },
       orderBy: {
         createdAt: "desc",
@@ -151,6 +164,7 @@ export async function getBookAnalysisArtifacts(params: {
       take: limit,
       select: {
         id: true,
+        runId: true,
         bookId: true,
         chapterId: true,
         chapterOrderIndex: true,
@@ -158,6 +172,7 @@ export async function getBookAnalysisArtifacts(params: {
         chunkStartParagraph: true,
         chunkEndParagraph: true,
         attempt: true,
+        stageKey: true,
         phase: true,
         status: true,
         llmModel: true,
@@ -165,6 +180,11 @@ export async function getBookAnalysisArtifacts(params: {
         completionTokens: true,
         totalTokens: true,
         elapsedMs: true,
+        storageProvider: true,
+        payloadKey: true,
+        payloadSizeBytes: true,
+        compression: true,
+        schemaVersion: true,
         promptText: true,
         inputJson: true,
         responseText: true,
@@ -175,11 +195,230 @@ export async function getBookAnalysisArtifacts(params: {
     }),
   ]);
 
+  let rowsWithPayload = rows as any[];
+  if (params.includePayload) {
+    let store:
+      | ReturnType<typeof createArtifactBlobStoreFromEnv>
+      | null = null;
+    try {
+      store = createArtifactBlobStoreFromEnv();
+    } catch {
+      store = null;
+    }
+
+    if (store) {
+      rowsWithPayload = await Promise.all(
+        rows.map(async (row: any) => {
+          if (!row.payloadKey) return row;
+          try {
+            const payload = (await getArtifactPayload({
+              store,
+              storageKey: String(row.payloadKey),
+              compression: row.compression ? String(row.compression) : null,
+            })) as Record<string, unknown>;
+
+            return {
+              ...row,
+              promptText: typeof payload.prompt === "string" ? payload.prompt : row.promptText,
+              inputJson: payload.input && typeof payload.input === "object" ? payload.input : row.inputJson,
+              responseText: typeof payload.response === "string" ? payload.response : row.responseText,
+              parsedJson: payload.parsed && typeof payload.parsed === "object" ? payload.parsed : row.parsedJson,
+            };
+          } catch {
+            return row;
+          }
+        })
+      );
+    }
+  }
+
   return {
     bookId,
+    runId,
     limit,
     summary,
-    items: rows.map((row: any) => toBookAnalysisArtifactDTO(row)),
+    items: rowsWithPayload.map((row: any) => toBookAnalysisArtifactDTO(row)),
+  };
+}
+
+export async function listBookAnalysisRuns(params: { bookId: string; limit?: number }) {
+  const bookId = String(params.bookId || "").trim();
+  if (!bookId) return [];
+
+  const limit = Math.min(50, Math.max(1, Number(params.limit || 20)));
+  const rows = await prisma.bookAnalysisRun.findMany({
+    where: { bookId },
+    orderBy: [{ createdAt: "desc" }],
+    take: limit,
+    select: {
+      id: true,
+      contentVersionId: true,
+      attempt: true,
+      state: true,
+      currentStageKey: true,
+      error: true,
+      configVersion: true,
+      configHash: true,
+      extractModel: true,
+      chatModel: true,
+      embeddingModel: true,
+      pricingVersion: true,
+      llmPromptTokens: true,
+      llmCompletionTokens: true,
+      llmTotalTokens: true,
+      embeddingInputTokens: true,
+      embeddingTotalTokens: true,
+      llmCostUsd: true,
+      embeddingCostUsd: true,
+      totalCostUsd: true,
+      totalElapsedMs: true,
+      llmLatencyMs: true,
+      embeddingLatencyMs: true,
+      chunkCount: true,
+      chunkFailedCount: true,
+      llmCalls: true,
+      llmRetries: true,
+      embeddingCalls: true,
+      paragraphEmbeddingCount: true,
+      sceneCount: true,
+      artifactCount: true,
+      storageBytesJson: true,
+      startedAt: true,
+      completedAt: true,
+      createdAt: true,
+      updatedAt: true,
+    },
+  });
+
+  return rows.map((row: any) => ({
+    ...row,
+    startedAt: row.startedAt ? row.startedAt.toISOString() : null,
+    completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+  }));
+}
+
+export async function getBookAnalysisRun(params: { bookId: string; runId: string }) {
+  const bookId = String(params.bookId || "").trim();
+  const runId = String(params.runId || "").trim();
+  if (!bookId || !runId) return null;
+
+  const row = await prisma.bookAnalysisRun.findFirst({
+    where: {
+      id: runId,
+      bookId,
+    },
+    select: {
+      id: true,
+      contentVersionId: true,
+      attempt: true,
+      state: true,
+      currentStageKey: true,
+      error: true,
+      configVersion: true,
+      configHash: true,
+      extractModel: true,
+      chatModel: true,
+      embeddingModel: true,
+      pricingVersion: true,
+      llmPromptTokens: true,
+      llmCompletionTokens: true,
+      llmTotalTokens: true,
+      embeddingInputTokens: true,
+      embeddingTotalTokens: true,
+      llmCostUsd: true,
+      embeddingCostUsd: true,
+      totalCostUsd: true,
+      totalElapsedMs: true,
+      llmLatencyMs: true,
+      embeddingLatencyMs: true,
+      chunkCount: true,
+      chunkFailedCount: true,
+      llmCalls: true,
+      llmRetries: true,
+      embeddingCalls: true,
+      paragraphEmbeddingCount: true,
+      sceneCount: true,
+      artifactCount: true,
+      storageBytesJson: true,
+      startedAt: true,
+      completedAt: true,
+      createdAt: true,
+      updatedAt: true,
+      stageExecutions: {
+        orderBy: [{ stageKey: "asc" }],
+        select: {
+          stageKey: true,
+          state: true,
+          error: true,
+          promptTokens: true,
+          completionTokens: true,
+          totalTokens: true,
+          embeddingInputTokens: true,
+          embeddingTotalTokens: true,
+          llmCostUsd: true,
+          embeddingCostUsd: true,
+          totalCostUsd: true,
+          elapsedMs: true,
+          retryCount: true,
+          llmCalls: true,
+          embeddingCalls: true,
+          chunkCount: true,
+          chunkFailedCount: true,
+          outputRowCount: true,
+          storageBytesJson: true,
+          startedAt: true,
+          completedAt: true,
+        },
+      },
+      chapterMetrics: {
+        orderBy: [{ chapterOrderIndex: "asc" }, { stageKey: "asc" }],
+        select: {
+          chapterId: true,
+          chapterOrderIndex: true,
+          chapterTitle: true,
+          stageKey: true,
+          state: true,
+          error: true,
+          promptTokens: true,
+          completionTokens: true,
+          totalTokens: true,
+          embeddingInputTokens: true,
+          embeddingTotalTokens: true,
+          elapsedMs: true,
+          retryCount: true,
+          llmCalls: true,
+          embeddingCalls: true,
+          chunkCount: true,
+          chunkFailedCount: true,
+          outputRowCount: true,
+          storageBytesJson: true,
+          startedAt: true,
+          completedAt: true,
+        },
+      },
+    },
+  });
+
+  if (!row) return null;
+
+  return {
+    ...row,
+    startedAt: row.startedAt ? row.startedAt.toISOString() : null,
+    completedAt: row.completedAt ? row.completedAt.toISOString() : null,
+    createdAt: row.createdAt.toISOString(),
+    updatedAt: row.updatedAt.toISOString(),
+    stageExecutions: row.stageExecutions.map((item: any) => ({
+      ...item,
+      startedAt: item.startedAt ? item.startedAt.toISOString() : null,
+      completedAt: item.completedAt ? item.completedAt.toISOString() : null,
+    })),
+    chapterMetrics: row.chapterMetrics.map((item: any) => ({
+      ...item,
+      startedAt: item.startedAt ? item.startedAt.toISOString() : null,
+      completedAt: item.completedAt ? item.completedAt.toISOString() : null,
+    })),
   };
 }
 
@@ -214,12 +453,6 @@ export async function requestBookAnalysis(bookId: string, source: AnalysisTrigge
       },
     });
 
-    await tx.bookAnalysisArtifact.deleteMany({
-      where: {
-        bookId,
-      },
-    });
-
     await tx.book.update({
       where: { id: bookId },
       data: {
@@ -235,6 +468,8 @@ export async function requestBookAnalysis(bookId: string, source: AnalysisTrigge
         analysisRequestedAt: now,
         analysisStartedAt: null,
         analysisFinishedAt: null,
+        analysisCompletedAt: null,
+        currentAnalysisRunId: null,
       },
     });
 

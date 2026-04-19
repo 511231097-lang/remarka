@@ -1,6 +1,15 @@
 import { createVertexClient } from "@remarka/ai";
 import { createVertex } from "@ai-sdk/google-vertex";
-import { createNpzPrismaAdapter, prisma as basePrisma } from "@remarka/db";
+import {
+  createArtifactBlobStoreFromEnv,
+  createNpzPrismaAdapter,
+  putArtifactPayload,
+  replaceBookChatToolRuns,
+  resolvePricingVersion,
+  upsertBookChatTurnMetric,
+  prisma as basePrisma,
+  type BlobStore,
+} from "@remarka/db";
 import type { Prisma } from "@prisma/client";
 import { generateText, stepCountIs, streamText, tool, type LanguageModelUsage } from "ai";
 import { z } from "zod";
@@ -14,6 +23,25 @@ import {
 import { convertUsd, readCurrencyRates, resolveTokenPricing } from "./modelPricing";
 
 const prisma = createNpzPrismaAdapter(basePrisma);
+const BOOK_CHAT_PROMPT_VARIANT = "thread-book-chat";
+const BOOK_CHAT_SYSTEM_PROMPT_VERSION = "tool-aware-v1";
+const BOOK_CHAT_TOOL_PAYLOAD_SCHEMA_VERSION = "chat-tool-payload-v1";
+let chatArtifactBlobStore: BlobStore | null = null;
+
+function readBoolEnv(name: string, fallback: boolean) {
+  const normalized = String(process.env[name] || "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+function getChatArtifactBlobStore() {
+  if (!chatArtifactBlobStore) {
+    chatArtifactBlobStore = createArtifactBlobStoreFromEnv();
+  }
+  return chatArtifactBlobStore;
+}
 
 export type ChatInputMessage = {
   role: "user" | "assistant";
@@ -48,7 +76,7 @@ export type BookChatToolboxRunResult = {
   output: Record<string, unknown>;
 };
 
-function normalizeEnabledBookChatTools(value?: readonly BookChatToolName[] | null): BookChatToolName[] {
+function normalizeEnabledBookChatTools(value?: readonly string[] | null): BookChatToolName[] {
   if (value === undefined || value === null) {
     return [...DEFAULT_ENABLED_BOOK_CHAT_TOOLS];
   }
@@ -57,9 +85,18 @@ function normalizeEnabledBookChatTools(value?: readonly BookChatToolName[] | nul
   return BOOK_CHAT_TOOL_NAMES.filter((tool) => selected.has(tool));
 }
 
+function buildToolConfigKey(tools: readonly BookChatToolName[]) {
+  return tools.length ? [...tools].sort().join("|") : "none";
+}
+
 export type ChatMetrics = {
   chatModel: string;
   embeddingModel: string;
+  pricingVersion: string;
+  selectedTools: BookChatToolName[];
+  toolConfigKey: string;
+  promptVariant: string;
+  systemPromptVersion: string;
   modelInputTokens: number;
   modelOutputTokens: number;
   modelTotalTokens: number;
@@ -69,6 +106,11 @@ export type ChatMetrics = {
   totalCostUsd: number;
   totalCostEur: number;
   totalCostRub: number;
+  totalLatencyMs: number;
+  answerLengthChars: number;
+  citationCount: number;
+  fallbackUsed: boolean;
+  fallbackKind: string | null;
   pricing: {
     chatInputPer1MUsd: number;
     chatOutputPer1MUsd: number;
@@ -500,8 +542,14 @@ async function resolveUsageSafely(
 function buildChatMetrics(params: {
   chatModel: string;
   embeddingModel: string;
+  selectedTools: readonly BookChatToolName[];
   usage?: LanguageModelUsage | null;
   toolRuns: ChatToolRun[];
+  totalLatencyMs: number;
+  answerLengthChars: number;
+  citationCount: number;
+  fallbackUsed: boolean;
+  fallbackKind: string | null;
 }): ChatMetrics {
   const usage = normalizeLanguageModelUsage(params.usage || undefined);
   const embeddingInputTokens = Math.max(0, sumEmbeddingInputTokens(params.toolRuns));
@@ -509,6 +557,7 @@ function buildChatMetrics(params: {
     chatModel: params.chatModel,
     embeddingModel: params.embeddingModel,
   });
+  const selectedTools = normalizeEnabledBookChatTools(params.selectedTools);
   const currencyRates = readCurrencyRates();
   const pricingForMetrics = {
     ...pricing,
@@ -526,6 +575,11 @@ function buildChatMetrics(params: {
   return {
     chatModel: String(params.chatModel || "").trim(),
     embeddingModel: String(params.embeddingModel || "").trim(),
+    pricingVersion: resolvePricingVersion(),
+    selectedTools,
+    toolConfigKey: buildToolConfigKey(selectedTools),
+    promptVariant: BOOK_CHAT_PROMPT_VARIANT,
+    systemPromptVersion: BOOK_CHAT_SYSTEM_PROMPT_VERSION,
     modelInputTokens: Math.round(usage.inputTokens),
     modelOutputTokens: Math.round(usage.outputTokens),
     modelTotalTokens: Math.round(usage.totalTokens),
@@ -535,6 +589,11 @@ function buildChatMetrics(params: {
     totalCostUsd: roundMetric(totalCostUsd),
     totalCostEur: roundMetric(converted.eur),
     totalCostRub: roundMetric(converted.rub, 6),
+    totalLatencyMs: Math.max(0, Math.round(Number(params.totalLatencyMs || 0))),
+    answerLengthChars: Math.max(0, Math.round(Number(params.answerLengthChars || 0))),
+    citationCount: Math.max(0, Math.round(Number(params.citationCount || 0))),
+    fallbackUsed: Boolean(params.fallbackUsed),
+    fallbackKind: params.fallbackKind ? String(params.fallbackKind).trim() : null,
     pricing: pricingForMetrics,
   };
 }
@@ -588,6 +647,93 @@ function mergeLanguageModelUsage(
     reasoningTokens,
     cachedInputTokens: cacheReadTokens,
   };
+}
+
+async function persistNormalizedChatMetrics(params: {
+  bookId: string;
+  threadId: string;
+  messageId: string;
+  toolRuns: ChatToolRun[];
+  metrics: ChatMetrics;
+}) {
+  const turnMetric = await upsertBookChatTurnMetric({
+    client: prisma,
+    bookId: params.bookId,
+    threadId: params.threadId,
+    messageId: params.messageId,
+    chatModel: params.metrics.chatModel,
+    embeddingModel: params.metrics.embeddingModel,
+    selectedTools: params.metrics.selectedTools,
+    toolConfigKey: params.metrics.toolConfigKey,
+    promptVariant: params.metrics.promptVariant,
+    systemPromptVersion: params.metrics.systemPromptVersion,
+    pricingVersion: params.metrics.pricingVersion,
+    modelInputTokens: params.metrics.modelInputTokens,
+    modelOutputTokens: params.metrics.modelOutputTokens,
+    modelTotalTokens: params.metrics.modelTotalTokens,
+    embeddingInputTokens: params.metrics.embeddingInputTokens,
+    chatCostUsd: params.metrics.chatCostUsd,
+    embeddingCostUsd: params.metrics.embeddingCostUsd,
+    totalCostUsd: params.metrics.totalCostUsd,
+    totalLatencyMs: params.metrics.totalLatencyMs,
+    answerLengthChars: params.metrics.answerLengthChars,
+    citationCount: params.metrics.citationCount,
+    fallbackUsed: params.metrics.fallbackUsed,
+    fallbackKind: params.metrics.fallbackKind,
+  });
+
+  const persistRawPayloads = readBoolEnv("BOOK_CHAT_TOOL_DEBUG_PAYLOADS_ENABLED", false);
+  const toolRows = [];
+  for (const [index, run] of params.toolRuns.entries()) {
+    let rawPayload:
+      | {
+          provider: string;
+          storageKey: string;
+          sizeBytes: number;
+          sha256: string;
+          compression: string;
+        }
+      | null = null;
+
+    if (persistRawPayloads) {
+      try {
+        rawPayload = await putArtifactPayload({
+          store: getChatArtifactBlobStore(),
+          prefix: `chat-runs/${params.bookId}/${params.threadId}/${params.messageId}/${run.tool}`,
+          fileName: `tool-run-${index + 1}.json.gz`,
+          payload: {
+            schemaVersion: BOOK_CHAT_TOOL_PAYLOAD_SCHEMA_VERSION,
+            tool: run.tool,
+            args: run.args,
+            resultMeta: run.resultMeta,
+          },
+        });
+      } catch {
+        rawPayload = null;
+      }
+    }
+
+    toolRows.push({
+      toolName: run.tool,
+      orderIndex: index,
+      latencyMs: Math.max(0, Math.round(Number(asOptionalNumber(run.resultMeta.totalMs) || 0))),
+      argsSummaryJson: run.args,
+      resultSummaryJson: run.resultMeta,
+      errorCode: typeof run.resultMeta.error === "string" ? String(run.resultMeta.error) : null,
+      errorMessage: typeof run.resultMeta.error === "string" ? String(run.resultMeta.error) : null,
+      storageProvider: rawPayload?.provider || null,
+      payloadKey: rawPayload?.storageKey || null,
+      payloadSizeBytes: rawPayload?.sizeBytes || 0,
+      payloadSha256: rawPayload?.sha256 || null,
+      compression: rawPayload?.compression || null,
+    });
+  }
+
+  await replaceBookChatToolRuns({
+    client: prisma,
+    turnMetricId: turnMetric.id,
+    runs: toolRows,
+  });
 }
 
 function isBroadCoverageQuery(query: string): boolean {
@@ -2563,6 +2709,7 @@ function createBookChatTools(params: {
         maxScenes: z.coerce.number().int().min(1).max(CONTEXT_SCENE_LIMIT).optional(),
       }),
       execute: async ({ sceneIds, neighborWindow, maxScenes }) => {
+        const startedAt = Date.now();
         const safeSceneIds = Array.from(
           new Set(
             (sceneIds || [])
@@ -2584,6 +2731,7 @@ function createBookChatTools(params: {
             resultMeta: {
               returned: 0,
               error: "no sceneIds",
+              totalMs: Date.now() - startedAt,
             },
           });
           return {
@@ -2609,6 +2757,7 @@ function createBookChatTools(params: {
           },
           resultMeta: {
             returned: contextScenes.length,
+            totalMs: Date.now() - startedAt,
           },
         });
 
@@ -2630,6 +2779,7 @@ function createBookChatTools(params: {
         paragraphEnd: z.coerce.number().int().min(1),
       }),
       execute: async ({ chapterId, paragraphStart, paragraphEnd }) => {
+        const startedAt = Date.now();
         const safeChapterId = String(chapterId || "").trim();
         const safeStart = Math.max(1, Number(paragraphStart || 1));
         const safeEnd = Math.max(safeStart, Number(paragraphEnd || safeStart));
@@ -2653,6 +2803,7 @@ function createBookChatTools(params: {
           },
           resultMeta: {
             returned: slice ? 1 : 0,
+            totalMs: Date.now() - startedAt,
           },
         });
 
@@ -2957,6 +3108,7 @@ export async function answerBookChatQuestion(params: {
   messages: ChatInputMessage[];
   enabledTools?: readonly BookChatToolName[];
 }): Promise<BookChatAnswer> {
+  const startedAt = Date.now();
   const preparedMessages = sanitizeMessages(params.messages || []);
   if (!preparedMessages.length) {
     throw new BookChatError("INVALID_MESSAGES", 400, "messages are required");
@@ -3018,6 +3170,7 @@ export async function answerBookChatQuestion(params: {
 
   let answerText = String(completion.text || "").trim();
   let usageForMetrics: LanguageModelUsage | undefined = completion.usage;
+  let fallbackKind: string | null = null;
   if (!answerText) {
     const synthesized = await synthesizeFallbackAnswerFromCapture({
       model: chatModel,
@@ -3027,8 +3180,16 @@ export async function answerBookChatQuestion(params: {
       capture,
     });
     usageForMetrics = mergeLanguageModelUsage(usageForMetrics, synthesized.usage);
-    answerText =
-      synthesized.answer || buildDeterministicFallbackAnswer(capture) || "Не удалось сформировать ответ по книге.";
+    if (synthesized.answer) {
+      answerText = synthesized.answer;
+      fallbackKind = "synthesized";
+    } else if (buildDeterministicFallbackAnswer(capture)) {
+      answerText = buildDeterministicFallbackAnswer(capture) || "Не удалось сформировать ответ по книге.";
+      fallbackKind = "deterministic";
+    } else {
+      answerText = "Не удалось сформировать ответ по книге.";
+      fallbackKind = "empty";
+    }
   }
   const citations = deriveCitationsFromToolCapture(capture);
 
@@ -3039,8 +3200,14 @@ export async function answerBookChatQuestion(params: {
     metrics: buildChatMetrics({
       chatModel: client.config.chatModel,
       embeddingModel: client.config.embeddingModel,
+      selectedTools: enabledTools,
       usage: usageForMetrics,
       toolRuns,
+      totalLatencyMs: Date.now() - startedAt,
+      answerLengthChars: answerText.length,
+      citationCount: citations.length,
+      fallbackUsed: Boolean(fallbackKind),
+      fallbackKind,
     }),
   };
 }
@@ -3148,6 +3315,11 @@ function parseStoredChatMetrics(value: unknown): ChatMetrics | null {
   return {
     chatModel: String(row.chatModel || "").trim(),
     embeddingModel: String(row.embeddingModel || "").trim(),
+    pricingVersion: String(row.pricingVersion || "").trim(),
+    selectedTools: normalizeEnabledBookChatTools(asStringList(row.selectedTools)),
+    toolConfigKey: String(row.toolConfigKey || "").trim(),
+    promptVariant: String(row.promptVariant || "").trim(),
+    systemPromptVersion: String(row.systemPromptVersion || "").trim(),
     modelInputTokens: Math.max(0, Math.round(readNumber(row.modelInputTokens))),
     modelOutputTokens: Math.max(0, Math.round(readNumber(row.modelOutputTokens))),
     modelTotalTokens: Math.max(0, Math.round(readNumber(row.modelTotalTokens))),
@@ -3157,8 +3329,111 @@ function parseStoredChatMetrics(value: unknown): ChatMetrics | null {
     totalCostUsd: Math.max(0, readNumber(row.totalCostUsd)),
     totalCostEur: Math.max(0, readNumber(row.totalCostEur)),
     totalCostRub: Math.max(0, readNumber(row.totalCostRub)),
+    totalLatencyMs: Math.max(0, Math.round(readNumber(row.totalLatencyMs))),
+    answerLengthChars: Math.max(0, Math.round(readNumber(row.answerLengthChars))),
+    citationCount: Math.max(0, Math.round(readNumber(row.citationCount))),
+    fallbackUsed: Boolean(row.fallbackUsed),
+    fallbackKind: row.fallbackKind ? String(row.fallbackKind).trim() : null,
     pricing,
   };
+}
+
+function parseNormalizedToolRuns(
+  value:
+    | Array<{
+        toolName: string;
+        argsSummaryJson: unknown;
+        resultSummaryJson: unknown;
+      }>
+    | null
+    | undefined
+): ChatToolRun[] {
+  if (!Array.isArray(value)) return [];
+
+  return value
+    .map((item) => {
+      const tool = String(item.toolName || "").trim();
+      if (
+        tool !== "search_scenes" &&
+        tool !== "search_paragraphs_hybrid" &&
+        tool !== "get_scene_context" &&
+        tool !== "get_paragraph_slice"
+      ) {
+        return null;
+      }
+
+      return {
+        tool,
+        args: asRecord(item.argsSummaryJson),
+        resultMeta: asRecord(item.resultSummaryJson),
+      } satisfies ChatToolRun;
+    })
+    .filter((item): item is ChatToolRun => Boolean(item));
+}
+
+function parseNormalizedTurnMetric(
+  value:
+    | {
+        chatModel: string;
+        embeddingModel: string;
+        pricingVersion: string;
+        selectedToolsJson: unknown;
+        toolConfigKey: string;
+        promptVariant: string;
+        systemPromptVersion: string;
+        modelInputTokens: number;
+        modelOutputTokens: number;
+        modelTotalTokens: number;
+        embeddingInputTokens: number;
+        chatCostUsd: number;
+        embeddingCostUsd: number;
+        totalCostUsd: number;
+        totalLatencyMs: number;
+        answerLengthChars: number;
+        citationCount: number;
+        fallbackUsed: boolean;
+        fallbackKind: string | null;
+      }
+    | null
+    | undefined
+): ChatMetrics | null {
+  if (!value) return null;
+
+  const pricing = resolveTokenPricing({
+    chatModel: value.chatModel,
+    embeddingModel: value.embeddingModel,
+  });
+  const currencyRates = readCurrencyRates();
+  const converted = convertUsd(Math.max(0, Number(value.totalCostUsd || 0)), currencyRates);
+
+  return parseStoredChatMetrics({
+    chatModel: value.chatModel,
+    embeddingModel: value.embeddingModel,
+    pricingVersion: value.pricingVersion,
+    selectedTools: value.selectedToolsJson,
+    toolConfigKey: value.toolConfigKey,
+    promptVariant: value.promptVariant,
+    systemPromptVersion: value.systemPromptVersion,
+    modelInputTokens: value.modelInputTokens,
+    modelOutputTokens: value.modelOutputTokens,
+    modelTotalTokens: value.modelTotalTokens,
+    embeddingInputTokens: value.embeddingInputTokens,
+    chatCostUsd: value.chatCostUsd,
+    embeddingCostUsd: value.embeddingCostUsd,
+    totalCostUsd: value.totalCostUsd,
+    totalCostEur: converted.eur,
+    totalCostRub: converted.rub,
+    totalLatencyMs: value.totalLatencyMs,
+    answerLengthChars: value.answerLengthChars,
+    citationCount: value.citationCount,
+    fallbackUsed: value.fallbackUsed,
+    fallbackKind: value.fallbackKind,
+    pricing: {
+      ...pricing,
+      usdToEur: currencyRates.usdToEur,
+      eurToRub: currencyRates.eurToRub,
+    },
+  });
 }
 
 function toMessageDTO(row: {
@@ -3169,17 +3444,47 @@ function toMessageDTO(row: {
   citationsJson: unknown;
   toolRunsJson: unknown;
   metricsJson: unknown;
+  turnMetric?:
+    | {
+        chatModel: string;
+        embeddingModel: string;
+        pricingVersion: string;
+        selectedToolsJson: unknown;
+        toolConfigKey: string;
+        promptVariant: string;
+        systemPromptVersion: string;
+        modelInputTokens: number;
+        modelOutputTokens: number;
+        modelTotalTokens: number;
+        embeddingInputTokens: number;
+        chatCostUsd: number;
+        embeddingCostUsd: number;
+        totalCostUsd: number;
+        totalLatencyMs: number;
+        answerLengthChars: number;
+        citationCount: number;
+        fallbackUsed: boolean;
+        fallbackKind: string | null;
+        toolRuns?: Array<{
+          toolName: string;
+          argsSummaryJson: unknown;
+          resultSummaryJson: unknown;
+        }>;
+      }
+    | null;
   createdAt: Date;
   updatedAt: Date;
 }): BookChatMessageDTO {
+  const normalizedToolRuns = parseNormalizedToolRuns(row.turnMetric?.toolRuns);
+  const normalizedMetrics = parseNormalizedTurnMetric(row.turnMetric);
   return {
     id: row.id,
     threadId: row.threadId,
     role: row.role,
     content: String(row.content || ""),
     citations: normalizeCitationRows(row.citationsJson),
-    toolRuns: parseStoredToolRuns(row.toolRunsJson),
-    metrics: parseStoredChatMetrics(row.metricsJson),
+    toolRuns: normalizedToolRuns.length ? normalizedToolRuns : parseStoredToolRuns(row.toolRunsJson),
+    metrics: normalizedMetrics || parseStoredChatMetrics(row.metricsJson),
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
   };
@@ -3346,6 +3651,39 @@ export async function listBookChatMessages(params: {
       citationsJson: true,
       toolRunsJson: true,
       metricsJson: true,
+      turnMetric: {
+        select: {
+          chatModel: true,
+          embeddingModel: true,
+          pricingVersion: true,
+          selectedToolsJson: true,
+          toolConfigKey: true,
+          promptVariant: true,
+          systemPromptVersion: true,
+          modelInputTokens: true,
+          modelOutputTokens: true,
+          modelTotalTokens: true,
+          embeddingInputTokens: true,
+          chatCostUsd: true,
+          embeddingCostUsd: true,
+          totalCostUsd: true,
+          totalLatencyMs: true,
+          answerLengthChars: true,
+          citationCount: true,
+          fallbackUsed: true,
+          fallbackKind: true,
+          toolRuns: {
+            orderBy: {
+              orderIndex: "asc",
+            },
+            select: {
+              toolName: true,
+              argsSummaryJson: true,
+              resultSummaryJson: true,
+            },
+          },
+        },
+      },
       createdAt: true,
       updatedAt: true,
     },
@@ -3368,6 +3706,7 @@ async function streamBookChatAnswer(params: {
   onToolCall?: (event: BookChatStreamToolCallEvent) => void | Promise<void>;
   onToolResult?: (event: BookChatStreamToolResultEvent) => void | Promise<void>;
 }): Promise<BookChatAnswer> {
+  const startedAt = Date.now();
   const preparedMessages = sanitizeMessages(params.messages || []);
   if (!preparedMessages.length) {
     throw new BookChatError("INVALID_MESSAGES", 400, "messages are required");
@@ -3413,6 +3752,7 @@ async function streamBookChatAnswer(params: {
   try {
     let normalizedAnswer = "";
     let usageForMetrics: LanguageModelUsage | undefined;
+    let fallbackKind: string | null = null;
     await withSemaphore(chatCallSemaphore, async () => {
       const streamResult = streamText({
         model: chatModel,
@@ -3473,35 +3813,61 @@ async function streamBookChatAnswer(params: {
         capture,
       });
       usageForMetrics = mergeLanguageModelUsage(usageForMetrics, synthesized.usage);
-      finalAnswer =
-        synthesized.answer || buildDeterministicFallbackAnswer(capture) || "Не удалось сформировать ответ по книге.";
+      if (synthesized.answer) {
+        finalAnswer = synthesized.answer;
+        fallbackKind = "synthesized";
+      } else {
+        const deterministic = buildDeterministicFallbackAnswer(capture);
+        if (deterministic) {
+          finalAnswer = deterministic;
+          fallbackKind = "deterministic";
+        } else {
+          finalAnswer = "Не удалось сформировать ответ по книге.";
+          fallbackKind = "empty";
+        }
+      }
       if (!streamedAnswer.trim()) {
         await params.onDelta(finalAnswer);
       }
     }
 
+    const citations = deriveCitationsFromToolCapture(capture);
+
     return {
       answer: finalAnswer,
-      citations: deriveCitationsFromToolCapture(capture),
+      citations,
       toolRuns,
       metrics: buildChatMetrics({
         chatModel: client.config.chatModel,
         embeddingModel: client.config.embeddingModel,
+        selectedTools: enabledTools,
         usage: usageForMetrics,
         toolRuns,
+        totalLatencyMs: Date.now() - startedAt,
+        answerLengthChars: finalAnswer.length,
+        citationCount: citations.length,
+        fallbackUsed: Boolean(fallbackKind),
+        fallbackKind,
       }),
     };
   } catch {
     if (streamedAnswer.trim()) {
+      const citations = deriveCitationsFromToolCapture(capture);
       return {
         answer: streamedAnswer.trim(),
-        citations: deriveCitationsFromToolCapture(capture),
+        citations,
         toolRuns,
         metrics: buildChatMetrics({
           chatModel: client.config.chatModel,
           embeddingModel: client.config.embeddingModel,
+          selectedTools: enabledTools,
           usage: undefined,
           toolRuns,
+          totalLatencyMs: Date.now() - startedAt,
+          answerLengthChars: streamedAnswer.trim().length,
+          citationCount: citations.length,
+          fallbackUsed: true,
+          fallbackKind: "stream_partial",
         }),
       };
     }
@@ -3522,6 +3888,7 @@ async function streamBookChatAnswer(params: {
     );
     let fallback = String(completion.text || "").trim();
     let usageForMetrics: LanguageModelUsage | undefined = completion.usage;
+    let fallbackKind: string | null = null;
     if (!fallback) {
       const synthesized = await synthesizeFallbackAnswerFromCapture({
         model: chatModel,
@@ -3531,19 +3898,37 @@ async function streamBookChatAnswer(params: {
         capture,
       });
       usageForMetrics = mergeLanguageModelUsage(usageForMetrics, synthesized.usage);
-      fallback =
-        synthesized.answer || buildDeterministicFallbackAnswer(capture) || "Не удалось сформировать ответ по книге.";
+      if (synthesized.answer) {
+        fallback = synthesized.answer;
+        fallbackKind = "synthesized";
+      } else {
+        const deterministic = buildDeterministicFallbackAnswer(capture);
+        if (deterministic) {
+          fallback = deterministic;
+          fallbackKind = "deterministic";
+        } else {
+          fallback = "Не удалось сформировать ответ по книге.";
+          fallbackKind = "empty";
+        }
+      }
     }
     await params.onDelta(fallback);
+    const citations = deriveCitationsFromToolCapture(capture);
     return {
       answer: fallback,
-      citations: deriveCitationsFromToolCapture(capture),
+      citations,
       toolRuns,
       metrics: buildChatMetrics({
         chatModel: client.config.chatModel,
         embeddingModel: client.config.embeddingModel,
+        selectedTools: enabledTools,
         usage: usageForMetrics,
         toolRuns,
+        totalLatencyMs: Date.now() - startedAt,
+        answerLengthChars: fallback.length,
+        citationCount: citations.length,
+        fallbackUsed: true,
+        fallbackKind: fallbackKind || "generate_fallback",
       }),
     };
   }
@@ -3667,6 +4052,18 @@ export async function streamBookChatThreadReply(params: {
       updatedAt: true,
     },
   });
+
+  try {
+    await persistNormalizedChatMetrics({
+      bookId: params.bookId,
+      threadId: params.threadId,
+      messageId: assistantMessageRow.id,
+      toolRuns: answer.toolRuns,
+      metrics: answer.metrics,
+    });
+  } catch {
+    // Metrics persistence must not fail the user-visible chat turn.
+  }
 
   await prisma.bookChatThread.update({
     where: {

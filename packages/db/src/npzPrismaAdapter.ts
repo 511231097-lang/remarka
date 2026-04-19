@@ -6,12 +6,18 @@ function mapDelegates(client: AnyDbClient) {
   return {
     book: client.book,
     bookChapter: client.bookChapter,
+    bookContentVersion: client.bookContentVersion,
+    bookAnalysisRun: client.bookAnalysisRun,
+    bookStageExecution: client.bookStageExecution,
+    bookAnalysisChapterMetric: client.bookAnalysisChapterMetric,
     bookAnalysisArtifact: client.bookAnalysisArtifact,
     bookParagraphEmbedding: client.bookParagraphEmbedding,
     bookSceneEmbedding: client.bookSceneEmbedding,
     bookScene: client.bookAnalysisScene,
     bookChatThread: client.bookChatThread,
     bookChatMessage: client.bookChatThreadMessage,
+    bookChatTurnMetric: client.bookChatTurnMetric,
+    bookChatToolRun: client.bookChatToolRun,
     outbox: client.outbox,
   };
 }

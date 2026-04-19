@@ -1,11 +1,39 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { createVertexClient } from "@remarka/ai";
-import { createNpzPrismaAdapter, prisma as basePrisma } from "@remarka/db";
+import {
+  createArtifactBlobStoreFromEnv,
+  createBookAnalysisArtifactManifest,
+  createBookAnalysisRun,
+  createNpzPrismaAdapter,
+  ensureBookContentVersion,
+  putArtifactPayload,
+  resolvePricingVersion,
+  resolveTokenPricing,
+  upsertBookAnalysisChapterMetric,
+  upsertBookStageExecution,
+  prisma as basePrisma,
+  type BlobStore,
+} from "@remarka/db";
 import { z } from "zod";
 
 const prisma = createNpzPrismaAdapter(basePrisma);
 const PGVECTOR_EMBEDDING_DIMENSIONS = 768;
+const ANALYSIS_CONFIG_VERSION = "npz-analysis-v1";
+const ANALYSIS_ARTIFACT_SCHEMA_VERSION = "analysis-artifact-payload-v1";
+const ANALYSIS_FINALIZE_STAGE = "finalize";
+const ANALYSIS_PARAGRAPH_STAGE = "paragraph_embeddings";
+const ANALYSIS_SCENE_CHUNK_STAGE = "scene_chunk_llm";
+const ANALYSIS_SCENE_EMBEDDING_STAGE = "scene_embeddings";
+
+let artifactBlobStore: BlobStore | null = null;
+
+function getArtifactBlobStore() {
+  if (!artifactBlobStore) {
+    artifactBlobStore = createArtifactBlobStoreFromEnv();
+  }
+  return artifactBlobStore;
+}
 
 function serializePgVectorLiteral(vector: number[]): string {
   if (!Array.isArray(vector) || vector.length !== PGVECTOR_EMBEDDING_DIMENSIONS) {
@@ -45,6 +73,8 @@ export interface ParagraphChunk {
   chunkEndParagraph: number;
   paragraphs: ParagraphBlock[];
 }
+
+const SCENE_WINDOW_STRATEGY = "sliding";
 
 export interface SceneBoundaryCandidate {
   betweenParagraphs: [number, number];
@@ -117,6 +147,43 @@ type ChapterAnalysisStat = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+};
+
+type StageMetricSnapshot = {
+  state: "queued" | "running" | "completed" | "failed";
+  error: string | null;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  embeddingInputTokens: number;
+  embeddingTotalTokens: number;
+  elapsedMs: number;
+  retryCount: number;
+  llmCalls: number;
+  embeddingCalls: number;
+  chunkCount: number;
+  chunkFailedCount: number;
+  outputRowCount: number;
+  storageBytes: Record<string, number>;
+  startedAt: string | null;
+  completedAt: string | null;
+};
+
+type RunStorageBytes = {
+  paragraphEmbeddings: number;
+  sceneEmbeddings: number;
+  sceneData: number;
+  artifactPayloads: number;
+};
+
+type RunMetricContext = {
+  runId: string;
+  contentVersionId: string;
+  pricingVersion: string;
+  configHash: string;
+  stageMetrics: Record<string, StageMetricSnapshot>;
+  chapterStageMetrics: Map<string, Record<string, StageMetricSnapshot>>;
+  storageBytes: RunStorageBytes;
 };
 
 const ChunkBoundaryRawSchema = z
@@ -286,14 +353,30 @@ const ANALYSIS_CHUNK_RETRY_BASE_MS = Math.max(250, getIntEnv("ANALYSIS_CHUNK_RET
 const ANALYSIS_ARTIFACT_PROMPT_MAX_CHARS = Math.max(1000, getIntEnv("ANALYSIS_ARTIFACT_PROMPT_MAX_CHARS", 80_000));
 const ANALYSIS_ARTIFACT_RESPONSE_MAX_CHARS = Math.max(1000, getIntEnv("ANALYSIS_ARTIFACT_RESPONSE_MAX_CHARS", 80_000));
 const ANALYSIS_ARTIFACT_ERROR_MAX_CHARS = Math.max(200, getIntEnv("ANALYSIS_ARTIFACT_ERROR_MAX_CHARS", 4000));
-const SCENE_CHUNK_SIZE = 14;
-const SCENE_CHUNK_OVERLAP = 3;
+const SCENE_CHUNK_SIZE = 20;
+const SCENE_CHUNK_OVERLAP = 2;
+const POSTGRES_MAX_BIND_VARIABLES = 32_767;
+const EMBEDDING_INSERT_BIND_VARIABLES_PER_ROW = 13;
+const EMBEDDING_INSERT_BATCH_SIZE = Math.max(
+  1,
+  Math.min(2_000, Math.floor(POSTGRES_MAX_BIND_VARIABLES / EMBEDDING_INSERT_BIND_VARIABLES_PER_ROW) - 50)
+);
 
 function normalizeWhitespace(text: string): string {
   return String(text || "")
     .replace(/\r\n?/g, "\n")
     .replace(/[ \t]+\n/g, "\n")
     .trim();
+}
+
+function chunkArray<T>(items: T[], chunkSize: number): T[][] {
+  if (!items.length) return [];
+  const normalizedChunkSize = Math.max(1, Math.floor(chunkSize));
+  const chunks: T[][] = [];
+  for (let index = 0; index < items.length; index += normalizedChunkSize) {
+    chunks.push(items.slice(index, index + normalizedChunkSize));
+  }
+  return chunks;
 }
 
 export function splitChapterIntoBlocks(rawText: string): ParagraphBlock[] {
@@ -310,7 +393,11 @@ export function splitChapterIntoBlocks(rawText: string): ParagraphBlock[] {
     }));
 }
 
-export function createParagraphChunks(paragraphs: ParagraphBlock[], chunkSize = 14, overlap = 3): ParagraphChunk[] {
+export function createParagraphChunks(
+  paragraphs: ParagraphBlock[],
+  chunkSize = SCENE_CHUNK_SIZE,
+  overlap = SCENE_CHUNK_OVERLAP
+): ParagraphChunk[] {
   if (chunkSize <= 0) {
     throw new Error("chunkSize must be > 0");
   }
@@ -342,77 +429,12 @@ export function createParagraphChunks(paragraphs: ParagraphBlock[], chunkSize = 
   return chunks;
 }
 
-function clampChunkRange(params: {
-  totalParagraphs: number;
-  chunkSize: number;
-  desiredStartParagraph: number;
-}): { start: number; end: number } {
-  const totalParagraphs = Math.max(0, Number(params.totalParagraphs || 0));
-  const chunkSize = Math.max(1, Number(params.chunkSize || 1));
-  if (totalParagraphs === 0) {
-    return { start: 0, end: 0 };
-  }
-
-  let start = Math.max(1, Math.floor(params.desiredStartParagraph));
-  let end = Math.min(totalParagraphs, start + chunkSize - 1);
-  if (end - start + 1 < chunkSize) {
-    start = Math.max(1, end - chunkSize + 1);
-  }
-
-  return { start, end };
-}
-
-export function createHintDrivenChunks(params: {
+function createSceneAnalysisChunks(params: {
   paragraphs: ParagraphBlock[];
   embeddingHints: EmbeddingBoundaryHint[];
-  chunkSize?: number;
-  overlap?: number;
 }): ParagraphChunk[] {
-  const paragraphs = params.paragraphs || [];
-  if (!paragraphs.length) return [];
-
-  const chunkSize = Math.max(1, Number(params.chunkSize || SCENE_CHUNK_SIZE));
-  const overlap = Math.max(0, Number(params.overlap || SCENE_CHUNK_OVERLAP));
-  const hints = (params.embeddingHints || [])
-    .slice()
-    .sort((left, right) => left.betweenParagraphs[0] - right.betweenParagraphs[0]);
-  if (!hints.length) return [];
-
-  const totalParagraphs = paragraphs.length;
-  const desiredLeftContext = Math.max(1, Math.floor((chunkSize - overlap) / 2));
-  const ranges: Array<{ start: number; end: number }> = [];
-  let coveredBoundaryUntil = 0;
-
-  for (const hint of hints) {
-    const boundaryLeftParagraph = Number(hint.betweenParagraphs[0] || 0);
-    if (!Number.isFinite(boundaryLeftParagraph) || boundaryLeftParagraph <= 0) continue;
-    if (boundaryLeftParagraph <= coveredBoundaryUntil) {
-      continue;
-    }
-
-    const desiredStartParagraph = boundaryLeftParagraph - desiredLeftContext;
-    const range = clampChunkRange({
-      totalParagraphs,
-      chunkSize,
-      desiredStartParagraph,
-    });
-    if (range.start <= 0 || range.end <= 0 || range.end < range.start) {
-      continue;
-    }
-
-    ranges.push(range);
-    coveredBoundaryUntil = Math.max(coveredBoundaryUntil, range.end - 1);
-  }
-
-  const deduped = Array.from(new Map(ranges.map((range) => [`${range.start}-${range.end}`, range])).values()).sort(
-    (left, right) => left.start - right.start
-  );
-
-  return deduped.map((range) => ({
-    chunkStartParagraph: range.start,
-    chunkEndParagraph: range.end,
-    paragraphs: paragraphs.slice(range.start - 1, range.end),
-  }));
+  void params.embeddingHints;
+  return createParagraphChunks(params.paragraphs, SCENE_CHUNK_SIZE, SCENE_CHUNK_OVERLAP);
 }
 
 function cosineSimilarity(left: number[], right: number[]): number {
@@ -836,6 +858,159 @@ function aggregateStats(stats: ChapterAnalysisStat[]) {
   );
 }
 
+function createEmptyStageMetric(): StageMetricSnapshot {
+  return {
+    state: "queued",
+    error: null,
+    promptTokens: 0,
+    completionTokens: 0,
+    totalTokens: 0,
+    embeddingInputTokens: 0,
+    embeddingTotalTokens: 0,
+    elapsedMs: 0,
+    retryCount: 0,
+    llmCalls: 0,
+    embeddingCalls: 0,
+    chunkCount: 0,
+    chunkFailedCount: 0,
+    outputRowCount: 0,
+    storageBytes: {},
+    startedAt: null,
+    completedAt: null,
+  };
+}
+
+function stageStorageBytesJson(storageBytes: Record<string, number> | null | undefined) {
+  if (!storageBytes) return null;
+  const normalized = Object.entries(storageBytes).reduce<Record<string, number>>((acc, [key, value]) => {
+    const safeValue = Math.max(0, Math.round(Number(value || 0)));
+    if (safeValue > 0) {
+      acc[key] = safeValue;
+    }
+    return acc;
+  }, {});
+  return Object.keys(normalized).length ? normalized : null;
+}
+
+function sumStageMetrics(metrics: StageMetricSnapshot[]): StageMetricSnapshot {
+  const combined = createEmptyStageMetric();
+  if (!metrics.length) {
+    return combined;
+  }
+
+  let sawRunning = false;
+  let sawFailed = false;
+  let sawCompleted = false;
+  let earliestStartedAt: number | null = null;
+  let latestCompletedAt: number | null = null;
+
+  for (const metric of metrics) {
+    combined.promptTokens += metric.promptTokens;
+    combined.completionTokens += metric.completionTokens;
+    combined.totalTokens += metric.totalTokens;
+    combined.embeddingInputTokens += metric.embeddingInputTokens;
+    combined.embeddingTotalTokens += metric.embeddingTotalTokens;
+    combined.elapsedMs += metric.elapsedMs;
+    combined.retryCount += metric.retryCount;
+    combined.llmCalls += metric.llmCalls;
+    combined.embeddingCalls += metric.embeddingCalls;
+    combined.chunkCount += metric.chunkCount;
+    combined.chunkFailedCount += metric.chunkFailedCount;
+    combined.outputRowCount += metric.outputRowCount;
+    for (const [key, value] of Object.entries(metric.storageBytes)) {
+      combined.storageBytes[key] = Math.max(0, Math.round(Number(combined.storageBytes[key] || 0) + Number(value || 0)));
+    }
+
+    if (metric.state === "failed") sawFailed = true;
+    else if (metric.state === "running") sawRunning = true;
+    else if (metric.state === "completed") sawCompleted = true;
+
+    const startedAt = metric.startedAt ? Date.parse(metric.startedAt) : Number.NaN;
+    if (Number.isFinite(startedAt) && (earliestStartedAt === null || startedAt < earliestStartedAt)) {
+      earliestStartedAt = startedAt;
+    }
+    const completedAt = metric.completedAt ? Date.parse(metric.completedAt) : Number.NaN;
+    if (Number.isFinite(completedAt) && (latestCompletedAt === null || completedAt > latestCompletedAt)) {
+      latestCompletedAt = completedAt;
+    }
+  }
+
+  combined.state = sawFailed ? "failed" : sawRunning ? "running" : sawCompleted ? "completed" : "queued";
+  combined.startedAt = earliestStartedAt !== null ? new Date(earliestStartedAt).toISOString() : null;
+  combined.completedAt = latestCompletedAt !== null ? new Date(latestCompletedAt).toISOString() : null;
+  combined.error = sawFailed ? metrics.find((item) => item.error)?.error || "Stage failed" : null;
+  return combined;
+}
+
+function computeRunConfigHash(params: {
+  chatModel: string;
+  embeddingModel: string;
+  chunkSize: number;
+  chunkOverlap: number;
+  chunkConcurrency: number;
+  chapterConcurrency: number;
+  paragraphEmbeddingVersion: number;
+  sceneEmbeddingVersion: number;
+}) {
+  const payload = JSON.stringify({
+    configVersion: ANALYSIS_CONFIG_VERSION,
+    chatModel: params.chatModel,
+    embeddingModel: params.embeddingModel,
+    sceneWindowStrategy: SCENE_WINDOW_STRATEGY,
+    chunkSize: params.chunkSize,
+    chunkOverlap: params.chunkOverlap,
+    chunkConcurrency: params.chunkConcurrency,
+    chapterConcurrency: params.chapterConcurrency,
+    paragraphEmbeddingVersion: params.paragraphEmbeddingVersion,
+    sceneEmbeddingVersion: params.sceneEmbeddingVersion,
+  });
+
+  return createHash("sha256").update(payload).digest("hex");
+}
+
+function estimateParagraphEmbeddingBytes(params: { paragraphs: ParagraphBlock[]; vectorDimensions: number }) {
+  return params.paragraphs.reduce(
+    (sum, paragraph) => sum + Buffer.byteLength(normalizeWhitespace(paragraph.text), "utf-8") + params.vectorDimensions * 4,
+    0
+  );
+}
+
+function estimateSceneDataBytes(rows: Prisma.BookAnalysisSceneCreateManyInput[]) {
+  return rows.reduce((sum, row) => sum + Buffer.byteLength(JSON.stringify(row), "utf-8"), 0);
+}
+
+function estimateSceneEmbeddingBytes(params: { sourceTexts: string[]; vectorDimensions: number }) {
+  return params.sourceTexts.reduce(
+    (sum, sourceText) => sum + Buffer.byteLength(String(sourceText || ""), "utf-8") + params.vectorDimensions * 4,
+    0
+  );
+}
+
+function computeCostBreakdown(params: {
+  chatModel: string;
+  embeddingModel: string;
+  llmPromptTokens: number;
+  llmCompletionTokens: number;
+  embeddingInputTokens: number;
+}) {
+  const pricing = resolveTokenPricing({
+    chatModel: params.chatModel,
+    embeddingModel: params.embeddingModel,
+  });
+
+  const llmCostUsd =
+    (Math.max(0, params.llmPromptTokens) / 1_000_000) * pricing.chatInputPer1MUsd +
+    (Math.max(0, params.llmCompletionTokens) / 1_000_000) * pricing.chatOutputPer1MUsd;
+  const embeddingCostUsd =
+    (Math.max(0, params.embeddingInputTokens) / 1_000_000) * pricing.embeddingInputPer1MUsd;
+
+  return {
+    llmCostUsd,
+    embeddingCostUsd,
+    totalCostUsd: llmCostUsd + embeddingCostUsd,
+  };
+}
+
 export function mergeBoundaryCandidates(candidates: SceneBoundaryCandidate[]): SceneBoundaryCandidate[] {
   const map = new Map<string, SceneBoundaryCandidate>();
   for (const candidate of candidates) {
@@ -1117,6 +1292,7 @@ type ChunkAnalysisSuccess = {
   usage: Usage;
   attemptCount: number;
   elapsedMs: number;
+  artifactPayloadBytes: number;
 };
 
 type ChunkAnalysisFailure = {
@@ -1126,6 +1302,7 @@ type ChunkAnalysisFailure = {
   usage: Usage;
   attemptCount: number;
   elapsedMs: number;
+  artifactPayloadBytes: number;
 };
 
 type ChunkAnalysisResult = ChunkAnalysisSuccess | ChunkAnalysisFailure;
@@ -1153,17 +1330,20 @@ class ChunkCallError extends Error {
   usage: Usage;
   attemptCount: number;
   elapsedMs: number;
+  artifactPayloadBytes: number;
 
-  constructor(message: string, params: { usage: Usage; attemptCount: number; elapsedMs: number }) {
+  constructor(message: string, params: { usage: Usage; attemptCount: number; elapsedMs: number; artifactPayloadBytes: number }) {
     super(message);
     this.name = "ChunkCallError";
     this.usage = params.usage;
     this.attemptCount = params.attemptCount;
     this.elapsedMs = params.elapsedMs;
+    this.artifactPayloadBytes = params.artifactPayloadBytes;
   }
 }
 
 async function persistChunkArtifact(params: {
+  runId: string;
   bookId: string;
   chapterId: string;
   chapterOrderIndex: number;
@@ -1176,43 +1356,91 @@ async function persistChunkArtifact(params: {
   phase: string;
   artifact: ChunkAttemptArtifactPayload;
   errorMessage?: string;
-}) {
+}): Promise<{ payloadSizeBytes: number }> {
   const promptTokens = Math.max(0, Number(params.artifact.usage.prompt_tokens || 0));
   const completionTokens = Math.max(0, Number(params.artifact.usage.completion_tokens || 0));
   const totalTokens = Math.max(
     0,
     Number(params.artifact.usage.total_tokens || promptTokens + completionTokens)
   );
+  const promptText = clampChars(String(params.artifact.promptText || ""), ANALYSIS_ARTIFACT_PROMPT_MAX_CHARS);
+  const inputJson = (params.artifact.inputJson || {}) as Record<string, unknown>;
+  const responseText = params.artifact.responseText
+    ? clampChars(String(params.artifact.responseText || ""), ANALYSIS_ARTIFACT_RESPONSE_MAX_CHARS)
+    : null;
+  const parsedJson = params.artifact.parsedJson ? (params.artifact.parsedJson as Record<string, unknown>) : null;
+  const errorMessage = params.errorMessage ? clampChars(String(params.errorMessage || ""), ANALYSIS_ARTIFACT_ERROR_MAX_CHARS) : null;
 
-  await prisma.bookAnalysisArtifact.create({
-    data: {
-      bookId: params.bookId,
-      chapterId: params.chapterId,
-      chapterOrderIndex: params.chapterOrderIndex,
-      chapterTitle: params.chapterTitle,
-      chunkStartParagraph: params.chunkStartParagraph,
-      chunkEndParagraph: params.chunkEndParagraph,
-      attempt: Math.max(1, Math.floor(params.attempt)),
-      phase: params.phase,
-      status: params.status,
-      llmModel: String(params.llmModel || "").trim() || "unknown-llm-model",
-      promptTokens,
-      completionTokens,
-      totalTokens,
-      elapsedMs: Math.max(0, Math.round(Number(params.artifact.elapsedMs || 0))),
-      promptText: clampChars(String(params.artifact.promptText || ""), ANALYSIS_ARTIFACT_PROMPT_MAX_CHARS),
-      inputJson: (params.artifact.inputJson || {}) as unknown as Prisma.InputJsonValue,
-      responseText: params.artifact.responseText
-        ? clampChars(String(params.artifact.responseText || ""), ANALYSIS_ARTIFACT_RESPONSE_MAX_CHARS)
-        : null,
-      parsedJson: params.artifact.parsedJson
-        ? (params.artifact.parsedJson as unknown as Prisma.InputJsonValue)
-        : null,
-      errorMessage: params.errorMessage
-        ? clampChars(String(params.errorMessage || ""), ANALYSIS_ARTIFACT_ERROR_MAX_CHARS)
-        : null,
-    },
+  let storedPayload:
+    | {
+        provider: string;
+        storageKey: string;
+        sizeBytes: number;
+        sha256: string;
+        compression: string;
+      }
+    | null = null;
+
+  try {
+    storedPayload = await putArtifactPayload({
+      store: getArtifactBlobStore(),
+      prefix: `analysis-runs/${params.bookId}/${params.runId}/${ANALYSIS_SCENE_CHUNK_STAGE}/chapter-${params.chapterOrderIndex}/chunk-${params.chunkStartParagraph}-${params.chunkEndParagraph}`,
+      fileName: `attempt-${Math.max(1, Math.floor(params.attempt))}.json.gz`,
+      payload: {
+        prompt: promptText,
+        input: inputJson,
+        response: responseText,
+        parsed: parsedJson,
+        debug: {
+          phase: params.phase,
+          status: params.status,
+          llmModel: params.llmModel,
+          promptTokens,
+          completionTokens,
+          totalTokens,
+          elapsedMs: Math.max(0, Math.round(Number(params.artifact.elapsedMs || 0))),
+          errorMessage,
+        },
+      },
+    });
+  } catch (error) {
+    params.errorMessage ||= error instanceof Error ? error.message : String(error);
+  }
+
+  await createBookAnalysisArtifactManifest({
+    client: prisma,
+    runId: params.runId,
+    bookId: params.bookId,
+    chapterId: params.chapterId,
+    chapterOrderIndex: params.chapterOrderIndex,
+    chapterTitle: params.chapterTitle,
+    chunkStartParagraph: params.chunkStartParagraph,
+    chunkEndParagraph: params.chunkEndParagraph,
+    attempt: Math.max(1, Math.floor(params.attempt)),
+    stageKey: ANALYSIS_SCENE_CHUNK_STAGE,
+    phase: params.phase,
+    status: params.status,
+    llmModel: String(params.llmModel || "").trim() || "unknown-llm-model",
+    promptTokens,
+    completionTokens,
+    totalTokens,
+    elapsedMs: Math.max(0, Math.round(Number(params.artifact.elapsedMs || 0))),
+    errorMessage,
+    storageProvider: storedPayload?.provider || null,
+    payloadKey: storedPayload?.storageKey || null,
+    payloadSizeBytes: storedPayload?.sizeBytes || 0,
+    payloadSha256: storedPayload?.sha256 || null,
+    compression: storedPayload?.compression || null,
+    schemaVersion: ANALYSIS_ARTIFACT_SCHEMA_VERSION,
+    promptText: storedPayload ? null : promptText,
+    inputJson: storedPayload ? null : inputJson,
+    responseText: storedPayload ? null : responseText,
+    parsedJson: storedPayload ? null : parsedJson,
   });
+
+  return {
+    payloadSizeBytes: Math.max(0, Number(storedPayload?.sizeBytes || 0)),
+  };
 }
 
 type ChapterRunSuccess = {
@@ -1253,6 +1481,206 @@ async function persistBookAnalysisProgress(params: {
       ...(params.startedAt !== undefined ? { analysisStartedAt: params.startedAt } : {}),
       ...(params.finishedAt !== undefined ? { analysisFinishedAt: params.finishedAt } : {}),
       ...(finishedAtValue !== undefined ? { analysisCompletedAt: finishedAtValue } : {}),
+    },
+  });
+}
+
+const RUN_STAGE_KEYS = [
+  ANALYSIS_PARAGRAPH_STAGE,
+  ANALYSIS_SCENE_CHUNK_STAGE,
+  ANALYSIS_SCENE_EMBEDDING_STAGE,
+  ANALYSIS_FINALIZE_STAGE,
+] as const;
+
+function resolveRunCurrentStageKey(stageMetrics: Record<string, StageMetricSnapshot>, runState: "running" | "completed" | "failed") {
+  if (runState === "completed") return ANALYSIS_FINALIZE_STAGE;
+  for (const stageKey of RUN_STAGE_KEYS) {
+    if (stageMetrics[stageKey]?.state === "failed") return stageKey;
+  }
+  for (const stageKey of RUN_STAGE_KEYS) {
+    if (stageMetrics[stageKey]?.state === "running") return stageKey;
+  }
+  for (const stageKey of RUN_STAGE_KEYS) {
+    if (stageMetrics[stageKey]?.state === "queued") return stageKey;
+  }
+  return ANALYSIS_FINALIZE_STAGE;
+}
+
+async function syncRunScopedMetrics(params: {
+  bookId: string;
+  runContext: RunMetricContext;
+  chapterStats: ChapterAnalysisStat[];
+  runState: "running" | "completed" | "failed";
+  startedAt: Date;
+  finishedAt?: Date | null;
+  chatModel: string;
+  embeddingModel: string;
+  extractModel: string;
+  runError?: string | null;
+}) {
+  for (const stageKey of RUN_STAGE_KEYS) {
+    const stageSnapshots = Array.from(params.runContext.chapterStageMetrics.values())
+      .map((row) => row[stageKey])
+      .filter(Boolean);
+    params.runContext.stageMetrics[stageKey] = sumStageMetrics(stageSnapshots);
+  }
+
+  const aggregate = aggregateStats(params.chapterStats);
+  const llmPromptTokens = params.chapterStats.reduce((sum, stat) => sum + stat.llmPromptTokens, 0);
+  const llmCompletionTokens = params.chapterStats.reduce((sum, stat) => sum + stat.llmCompletionTokens, 0);
+  const llmTotalTokens = params.chapterStats.reduce((sum, stat) => sum + stat.llmTotalTokens, 0);
+  const embeddingInputTokens = params.chapterStats.reduce((sum, stat) => sum + stat.embeddingInputTokens, 0);
+  const embeddingTotalTokens = params.chapterStats.reduce((sum, stat) => sum + stat.embeddingTotalTokens, 0);
+  const llmLatencyMs = params.chapterStats.reduce((sum, stat) => sum + stat.llmLatencyMs, 0);
+  const embeddingLatencyMs = params.chapterStats.reduce((sum, stat) => sum + stat.embeddingLatencyMs, 0);
+  const chunkCount = params.chapterStats.reduce((sum, stat) => sum + stat.chunkCount, 0);
+  const chunkFailedCount = params.chapterStats.reduce((sum, stat) => sum + stat.chunkFailedCount, 0);
+  const llmCalls = params.chapterStats.reduce((sum, stat) => sum + stat.llmCalls, 0);
+  const llmRetries = params.chapterStats.reduce((sum, stat) => sum + stat.llmRetries, 0);
+  const embeddingCalls = params.chapterStats.reduce((sum, stat) => sum + stat.embeddingCalls, 0);
+  const paragraphEmbeddingCount = params.runContext.stageMetrics[ANALYSIS_PARAGRAPH_STAGE]?.outputRowCount || 0;
+  const sceneCount = params.runContext.stageMetrics[ANALYSIS_FINALIZE_STAGE]?.outputRowCount || 0;
+  const artifactCount = params.runContext.stageMetrics[ANALYSIS_SCENE_CHUNK_STAGE]?.outputRowCount || 0;
+  const totalElapsedMs =
+    params.finishedAt && params.finishedAt.getTime() >= params.startedAt.getTime()
+      ? params.finishedAt.getTime() - params.startedAt.getTime()
+      : Math.max(0, ...params.chapterStats.map((stat) => stat.elapsedMs));
+  const storageBytes = RUN_STAGE_KEYS.reduce<Record<string, number>>((acc, stageKey) => {
+    for (const [key, value] of Object.entries(params.runContext.stageMetrics[stageKey]?.storageBytes || {})) {
+      acc[key] = Math.max(0, Math.round(Number(acc[key] || 0) + Number(value || 0)));
+    }
+    return acc;
+  }, {});
+
+  const costBreakdown = computeCostBreakdown({
+    chatModel: params.chatModel,
+    embeddingModel: params.embeddingModel,
+    llmPromptTokens,
+    llmCompletionTokens,
+    embeddingInputTokens,
+  });
+
+  const currentStageKey = resolveRunCurrentStageKey(params.runContext.stageMetrics, params.runState);
+
+  await prisma.bookAnalysisRun.update({
+    where: { id: params.runContext.runId },
+    data: {
+      state: params.runState,
+      currentStageKey,
+      error: params.runError ?? null,
+      configVersion: ANALYSIS_CONFIG_VERSION,
+      configHash: params.runContext.configHash,
+      extractModel: params.extractModel,
+      chatModel: params.chatModel,
+      embeddingModel: params.embeddingModel,
+      pricingVersion: params.runContext.pricingVersion,
+      llmPromptTokens,
+      llmCompletionTokens,
+      llmTotalTokens,
+      embeddingInputTokens,
+      embeddingTotalTokens,
+      llmCostUsd: costBreakdown.llmCostUsd,
+      embeddingCostUsd: costBreakdown.embeddingCostUsd,
+      totalCostUsd: costBreakdown.totalCostUsd,
+      totalElapsedMs: Math.max(0, Math.round(totalElapsedMs)),
+      llmLatencyMs,
+      embeddingLatencyMs,
+      chunkCount,
+      chunkFailedCount,
+      llmCalls,
+      llmRetries,
+      embeddingCalls,
+      paragraphEmbeddingCount,
+      sceneCount,
+      artifactCount,
+      storageBytesJson: stageStorageBytesJson(storageBytes) as unknown as Prisma.InputJsonValue,
+      startedAt: params.startedAt,
+      completedAt: params.runState === "running" ? null : params.finishedAt ?? new Date(),
+    },
+  });
+
+  for (const stageKey of RUN_STAGE_KEYS) {
+    const metric = params.runContext.stageMetrics[stageKey];
+    const costs = computeCostBreakdown({
+      chatModel: params.chatModel,
+      embeddingModel: params.embeddingModel,
+      llmPromptTokens: metric.promptTokens,
+      llmCompletionTokens: metric.completionTokens,
+      embeddingInputTokens: metric.embeddingInputTokens,
+    });
+
+    await upsertBookStageExecution({
+      client: prisma,
+      bookId: params.bookId,
+      contentVersionId: params.runContext.contentVersionId,
+      runId: params.runContext.runId,
+      stageKey,
+      state: metric.state,
+      error: metric.error,
+      promptTokens: metric.promptTokens,
+      completionTokens: metric.completionTokens,
+      totalTokens: metric.totalTokens,
+      embeddingInputTokens: metric.embeddingInputTokens,
+      embeddingTotalTokens: metric.embeddingTotalTokens,
+      llmCostUsd: costs.llmCostUsd,
+      embeddingCostUsd: costs.embeddingCostUsd,
+      totalCostUsd: costs.totalCostUsd,
+      elapsedMs: metric.elapsedMs,
+      retryCount: metric.retryCount,
+      llmCalls: metric.llmCalls,
+      embeddingCalls: metric.embeddingCalls,
+      chunkCount: metric.chunkCount,
+      chunkFailedCount: metric.chunkFailedCount,
+      outputRowCount: metric.outputRowCount,
+      storageBytesJson: stageStorageBytesJson(metric.storageBytes),
+      startedAt: metric.startedAt ? new Date(metric.startedAt) : undefined,
+      completedAt: metric.completedAt ? new Date(metric.completedAt) : undefined,
+    });
+  }
+
+  for (const chapterStat of params.chapterStats) {
+    const stageMetrics = params.runContext.chapterStageMetrics.get(chapterStat.chapterId) || {};
+    for (const stageKey of RUN_STAGE_KEYS) {
+      const metric = stageMetrics[stageKey];
+      if (!metric) continue;
+      await upsertBookAnalysisChapterMetric({
+        client: prisma,
+        bookId: params.bookId,
+        contentVersionId: params.runContext.contentVersionId,
+        runId: params.runContext.runId,
+        chapterId: chapterStat.chapterId,
+        chapterOrderIndex: chapterStat.chapterOrderIndex,
+        chapterTitle: chapterStat.chapterTitle,
+        stageKey,
+        state: metric.state,
+        error: metric.error,
+        promptTokens: metric.promptTokens,
+        completionTokens: metric.completionTokens,
+        totalTokens: metric.totalTokens,
+        embeddingInputTokens: metric.embeddingInputTokens,
+        embeddingTotalTokens: metric.embeddingTotalTokens,
+        elapsedMs: metric.elapsedMs,
+        retryCount: metric.retryCount,
+        llmCalls: metric.llmCalls,
+        embeddingCalls: metric.embeddingCalls,
+        chunkCount: metric.chunkCount,
+        chunkFailedCount: metric.chunkFailedCount,
+        outputRowCount: metric.outputRowCount,
+        storageBytesJson: stageStorageBytesJson(metric.storageBytes),
+        startedAt: metric.startedAt ? new Date(metric.startedAt) : undefined,
+        completedAt: metric.completedAt ? new Date(metric.completedAt) : undefined,
+      });
+    }
+  }
+
+  await prisma.book.update({
+    where: { id: params.bookId },
+    data: {
+      currentAnalysisRunId: params.runState === "running" ? params.runContext.runId : null,
+      latestAnalysisRunId: params.runContext.runId,
+      analysisPromptTokens: aggregate.promptTokens,
+      analysisCompletionTokens: aggregate.completionTokens,
+      analysisTotalTokens: aggregate.totalTokens,
     },
   });
 }
@@ -1346,12 +1774,14 @@ async function persistParagraphEmbeddings(params: {
     chapterId: params.chapterId,
     paragraphs: params.paragraphs,
   });
+  const now = new Date();
 
   const rows = documents.map((item, index) => {
     const vector = params.vectors[index] || [];
     const vectorLiteral = serializePgVectorLiteral(vector);
 
     return Prisma.sql`(
+      ${randomUUID()},
       ${item.bookId},
       ${item.chapterId},
       ${item.paragraphIndex},
@@ -1361,27 +1791,34 @@ async function persistParagraphEmbeddings(params: {
       ${vector.length},
       ${item.sourceText},
       ${item.sourceTextHash},
+      ${now},
+      ${now},
       CAST(${vectorLiteral} AS vector(768))
     )`;
   });
 
-  await prisma.$executeRaw(
-    Prisma.sql`
-      INSERT INTO "BookParagraphEmbedding" (
-        "bookId",
-        "chapterId",
-        "paragraphIndex",
-        "embeddingModel",
-        "embeddingVersion",
-        "taskType",
-        "dimensions",
-        "sourceText",
-        "sourceTextHash",
-        "vector"
-      )
-      VALUES ${Prisma.join(rows)}
-    `
-  );
+  for (const rowBatch of chunkArray(rows, EMBEDDING_INSERT_BATCH_SIZE)) {
+    await prisma.$executeRaw(
+      Prisma.sql`
+        INSERT INTO "BookParagraphEmbedding" (
+          "id",
+          "bookId",
+          "chapterId",
+          "paragraphIndex",
+          "embeddingModel",
+          "embeddingVersion",
+          "taskType",
+          "dimensions",
+          "sourceText",
+          "sourceTextHash",
+          "createdAt",
+          "updatedAt",
+          "vector"
+        )
+        VALUES ${Prisma.join(rowBatch)}
+      `
+    );
+  }
 }
 
 async function requestSceneEmbeddings(params: {
@@ -1660,6 +2097,7 @@ ${JSON.stringify(paragraphsJson)}
 async function requestChunkSceneBoundariesWithRetry(params: {
   client: ReturnType<typeof createVertexClient>;
   logger: AnalysisLogger;
+  runId: string;
   bookId: string;
   chapterId: string;
   chapterOrderIndex: number;
@@ -1672,6 +2110,7 @@ async function requestChunkSceneBoundariesWithRetry(params: {
   let attempt = 1;
   let retryDelayMs = ANALYSIS_CHUNK_RETRY_BASE_MS;
   let totalElapsedMs = 0;
+  let totalArtifactPayloadBytes = 0;
   let usageTotal: Usage = {};
 
   while (true) {
@@ -1688,7 +2127,8 @@ async function requestChunkSceneBoundariesWithRetry(params: {
       usageTotal = sumUsage(usageTotal, chunkResult.artifact.usage);
       totalElapsedMs += Math.max(0, Number(chunkResult.artifact.elapsedMs || 0));
 
-      await persistChunkArtifact({
+      const persistedArtifact = await persistChunkArtifact({
+        runId: params.runId,
         bookId: params.bookId,
         chapterId: params.chapterId,
         chapterOrderIndex: params.chapterOrderIndex,
@@ -1707,6 +2147,7 @@ async function requestChunkSceneBoundariesWithRetry(params: {
         usage: usageTotal,
         attemptCount: attempt,
         elapsedMs: totalElapsedMs,
+        artifactPayloadBytes: totalArtifactPayloadBytes + persistedArtifact.payloadSizeBytes,
       };
     } catch (error) {
       const normalizedError = error instanceof Error ? error : new Error(String(error));
@@ -1724,7 +2165,8 @@ async function requestChunkSceneBoundariesWithRetry(params: {
       usageTotal = sumUsage(usageTotal, artifact.usage);
       totalElapsedMs += Math.max(0, Number(artifact.elapsedMs || 0));
 
-      await persistChunkArtifact({
+      const persistedArtifact = await persistChunkArtifact({
+        runId: params.runId,
         bookId: params.bookId,
         chapterId: params.chapterId,
         chapterOrderIndex: params.chapterOrderIndex,
@@ -1746,8 +2188,10 @@ async function requestChunkSceneBoundariesWithRetry(params: {
           usage: usageTotal,
           attemptCount: attempt,
           elapsedMs: totalElapsedMs,
+          artifactPayloadBytes: totalArtifactPayloadBytes + persistedArtifact.payloadSizeBytes,
         });
       }
+      totalArtifactPayloadBytes += persistedArtifact.payloadSizeBytes;
 
       params.logger.warn("Chunk request throttled; retrying", {
         bookId: params.bookId,
@@ -1778,6 +2222,9 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
     select: {
       id: true,
       title: true,
+      fileSha256: true,
+      fileName: true,
+      mimeType: true,
       chapters: {
         orderBy: {
           orderIndex: "asc",
@@ -1826,14 +2273,68 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
   }));
 
   const startedAt = new Date();
+  const contentVersion = await ensureBookContentVersion({
+    client: prisma,
+    bookId: book.id,
+    fileSha256: book.fileSha256,
+    fileName: book.fileName,
+    mimeType: book.mimeType,
+  });
+  const run = await createBookAnalysisRun({
+    client: prisma,
+    bookId: book.id,
+    contentVersionId: contentVersion.id,
+    configVersion: ANALYSIS_CONFIG_VERSION,
+    configHash: computeRunConfigHash({
+      chatModel: client.config.chatModel,
+      embeddingModel: client.config.embeddingModel,
+      chunkSize: SCENE_CHUNK_SIZE,
+      chunkOverlap: SCENE_CHUNK_OVERLAP,
+      chunkConcurrency: ANALYSIS_CHUNK_CONCURRENCY,
+      chapterConcurrency: ANALYSIS_CHAPTER_CONCURRENCY,
+      paragraphEmbeddingVersion: PARAGRAPH_EMBEDDING_VERSION,
+      sceneEmbeddingVersion: SCENE_EMBEDDING_VERSION,
+    }),
+    extractModel: client.config.chatModel,
+    chatModel: client.config.chatModel,
+    embeddingModel: client.config.embeddingModel,
+    pricingVersion: resolvePricingVersion(),
+    startedAt,
+  });
+  const runContext: RunMetricContext = {
+    runId: run.id,
+    contentVersionId: contentVersion.id,
+    pricingVersion: resolvePricingVersion(),
+    configHash: computeRunConfigHash({
+      chatModel: client.config.chatModel,
+      embeddingModel: client.config.embeddingModel,
+      chunkSize: SCENE_CHUNK_SIZE,
+      chunkOverlap: SCENE_CHUNK_OVERLAP,
+      chunkConcurrency: ANALYSIS_CHUNK_CONCURRENCY,
+      chapterConcurrency: ANALYSIS_CHAPTER_CONCURRENCY,
+      paragraphEmbeddingVersion: PARAGRAPH_EMBEDDING_VERSION,
+      sceneEmbeddingVersion: SCENE_EMBEDDING_VERSION,
+    }),
+    stageMetrics: Object.fromEntries(RUN_STAGE_KEYS.map((stageKey) => [stageKey, createEmptyStageMetric()])),
+    chapterStageMetrics: new Map(),
+    storageBytes: {
+      paragraphEmbeddings: 0,
+      sceneEmbeddings: 0,
+      sceneData: 0,
+      artifactPayloads: 0,
+    },
+  };
+
+  params.logger.info("Book analysis started", {
+    bookId: book.id,
+    title: book.title,
+    sceneWindowStrategy: SCENE_WINDOW_STRATEGY,
+    sceneWindowSize: SCENE_CHUNK_SIZE,
+    sceneWindowOverlap: SCENE_CHUNK_OVERLAP,
+    chapters: book.chapters.length,
+  });
 
   await prisma.$transaction(async (tx: any) => {
-    await tx.bookAnalysisArtifact.deleteMany({
-      where: {
-        bookId: book.id,
-      },
-    });
-
     await tx.bookParagraphEmbedding.deleteMany({
       where: {
         bookId: book.id,
@@ -1854,12 +2355,15 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         analysisError: null,
         analysisStartedAt: startedAt,
         analysisFinishedAt: null,
+        analysisCompletedAt: null,
         analysisCheckedBlocks: 0,
         analysisTotalBlocks: chapterStats.reduce((sum, stat) => sum + stat.totalBlocks, 0),
         analysisPromptTokens: 0,
         analysisCompletionTokens: 0,
         analysisTotalTokens: 0,
         analysisChapterStatsJson: chapterStats as unknown as Prisma.InputJsonValue,
+        currentAnalysisRunId: run.id,
+        latestAnalysisRunId: run.id,
       },
     });
   });
@@ -1877,6 +2381,16 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         status: "running",
         chapterStats,
       });
+      await syncRunScopedMetrics({
+        bookId: book.id,
+        runContext,
+        chapterStats,
+        runState: "running",
+        startedAt,
+        chatModel: client.config.chatModel,
+        embeddingModel: client.config.embeddingModel,
+        extractModel: client.config.chatModel,
+      });
     });
     return progressQueue;
   };
@@ -1893,6 +2407,13 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
 
     const chapterStartedAtMs = Date.now();
     const chapterStartedIso = new Date(chapterStartedAtMs).toISOString();
+    const chapterStageMetrics = {
+      [ANALYSIS_PARAGRAPH_STAGE]: createEmptyStageMetric(),
+      [ANALYSIS_SCENE_CHUNK_STAGE]: createEmptyStageMetric(),
+      [ANALYSIS_SCENE_EMBEDDING_STAGE]: createEmptyStageMetric(),
+      [ANALYSIS_FINALIZE_STAGE]: createEmptyStageMetric(),
+    };
+    runContext.chapterStageMetrics.set(chapter.id, chapterStageMetrics);
 
     try {
       await enqueueProgressUpdate(() => {
@@ -1900,6 +2421,8 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         chapterStat.startedAt = chapterStartedIso;
         chapterStat.finishedAt = null;
         chapterStat.elapsedMs = 0;
+        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].state = "running";
+        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].startedAt = chapterStartedIso;
       });
 
       const blocks = splitChapterIntoBlocks(String(chapter.rawText || ""));
@@ -1910,6 +2433,17 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
           chapterStat.status = "completed";
           chapterStat.finishedAt = finishedAt.toISOString();
           chapterStat.elapsedMs = Math.max(0, finishedAt.getTime() - chapterStartedAtMs);
+          chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].completedAt = finishedAt.toISOString();
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].startedAt = chapterStartedIso;
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].completedAt = finishedAt.toISOString();
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].startedAt = chapterStartedIso;
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt = finishedAt.toISOString();
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].startedAt = chapterStartedIso;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].completedAt = finishedAt.toISOString();
         });
         return {
           ok: true,
@@ -1936,6 +2470,30 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         vectors: paragraphVectors,
         embeddingModel: client.config.embeddingModel,
       });
+      const paragraphEmbeddingBytes = estimateParagraphEmbeddingBytes({
+        paragraphs: blocks,
+        vectorDimensions: PGVECTOR_EMBEDDING_DIMENSIONS,
+      });
+      await enqueueProgressUpdate(() => {
+        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].state = "completed";
+        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].embeddingInputTokens = Math.max(
+          0,
+          Number(embeddingUsage.input_tokens || 0)
+        );
+        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].embeddingTotalTokens = Math.max(
+          0,
+          Number(embeddingUsage.total_tokens || embeddingUsage.input_tokens || 0)
+        );
+        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].elapsedMs = Math.max(0, boundaryEmbeddingElapsedMs);
+        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].embeddingCalls = 1;
+        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].outputRowCount = paragraphVectors.length;
+        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].storageBytes = {
+          paragraphEmbeddings: paragraphEmbeddingBytes,
+        };
+        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].completedAt = new Date().toISOString();
+        chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].state = "running";
+        chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].startedAt ||= new Date().toISOString();
+      });
 
       params.logger.info("Chapter embedding hints prepared", {
         bookId: book.id,
@@ -1948,16 +2506,15 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         paragraphEmbeddingVersion: PARAGRAPH_EMBEDDING_VERSION,
       });
 
-      const chunks = createHintDrivenChunks({
+      const chunks = createSceneAnalysisChunks({
         paragraphs: blocks,
         embeddingHints,
-        chunkSize: SCENE_CHUNK_SIZE,
-        overlap: SCENE_CHUNK_OVERLAP,
       });
       params.logger.info("Chapter analysis windows prepared", {
         bookId: book.id,
         chapterId: chapter.id,
         chapterOrderIndex: chapter.orderIndex,
+        sceneWindowStrategy: SCENE_WINDOW_STRATEGY,
         paragraphCount: blocks.length,
         hintCount: embeddingHints.length,
         windowCount: chunks.length,
@@ -1978,6 +2535,7 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         requestChunkSceneBoundariesWithRetry({
           client,
           logger: params.logger,
+          runId: runContext.runId,
           bookId: book.id,
           chapterId: chapter.id,
           chapterOrderIndex: chapter.orderIndex,
@@ -1987,19 +2545,21 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
           paragraphs: chunk.paragraphs,
           embeddingHints,
         })
-          .then(({ parsed, usage, attemptCount, elapsedMs }): ChunkAnalysisSuccess => ({
+          .then(({ parsed, usage, attemptCount, elapsedMs, artifactPayloadBytes }): ChunkAnalysisSuccess => ({
             ok: true,
             chunk,
             parsed,
             usage,
             attemptCount,
             elapsedMs,
+            artifactPayloadBytes,
           }))
           .catch((error): ChunkAnalysisFailure => {
             const normalizedError = error instanceof Error ? error : new Error(String(error));
             const usage = error instanceof ChunkCallError ? error.usage : {};
             const attemptCount = error instanceof ChunkCallError ? error.attemptCount : 1;
             const elapsedMs = error instanceof ChunkCallError ? error.elapsedMs : 0;
+            const artifactPayloadBytes = error instanceof ChunkCallError ? error.artifactPayloadBytes : 0;
             return {
               ok: false,
               chunk,
@@ -2007,6 +2567,7 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
               usage,
               attemptCount,
               elapsedMs,
+              artifactPayloadBytes,
             };
           });
 
@@ -2038,8 +2599,35 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
           chapterStat.llmRetries += Math.max(0, chunkResult.attemptCount - 1);
           chapterStat.llmLatencyMs += Math.max(0, Math.round(chunkResult.elapsedMs));
           chapterStat.chunkCount += 1;
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].state = "running";
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].promptTokens += Math.max(
+            0,
+            Number(chunkResult.usage.prompt_tokens || 0)
+          );
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].completionTokens += Math.max(
+            0,
+            Number(chunkResult.usage.completion_tokens || 0)
+          );
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].totalTokens += Math.max(
+            0,
+            Number(chunkResult.usage.total_tokens || 0)
+          );
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].elapsedMs += Math.max(0, Math.round(chunkResult.elapsedMs));
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].retryCount += Math.max(0, chunkResult.attemptCount - 1);
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].llmCalls += Math.max(1, chunkResult.attemptCount);
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].chunkCount += 1;
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].outputRowCount += Math.max(1, chunkResult.attemptCount);
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].storageBytes.artifactPayloads = Math.max(
+            0,
+            Number(chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].storageBytes.artifactPayloads || 0) +
+              Number(chunkResult.artifactPayloadBytes || 0)
+          );
           if (!chunkResult.ok) {
             chapterStat.chunkFailedCount += 1;
+            chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].chunkFailedCount += 1;
+            chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].error = chunkResult.error.message;
+            chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].state = "failed";
+            chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].completedAt = new Date().toISOString();
             return;
           }
           for (
@@ -2061,6 +2649,13 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
 
         launchNext();
       }
+      await enqueueProgressUpdate(() => {
+        chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].state =
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].state === "failed" ? "failed" : "completed";
+        chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].completedAt = new Date().toISOString();
+        chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].state = "running";
+        chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].startedAt ||= new Date().toISOString();
+      });
 
       const sceneBoundaries = mergeBoundaryCandidates(boundaryCandidates);
       params.logger.info("Chapter boundaries merged", {
@@ -2105,6 +2700,7 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
           excerptText: sceneText,
         });
       }
+      const sceneDataBytes = estimateSceneDataBytes(scenesToCreate);
 
       if (scenesToCreate.length) {
         await prisma.bookScene.createMany({
@@ -2151,11 +2747,13 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         const sceneEmbeddingElapsedMs = Date.now() - sceneEmbeddingStartedAt;
 
         if (documents.length) {
+          const now = new Date();
           const rows = documents.map((item, index) => {
             const vector = vectors[index] || [];
             const vectorLiteral = serializePgVectorLiteral(vector);
 
             return Prisma.sql`(
+              ${randomUUID()},
               ${item.sceneId},
               ${item.bookId},
               ${item.chapterId},
@@ -2166,34 +2764,68 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
               ${vector.length},
               ${item.sourceText},
               ${item.sourceTextHash},
+              ${now},
+              ${now},
               CAST(${vectorLiteral} AS vector(768))
             )`;
           });
 
-          await prisma.$executeRaw(
-            Prisma.sql`
-              INSERT INTO "BookSceneEmbedding" (
-                "sceneId",
-                "bookId",
-                "chapterId",
-                "sceneIndex",
-                "embeddingModel",
-                "embeddingVersion",
-                "taskType",
-                "dimensions",
-                "sourceText",
-                "sourceTextHash",
-                "vector"
-              )
-              VALUES ${Prisma.join(rows)}
-            `
-          );
+          for (const rowBatch of chunkArray(rows, EMBEDDING_INSERT_BATCH_SIZE)) {
+            await prisma.$executeRaw(
+              Prisma.sql`
+                INSERT INTO "BookSceneEmbedding" (
+                  "id",
+                  "sceneId",
+                  "bookId",
+                  "chapterId",
+                  "sceneIndex",
+                  "embeddingModel",
+                  "embeddingVersion",
+                  "taskType",
+                  "dimensions",
+                  "sourceText",
+                  "sourceTextHash",
+                  "createdAt",
+                  "updatedAt",
+                  "vector"
+                )
+                VALUES ${Prisma.join(rowBatch)}
+              `
+            );
+          }
         }
+        const sceneEmbeddingBytes = estimateSceneEmbeddingBytes({
+          sourceTexts: documents.map((item) => item.sourceText),
+          vectorDimensions: PGVECTOR_EMBEDDING_DIMENSIONS,
+        });
 
         await enqueueProgressUpdate(() => {
           addEmbeddingUsage(chapterStat, sceneEmbeddingUsage);
           chapterStat.embeddingCalls += 1;
           chapterStat.embeddingLatencyMs += Math.max(0, sceneEmbeddingElapsedMs);
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].embeddingInputTokens = Math.max(
+            0,
+            Number(sceneEmbeddingUsage.input_tokens || 0)
+          );
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].embeddingTotalTokens = Math.max(
+            0,
+            Number(sceneEmbeddingUsage.total_tokens || sceneEmbeddingUsage.input_tokens || 0)
+          );
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].elapsedMs = Math.max(0, sceneEmbeddingElapsedMs);
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].embeddingCalls = 1;
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].outputRowCount = documents.length;
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].storageBytes = {
+            sceneEmbeddings: sceneEmbeddingBytes,
+          };
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt = new Date().toISOString();
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].startedAt ||= chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].completedAt = chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].outputRowCount = scenesToCreate.length;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].storageBytes = {
+            sceneData: sceneDataBytes,
+          };
         });
 
         params.logger.info("Chapter scene embeddings created", {
@@ -2204,6 +2836,17 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
           embeddingModel: client.config.embeddingModel,
           embeddingVersion: SCENE_EMBEDDING_VERSION,
           embeddingInputTokens: Number(sceneEmbeddingUsage.input_tokens || 0),
+        });
+      } else {
+        await enqueueProgressUpdate(() => {
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt = new Date().toISOString();
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].startedAt ||= chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].completedAt = chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].storageBytes = {
+            sceneData: sceneDataBytes,
+          };
         });
       }
 
@@ -2226,6 +2869,14 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         chapterStat.status = "failed";
         chapterStat.finishedAt = failedAt.toISOString();
         chapterStat.elapsedMs = Math.max(0, failedAt.getTime() - chapterStartedAtMs);
+        for (const stageKey of RUN_STAGE_KEYS) {
+          const metric = chapterStageMetrics[stageKey];
+          if (!metric.startedAt) metric.startedAt = chapterStartedIso;
+          if (metric.state === "completed") continue;
+          metric.state = "failed";
+          metric.error = normalizedError.message;
+          metric.completedAt = failedAt.toISOString();
+        }
       });
 
       return {
@@ -2288,11 +2939,23 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
     throw firstError;
   }
 
+  const completedAt = new Date();
   await persistBookAnalysisProgress({
     bookId: book.id,
     status: "completed",
     chapterStats,
-    finishedAt: new Date(),
+    finishedAt: completedAt,
+  });
+  await syncRunScopedMetrics({
+    bookId: book.id,
+    runContext,
+    chapterStats,
+    runState: "completed",
+    startedAt,
+    finishedAt: completedAt,
+    chatModel: client.config.chatModel,
+    embeddingModel: client.config.embeddingModel,
+    extractModel: client.config.chatModel,
   });
 
   params.logger.info("Book analysis completed", {
@@ -2306,6 +2969,14 @@ export async function markBookAnalysisFailed(params: {
   error: string;
   logger: AnalysisLogger;
 }) {
+  const book = await prisma.book.findUnique({
+    where: { id: params.bookId },
+    select: {
+      currentAnalysisRunId: true,
+      latestAnalysisRunId: true,
+    },
+  });
+
   await prisma.$transaction(async (tx: any) => {
     await tx.bookScene.deleteMany({
       where: {
@@ -2323,8 +2994,47 @@ export async function markBookAnalysisFailed(params: {
         analysisError: String(params.error || "Analysis failed").slice(0, 2000),
         analysisFinishedAt: new Date(),
         analysisCompletedAt: new Date(),
+        currentAnalysisRunId: null,
       },
     });
+
+    const failedRunId = String(book?.currentAnalysisRunId || book?.latestAnalysisRunId || "").trim();
+    if (failedRunId) {
+      await tx.bookAnalysisRun.updateMany({
+        where: { id: failedRunId },
+        data: {
+          state: "failed",
+          error: String(params.error || "Analysis failed").slice(0, 2000),
+          completedAt: new Date(),
+        },
+      });
+      await tx.bookStageExecution.updateMany({
+        where: {
+          runId: failedRunId,
+          state: {
+            not: "completed",
+          },
+        },
+        data: {
+          state: "failed",
+          error: String(params.error || "Analysis failed").slice(0, 2000),
+          completedAt: new Date(),
+        },
+      });
+      await tx.bookAnalysisChapterMetric.updateMany({
+        where: {
+          runId: failedRunId,
+          state: {
+            not: "completed",
+          },
+        },
+        data: {
+          state: "failed",
+          error: String(params.error || "Analysis failed").slice(0, 2000),
+          completedAt: new Date(),
+        },
+      });
+    }
   });
 
   params.logger.error("Book analysis failed", {

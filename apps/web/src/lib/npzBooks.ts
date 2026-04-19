@@ -59,6 +59,7 @@ export interface BookAnalysisPerformanceDTO {
 
 export interface BookAnalysisArtifactDTO {
   id: string;
+  runId: string | null;
   bookId: string;
   chapterId: string;
   chapterOrderIndex: number;
@@ -66,6 +67,7 @@ export interface BookAnalysisArtifactDTO {
   chunkStartParagraph: number;
   chunkEndParagraph: number;
   attempt: number;
+  stageKey: string | null;
   phase: string;
   status: "ok" | "error";
   llmModel: string;
@@ -73,7 +75,12 @@ export interface BookAnalysisArtifactDTO {
   completionTokens: number;
   totalTokens: number;
   elapsedMs: number;
-  promptText: string;
+  storageProvider: string | null;
+  payloadKey: string | null;
+  payloadSizeBytes: number;
+  compression: string | null;
+  schemaVersion: string | null;
+  promptText: string | null;
   input: Record<string, unknown>;
   responseText: string | null;
   parsed: Record<string, unknown> | null;
@@ -83,6 +90,7 @@ export interface BookAnalysisArtifactDTO {
 
 export interface BookAnalysisArtifactListDTO {
   bookId: string;
+  runId: string | null;
   limit: number;
   summary: BookAnalysisArtifactSummaryDTO;
   items: BookAnalysisArtifactDTO[];
@@ -329,6 +337,7 @@ function computeBookAnalysisPerformance(params: {
 
 export function toBookAnalysisArtifactDTO(row: {
   id: string;
+  runId?: string | null;
   bookId: string;
   chapterId: string;
   chapterOrderIndex: number;
@@ -336,6 +345,7 @@ export function toBookAnalysisArtifactDTO(row: {
   chunkStartParagraph: number;
   chunkEndParagraph: number;
   attempt: number;
+  stageKey?: string | null;
   phase: string;
   status: string;
   llmModel: string;
@@ -343,8 +353,13 @@ export function toBookAnalysisArtifactDTO(row: {
   completionTokens: number;
   totalTokens: number;
   elapsedMs: number;
-  promptText: string;
-  inputJson: unknown;
+  storageProvider?: string | null;
+  payloadKey?: string | null;
+  payloadSizeBytes?: number;
+  compression?: string | null;
+  schemaVersion?: string | null;
+  promptText: string | null;
+  inputJson: unknown | null;
   responseText: string | null;
   parsedJson: unknown;
   errorMessage: string | null;
@@ -354,6 +369,7 @@ export function toBookAnalysisArtifactDTO(row: {
   const parsedRecord = toRecord(row.parsedJson);
   return {
     id: row.id,
+    runId: row.runId ? String(row.runId) : null,
     bookId: row.bookId,
     chapterId: row.chapterId,
     chapterOrderIndex: asNonNegativeInt(row.chapterOrderIndex),
@@ -361,6 +377,7 @@ export function toBookAnalysisArtifactDTO(row: {
     chunkStartParagraph: asNonNegativeInt(row.chunkStartParagraph),
     chunkEndParagraph: asNonNegativeInt(row.chunkEndParagraph),
     attempt: Math.max(1, asNonNegativeInt(row.attempt, 1)),
+    stageKey: row.stageKey ? String(row.stageKey) : null,
     phase: asString(row.phase),
     status,
     llmModel: asString(row.llmModel),
@@ -368,7 +385,12 @@ export function toBookAnalysisArtifactDTO(row: {
     completionTokens: asNonNegativeInt(row.completionTokens),
     totalTokens: asNonNegativeInt(row.totalTokens),
     elapsedMs: asNonNegativeInt(row.elapsedMs),
-    promptText: String(row.promptText || ""),
+    storageProvider: row.storageProvider ? String(row.storageProvider) : null,
+    payloadKey: row.payloadKey ? String(row.payloadKey) : null,
+    payloadSizeBytes: asNonNegativeInt(row.payloadSizeBytes),
+    compression: row.compression ? String(row.compression) : null,
+    schemaVersion: row.schemaVersion ? String(row.schemaVersion) : null,
+    promptText: row.promptText ? String(row.promptText) : null,
     input: toRecord(row.inputJson),
     responseText: row.responseText ? String(row.responseText) : null,
     parsed: Object.keys(parsedRecord).length ? parsedRecord : null,

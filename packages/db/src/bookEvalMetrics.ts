@@ -237,8 +237,9 @@ export async function computeBookEvalSnapshot(params: {
     presenceMapCount,
     validationFailureCount,
   ] = await Promise.all([
-    prisma.bookProcessingReport.findUnique({
+    prisma.bookProcessingReport.findFirst({
       where: { contentVersionId: contentVersion.id },
+      orderBy: { createdAt: "desc" },
       select: {
         coverage: true,
       },

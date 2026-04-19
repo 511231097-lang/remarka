@@ -17,6 +17,7 @@
     "db:generate": "npm --prefix packages/db run prisma:generate",
     "db:migrate": "npm --prefix packages/db run prisma:migrate:dev",
     "db:migrate:deploy": "npm --prefix packages/db run prisma:migrate:deploy",
+    "db:backfill:metrics": "node --import tsx packages/db/src/backfillMetrics.ts",
     "test:unit": "npm --prefix apps/web run test:unit",
     "docker:up": "docker compose up --build -d",
     "docker:up:dev": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d",

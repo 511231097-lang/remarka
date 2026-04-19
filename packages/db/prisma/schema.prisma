@@ -187,6 +187,10 @@ enum BookEvidenceStageKey {
   summary_synthesis
   index_build
   repair
+  paragraph_embeddings
+  scene_chunk_llm
+  scene_embeddings
+  finalize
 }
 
 enum BookObservationType {
@@ -268,6 +272,8 @@ model Book {
   analysisStartedAt        DateTime?
   analysisFinishedAt       DateTime?
   analysisCompletedAt      DateTime?
+  currentAnalysisRunId     String?
+  latestAnalysisRunId      String?
   fileName                 String
   mimeType                 String
   sizeBytes                Int
@@ -304,6 +310,7 @@ model Book {
   contentVersionsV2    BookContentVersion[]
   analysisRunsV2       BookAnalysisRun[]
   stageExecutionsV2    BookStageExecution[]
+  analysisChapterMetricsV2 BookAnalysisChapterMetric[]
   validationFailuresV2 BookValidationFailure[]
   sourceChaptersV2     BookSourceChapter[]
   sourceParagraphsV2   BookSourceParagraph[]
@@ -331,9 +338,11 @@ model Book {
   sceneEmbeddings      BookSceneEmbedding[]
   paragraphEmbeddings  BookParagraphEmbedding[]
   chatThreads          BookChatThread[]
+  chatTurnMetrics      BookChatTurnMetric[]
 
   @@index([ownerUserId, createdAt])
   @@index([isPublic, createdAt])
+  @@index([latestAnalysisRunId, createdAt])
 }
 
 model BookLiteraryAnalysis {
@@ -376,6 +385,7 @@ model BookChapter {
   sceneEmbeddings     BookSceneEmbedding[]
   paragraphEmbeddings BookParagraphEmbedding[]
   analysisArtifacts   BookAnalysisArtifact[]
+  analysisChapterMetricsV2 BookAnalysisChapterMetric[]
   mentions            BookMention[]
   eventsGraph         BookEvent[]
   summaryArtifacts    BookSummaryArtifact[]
@@ -386,6 +396,7 @@ model BookChapter {
 
 model BookAnalysisArtifact {
   id                  String   @id @default(cuid())
+  runId               String?
   bookId              String
   chapterId           String
   chapterOrderIndex   Int
@@ -393,6 +404,7 @@ model BookAnalysisArtifact {
   chunkStartParagraph Int
   chunkEndParagraph   Int
   attempt             Int
+  stageKey            BookEvidenceStageKey?
   phase               String
   status              String
   llmModel            String
@@ -400,19 +412,27 @@ model BookAnalysisArtifact {
   completionTokens    Int      @default(0)
   totalTokens         Int      @default(0)
   elapsedMs           Int      @default(0)
-  promptText          String   @db.Text
-  inputJson           Json     @default("{}")
+  promptText          String?  @db.Text
+  inputJson           Json?
   responseText        String?  @db.Text
   parsedJson          Json?
   errorMessage        String?
+  storageProvider     String?
+  payloadKey          String?
+  payloadSizeBytes    Int      @default(0)
+  payloadSha256       String?
+  compression         String?
+  schemaVersion       String?
   createdAt           DateTime @default(now())
 
   book    Book        @relation(fields: [bookId], references: [id], onDelete: Cascade)
   chapter BookChapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  run     BookAnalysisRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
 
   @@index([bookId, createdAt])
   @@index([bookId, chapterId, createdAt])
   @@index([bookId, chapterId, chunkStartParagraph, chunkEndParagraph, attempt])
+  @@index([runId, createdAt])
 }
 
 model BookAnalysisScene {
@@ -910,6 +930,7 @@ model BookChatThread {
 
   book     Book                    @relation(fields: [bookId], references: [id], onDelete: Cascade)
   messages BookChatThreadMessage[]
+  turnMetrics BookChatTurnMetric[]
 
   @@index([bookId, updatedAt])
   @@index([createdAt])
@@ -932,6 +953,7 @@ model BookChatThreadMessage {
   updatedAt     DateTime                  @updatedAt
 
   thread BookChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  turnMetric BookChatTurnMetric?
 
   @@index([threadId, createdAt])
   @@index([role, createdAt])
@@ -1121,10 +1143,37 @@ model BookContentVersion {
 model BookAnalysisRun {
   id               String                @id @default(cuid())
   bookId           String
-  contentVersionId String                @unique
+  contentVersionId String
+  attempt          Int                   @default(1)
   state            BookAnalysisRunState  @default(queued)
   currentStageKey  BookEvidenceStageKey?
   error            String?
+  configVersion    String?
+  configHash       String?
+  extractModel     String?
+  chatModel        String?
+  embeddingModel   String?
+  pricingVersion   String?
+  llmPromptTokens  Int                   @default(0)
+  llmCompletionTokens Int                @default(0)
+  llmTotalTokens   Int                   @default(0)
+  embeddingInputTokens Int               @default(0)
+  embeddingTotalTokens Int               @default(0)
+  llmCostUsd       Float                 @default(0)
+  embeddingCostUsd Float                 @default(0)
+  totalCostUsd     Float                 @default(0)
+  totalElapsedMs   Int                   @default(0)
+  llmLatencyMs     Int                   @default(0)
+  embeddingLatencyMs Int                 @default(0)
+  chunkCount       Int                   @default(0)
+  chunkFailedCount Int                   @default(0)
+  llmCalls         Int                   @default(0)
+  llmRetries       Int                   @default(0)
+  embeddingCalls   Int                   @default(0)
+  paragraphEmbeddingCount Int            @default(0)
+  sceneCount       Int                   @default(0)
+  artifactCount    Int                   @default(0)
+  storageBytesJson Json?
   qualityFlagsJson Json?
   metricsJson      Json?
   startedAt        DateTime?
@@ -1133,9 +1182,13 @@ model BookAnalysisRun {
   updatedAt        DateTime              @updatedAt
 
   book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  stageExecutions BookStageExecution[]
+  chapterMetrics  BookAnalysisChapterMetric[]
+  artifacts       BookAnalysisArtifact[]
 
   @@index([bookId, state, createdAt])
   @@index([bookId, contentVersionId])
+  @@index([bookId, attempt, createdAt])
 }
 
 model BookStageExecution {
@@ -1146,6 +1199,22 @@ model BookStageExecution {
   stageKey         BookEvidenceStageKey
   state            BookAnalysisState    @default(queued)
   error            String?
+  promptTokens     Int                  @default(0)
+  completionTokens Int                  @default(0)
+  totalTokens      Int                  @default(0)
+  embeddingInputTokens Int              @default(0)
+  embeddingTotalTokens Int              @default(0)
+  llmCostUsd       Float                @default(0)
+  embeddingCostUsd Float                @default(0)
+  totalCostUsd     Float                @default(0)
+  elapsedMs        Int                  @default(0)
+  retryCount       Int                  @default(0)
+  llmCalls         Int                  @default(0)
+  embeddingCalls   Int                  @default(0)
+  chunkCount       Int                  @default(0)
+  chunkFailedCount Int                  @default(0)
+  outputRowCount   Int                  @default(0)
+  storageBytesJson Json?
   metadataJson     Json?
   startedAt        DateTime?
   completedAt      DateTime?
@@ -1153,10 +1222,50 @@ model BookStageExecution {
   updatedAt        DateTime             @updatedAt
 
   book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  run  BookAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
   @@unique([runId, stageKey])
   @@index([bookId, contentVersionId, stageKey])
   @@index([state, updatedAt])
+}
+
+model BookAnalysisChapterMetric {
+  id                  String               @id @default(cuid())
+  bookId              String
+  contentVersionId    String
+  runId               String
+  chapterId           String
+  chapterOrderIndex   Int
+  chapterTitle        String
+  stageKey            BookEvidenceStageKey
+  state               BookAnalysisState    @default(queued)
+  error               String?
+  promptTokens        Int                  @default(0)
+  completionTokens    Int                  @default(0)
+  totalTokens         Int                  @default(0)
+  embeddingInputTokens Int                 @default(0)
+  embeddingTotalTokens Int                 @default(0)
+  elapsedMs           Int                  @default(0)
+  retryCount          Int                  @default(0)
+  llmCalls            Int                  @default(0)
+  embeddingCalls      Int                  @default(0)
+  chunkCount          Int                  @default(0)
+  chunkFailedCount    Int                  @default(0)
+  outputRowCount      Int                  @default(0)
+  storageBytesJson    Json?
+  metadataJson        Json?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
+
+  book    Book            @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  run     BookAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  chapter BookChapter     @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+
+  @@unique([runId, chapterId, stageKey])
+  @@index([bookId, contentVersionId, chapterOrderIndex, stageKey])
+  @@index([runId, stageKey, chapterOrderIndex])
 }
 
 model BookValidationFailure {
@@ -1580,7 +1689,7 @@ model BookPresenceMap {
 model BookProcessingReport {
   id               String             @id @default(cuid())
   bookId           String
-  contentVersionId String             @unique
+  contentVersionId String
   runId            String
   coverage         BookCoverageStatus @default(partial)
   reportJson       Json
@@ -1592,6 +1701,68 @@ model BookProcessingReport {
   book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
   @@index([bookId, coverage])
+  @@index([bookId, contentVersionId, createdAt])
+  @@index([runId])
+}
+
+model BookChatTurnMetric {
+  id                  String   @id @default(cuid())
+  bookId              String
+  threadId            String
+  messageId           String   @unique
+  chatModel           String
+  embeddingModel      String
+  selectedToolsJson   Json     @default("[]")
+  toolConfigKey       String
+  promptVariant       String
+  systemPromptVersion String
+  pricingVersion      String
+  modelInputTokens    Int      @default(0)
+  modelOutputTokens   Int      @default(0)
+  modelTotalTokens    Int      @default(0)
+  embeddingInputTokens Int     @default(0)
+  chatCostUsd         Float    @default(0)
+  embeddingCostUsd    Float    @default(0)
+  totalCostUsd        Float    @default(0)
+  totalLatencyMs      Int      @default(0)
+  answerLengthChars   Int      @default(0)
+  citationCount       Int      @default(0)
+  fallbackUsed        Boolean  @default(false)
+  fallbackKind        String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  book    Book                  @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  thread  BookChatThread        @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  message BookChatThreadMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  toolRuns BookChatToolRun[]
+
+  @@index([bookId, createdAt])
+  @@index([threadId, createdAt])
+}
+
+model BookChatToolRun {
+  id                 String   @id @default(cuid())
+  turnMetricId       String
+  toolName           String
+  orderIndex         Int
+  latencyMs          Int      @default(0)
+  argsSummaryJson    Json     @default("{}")
+  resultSummaryJson  Json     @default("{}")
+  errorCode          String?
+  errorMessage       String?
+  storageProvider    String?
+  payloadKey         String?
+  payloadSizeBytes   Int      @default(0)
+  payloadSha256      String?
+  compression        String?
+  createdAt          DateTime @default(now())
+
+  turnMetric BookChatTurnMetric @relation(fields: [turnMetricId], references: [id], onDelete: Cascade)
+
+  @@unique([turnMetricId, orderIndex])
+  @@index([toolName, createdAt])
+  @@index([turnMetricId, createdAt])
 }
 
 model Outbox {

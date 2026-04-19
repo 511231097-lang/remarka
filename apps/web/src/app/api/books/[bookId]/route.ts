@@ -1,4 +1,4 @@
-import { LocalBlobStore, S3BlobStore, prisma } from "@remarka/db";
+import { LocalBlobStore, S3BlobStore, createArtifactBlobStoreFromEnv, prisma } from "@remarka/db";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
 import { toBookCoreDTO } from "@/lib/books";
@@ -68,6 +68,14 @@ async function deleteBookBlob(params: { storageProvider: string; storageKey: str
   if (lastError) {
     return;
   }
+}
+
+async function deleteArtifactPayloadsForBook(bookId: string): Promise<void> {
+  const store = createArtifactBlobStoreFromEnv();
+  await Promise.allSettled([
+    store.deletePrefix(`analysis-runs/${bookId}`),
+    store.deletePrefix(`chat-runs/${bookId}`),
+  ]);
 }
 
 async function resolveBook(context: RouteContext) {
@@ -192,6 +200,12 @@ export async function DELETE(_request: Request, context: RouteContext) {
     });
   } catch {
     // Blob cleanup failures should not block successful book deletion.
+  }
+
+  try {
+    await deleteArtifactPayloadsForBook(bookId);
+  } catch {
+    // Artifact payload cleanup failures should not block successful book deletion.
   }
 
   return new NextResponse(null, { status: 204 });

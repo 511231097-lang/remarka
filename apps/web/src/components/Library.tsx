@@ -52,7 +52,6 @@ function BookShelfCover({ book }: { book: BookCardDTO }) {
       ) : (
         <div className={`absolute inset-0 bg-gradient-to-br ${resolveCoverTheme(book.id)}`} />
       )}
-
       <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/92 via-black/42 via-28% to-transparent" />
       <div className="absolute inset-x-0 bottom-0 z-10 px-3 pb-3 pt-10 text-white">
         <p className="line-clamp-2 text-[0.98rem] leading-[1.1]">{title}</p>
