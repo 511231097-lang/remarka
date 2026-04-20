@@ -2,10 +2,12 @@ import type { NextRequest } from "next/server";
 import { NextResponse } from "next/server";
 import { getToken } from "next-auth/jwt";
 
-const PUBLIC_PATHS = ["/", "/signin"];
+const PUBLIC_PATHS = ["/", "/signin", "/explore", "/plans", "/cookie-policy", "/about"];
 
 function isPublicPath(pathname: string): boolean {
   if (PUBLIC_PATHS.includes(pathname)) return true;
+  if (pathname.startsWith("/explore/")) return true;
+  if (pathname.startsWith("/plans/")) return true;
   if (pathname.startsWith("/api/auth/")) return true;
   if (pathname.startsWith("/api/")) return true;
   return false;

@@ -2,7 +2,7 @@
 
 import { motion } from "motion/react";
 import { Crown, Check, Sparkles } from "lucide-react";
-import { currentUser, plans } from "@/lib/mockData";
+import { currentUser } from "@/lib/mockData";
 
 export function Plans() {
   const isPlusUser = currentUser.plan.type === "plus";
@@ -53,9 +53,9 @@ export function Plans() {
               <li className="flex items-start gap-3">
                 <Check className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
                 <div>
-                  <p className="text-foreground">Публичные книги</p>
+                  <p className="text-foreground">Доступ к каталогу</p>
                   <p className="text-sm text-muted-foreground">
-                    Делитесь анализами с сообществом
+                    Изучайте готовые анализы
                   </p>
                 </div>
               </li>
@@ -122,9 +122,9 @@ export function Plans() {
               <li className="flex items-start gap-3">
                 <Check className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
                 <div>
-                  <p className="text-foreground">Приватные книги</p>
+                  <p className="text-foreground">Приоритетная обработка</p>
                   <p className="text-sm text-muted-foreground">
-                    Создавайте личные анализы для себя
+                    Ускоренная очередь анализа
                   </p>
                 </div>
               </li>
@@ -196,7 +196,7 @@ export function Plans() {
                   <td className="p-4 text-center text-foreground">Безлимитно</td>
                 </tr>
                 <tr>
-                  <td className="p-4 text-foreground">Приватные книги</td>
+                  <td className="p-4 text-foreground">Приоритетная обработка</td>
                   <td className="p-4 text-center">
                     <span className="text-muted-foreground">—</span>
                   </td>

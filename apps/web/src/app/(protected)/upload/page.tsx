@@ -8,7 +8,5 @@ export default async function UploadPage() {
     redirect("/signin");
   }
 
-  return (
-    <UploadFlow defaultBookVisibilityPublic={authUser.defaultBookVisibilityPublic} />
-  );
+  return <UploadFlow />;
 }

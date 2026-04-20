@@ -139,7 +139,7 @@ export function Library() {
     <div className="min-h-screen bg-background">
       <div className="max-w-6xl mx-auto px-6 py-12">
         <div className="mb-12">
-          <h1 className="text-3xl text-foreground mb-2">Мои книги</h1>
+          <h1 className="text-3xl text-foreground mb-2">Моя библиотека</h1>
           <p className="text-muted-foreground">
             {myBooks.length} {myBooks.length === 1 ? "книга" : "книги"}
           </p>

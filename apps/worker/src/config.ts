@@ -80,6 +80,7 @@ type ExtractProvider = "timeweb" | "kia" | "vertex";
 type ArtifactStorageProvider = "local" | "s3";
 type BookStorageProvider = "local" | "s3";
 type VertexModelTier = "lite" | "flash" | "pro";
+type AnalysisQueueMode = "outbox" | "pgboss-hybrid";
 
 const DEFAULT_VERTEX_MODEL_BY_TIER: Record<VertexModelTier, string> = {
   lite: "gemini-3.1-flash-lite-preview",
@@ -205,6 +206,11 @@ const defaultBooksLocalDir =
   String(process.env.BOOKS_LOCAL_DIR || `${defaultImportBlobDir}/books`).trim() || `${defaultImportBlobDir}/books`;
 const defaultBooksS3Region = "us-east-1";
 const defaultBooksS3KeyPrefix = "remarka/books";
+const configuredAnalysisQueueModeRaw = String(process.env.ANALYSIS_QUEUE_MODE || "pgboss-hybrid")
+  .trim()
+  .toLowerCase();
+const configuredAnalysisQueueMode: AnalysisQueueMode =
+  configuredAnalysisQueueModeRaw === "outbox" ? "outbox" : "pgboss-hybrid";
 
 export const workerConfig = {
   databaseUrl: getRequiredEnv("DATABASE_URL"),
@@ -219,6 +225,26 @@ export const workerConfig = {
     retryableFailureDelayMs: getIntEnv("OUTBOX_RETRYABLE_FAILURE_DELAY_MS", 15_000),
     staleTaskSweepIntervalMs: getIntEnv("BOOK_ANALYZER_STALE_SWEEP_INTERVAL_MS", 60_000),
     staleTaskTtlMs: getIntEnv("BOOK_ANALYZER_STALE_TASK_TTL_MS", 5_400_000),
+  },
+  analysisQueue: {
+    mode: configuredAnalysisQueueMode,
+    dispatcherEnabled: getBoolEnv("ANALYSIS_DISPATCHER_ENABLED", true),
+    executorConcurrency: getIntEnv("ANALYSIS_EXECUTOR_CONCURRENCY", 1),
+    jobRetryLimit: getIntEnv("ANALYSIS_JOB_RETRY_LIMIT", 5),
+    jobRetryBaseMs: getIntEnv("ANALYSIS_JOB_RETRY_BASE_MS", 5_000),
+    watchdogIntervalMs: getIntEnv("ANALYSIS_WATCHDOG_INTERVAL_MS", 60_000),
+    runningStaleTtlMs: getIntEnv("ANALYSIS_RUNNING_STALE_TTL_MS", 45 * 60_000),
+    queuedStaleTtlMs: getIntEnv("ANALYSIS_QUEUED_STALE_TTL_MS", 10 * 60_000),
+    fairSharePerUserInFlight: getIntEnv("ANALYSIS_FAIR_SHARE_PER_USER_IN_FLIGHT", 1),
+    fairShareDeferMs: getIntEnv("ANALYSIS_FAIR_SHARE_DEFER_MS", 15_000),
+  },
+  showcaseInternalApi: {
+    baseUrl: String(process.env.SHOWCASE_INTERNAL_API_BASE_URL || "http://web:3000")
+      .trim()
+      .replace(/\/+$/, ""),
+    token: String(process.env.INTERNAL_WORKER_TOKEN || "remarka-internal-dev-token").trim(),
+    timeoutMs: getIntEnv("SHOWCASE_INTERNAL_API_TIMEOUT_MS", 45_000),
+    maxRetries: getIntEnv("SHOWCASE_INTERNAL_API_MAX_RETRIES", 2),
   },
   imports: {
     blobDir: defaultImportBlobDir,

@@ -5,6 +5,7 @@ import {
   createNpzPrismaAdapter,
   putArtifactPayload,
   replaceBookChatToolRuns,
+  resolveBookTextCorpus,
   resolvePricingVersion,
   upsertBookChatTurnMetric,
   prisma as basePrisma,
@@ -42,6 +43,18 @@ function getChatArtifactBlobStore() {
   }
   return chatArtifactBlobStore;
 }
+
+const bookTextCorpusLogger = {
+  info(message: string, data?: Record<string, unknown>) {
+    console.info(message, data || {});
+  },
+  warn(message: string, data?: Record<string, unknown>) {
+    console.warn(message, data || {});
+  },
+  error(message: string, data?: Record<string, unknown>) {
+    console.error(message, data || {});
+  },
+};
 
 export type ChatInputMessage = {
   role: "user" | "assistant";
@@ -1223,20 +1236,13 @@ async function getLexicalCorpusCache(params: {
     bookId: params.bookId,
     cacheKey: `lexical:${context.cacheKey}`,
     loader: async () => {
-      const [chapters, scenes] = await Promise.all([
-        prisma.bookChapter.findMany({
-          where: {
-            bookId: params.bookId,
-          },
-          orderBy: {
-            orderIndex: "asc",
-          },
-          select: {
-            id: true,
-            orderIndex: true,
-            title: true,
-            rawText: true,
-          },
+      const [resolvedCorpus, scenes] = await Promise.all([
+        resolveBookTextCorpus({
+          client: prisma,
+          bookId: params.bookId,
+          logger: bookTextCorpusLogger,
+          cacheTtlMs: BOOK_SEARCH_CACHE_TTL_MS,
+          cacheMaxBooks: BOOK_SEARCH_CACHE_MAX_BOOKS,
         }),
         prisma.bookScene.findMany({
           where: {
@@ -1251,6 +1257,12 @@ async function getLexicalCorpusCache(params: {
           },
         }),
       ]);
+      const chapters = resolvedCorpus.chapters.map((chapter) => ({
+        id: chapter.chapterId,
+        orderIndex: chapter.orderIndex,
+        title: chapter.title,
+        rawText: chapter.rawText,
+      }));
 
       const scenesByChapterId = new Map<
         string,
@@ -1840,18 +1852,14 @@ async function getParagraphSliceTool(params: {
   paragraphStart: number;
   paragraphEnd: number;
 }): Promise<ParagraphSliceResult | null> {
-  const chapter = await prisma.bookChapter.findFirst({
-    where: {
-      id: params.chapterId,
-      bookId: params.bookId,
-    },
-    select: {
-      id: true,
-      orderIndex: true,
-      title: true,
-      rawText: true,
-    },
+  const corpus = await resolveBookTextCorpus({
+    client: prisma,
+    bookId: params.bookId,
+    logger: bookTextCorpusLogger,
+    cacheTtlMs: BOOK_SEARCH_CACHE_TTL_MS,
+    cacheMaxBooks: BOOK_SEARCH_CACHE_MAX_BOOKS,
   });
+  const chapter = corpus.chapters.find((item) => item.chapterId === params.chapterId);
 
   if (!chapter) return null;
 
@@ -1867,7 +1875,7 @@ async function getParagraphSliceTool(params: {
   if (!sliceText) return null;
 
   return {
-    chapterId: chapter.id,
+    chapterId: chapter.chapterId,
     chapterOrderIndex: chapter.orderIndex,
     chapterTitle: chapter.title,
     paragraphStart: from,
@@ -3502,11 +3510,12 @@ async function assertBookExists(bookId: string) {
   }
 }
 
-async function assertThreadBelongsToBook(params: { bookId: string; threadId: string }) {
+async function assertThreadBelongsToBook(params: { bookId: string; threadId: string; ownerUserId?: string }) {
   const thread = await prisma.bookChatThread.findFirst({
     where: {
       id: params.threadId,
       bookId: params.bookId,
+      ...(params.ownerUserId ? { ownerUserId: params.ownerUserId } : {}),
     },
     select: {
       id: true,
@@ -3538,11 +3547,15 @@ async function assertThreadBelongsToBook(params: { bookId: string; threadId: str
   return thread;
 }
 
-export async function listBookChatThreads(bookId: string): Promise<BookChatThreadDTO[]> {
-  await assertBookExists(bookId);
+export async function listBookChatThreads(params: {
+  bookId: string;
+  ownerUserId?: string;
+}): Promise<BookChatThreadDTO[]> {
+  await assertBookExists(params.bookId);
   const rows = await prisma.bookChatThread.findMany({
     where: {
-      bookId,
+      bookId: params.bookId,
+      ...(params.ownerUserId ? { ownerUserId: params.ownerUserId } : {}),
     },
     orderBy: [
       {
@@ -3580,12 +3593,14 @@ export async function listBookChatThreads(bookId: string): Promise<BookChatThrea
 
 export async function createBookChatThread(params: {
   bookId: string;
+  ownerUserId: string;
   title?: string;
 }): Promise<BookChatThreadDTO> {
   await assertBookExists(params.bookId);
   const created = await prisma.bookChatThread.create({
     data: {
       bookId: params.bookId,
+      ownerUserId: params.ownerUserId,
       title: clampThreadTitle(String(params.title || "").trim() || "Новый чат"),
     },
     select: {
@@ -3617,12 +3632,14 @@ export async function createBookChatThread(params: {
 export async function deleteBookChatThread(params: {
   bookId: string;
   threadId: string;
+  ownerUserId?: string;
 }) {
   await assertBookExists(params.bookId);
   const removed = await prisma.bookChatThread.deleteMany({
     where: {
       id: params.threadId,
       bookId: params.bookId,
+      ...(params.ownerUserId ? { ownerUserId: params.ownerUserId } : {}),
     },
   });
   if (removed.count === 0) {
@@ -3633,6 +3650,7 @@ export async function deleteBookChatThread(params: {
 export async function listBookChatMessages(params: {
   bookId: string;
   threadId: string;
+  ownerUserId?: string;
 }): Promise<BookChatMessageDTO[]> {
   await assertThreadBelongsToBook(params);
 
@@ -3937,6 +3955,7 @@ async function streamBookChatAnswer(params: {
 export async function streamBookChatThreadReply(params: {
   bookId: string;
   threadId: string;
+  ownerUserId?: string;
   userText: string;
   selectedTools?: readonly BookChatToolName[];
   onDelta: (delta: string) => void | Promise<void>;
@@ -3956,6 +3975,7 @@ export async function streamBookChatThreadReply(params: {
   const threadBefore = await assertThreadBelongsToBook({
     bookId: params.bookId,
     threadId: params.threadId,
+    ownerUserId: params.ownerUserId,
   });
 
   const userMessageRow = await prisma.bookChatMessage.create({
@@ -4077,6 +4097,7 @@ export async function streamBookChatThreadReply(params: {
   const threadAfter = await assertThreadBelongsToBook({
     bookId: params.bookId,
     threadId: params.threadId,
+    ownerUserId: params.ownerUserId,
   });
 
   return {

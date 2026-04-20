@@ -1,4 +1,13 @@
-import { LocalBlobStore, S3BlobStore, enqueueOutboxEvent, type BlobStore, prisma } from "@remarka/db";
+import { randomUUID } from "node:crypto";
+import {
+  LocalBlobStore,
+  S3BlobStore,
+  createBookTextCorpusBlobStoreFromEnv,
+  enqueueOutboxEvent,
+  putBookTextCorpus,
+  type BlobStore,
+  prisma,
+} from "@remarka/db";
 import {
   BookImportError,
   detectBookFormatFromFileName,
@@ -48,9 +57,11 @@ async function resolveInitialBookCoverUrl(params: {
     charactersCount: 0,
     themesCount: 0,
     locationsCount: 0,
-    likesCount: 0,
-    isLiked: false,
-    canLike: false,
+    libraryUsersCount: 0,
+    isInLibrary: false,
+    canAddToLibrary: false,
+    canRemoveFromLibrary: false,
+    isOwner: false,
   };
 
   try {
@@ -93,22 +104,14 @@ function resolveUploadFormat(fileName: string): BookFormat | null {
   return null;
 }
 
-function parseScope(value: string | null): "explore" | "library" | "favorites" {
+function parseScope(value: string | null): "explore" | "library" {
   if (value === "library") return "library";
-  if (value === "favorites") return "favorites";
+  if (value === "favorites") return "library";
   return "explore";
 }
 
 function parseSort(value: string | null): "recent" | "popular" {
   return value === "popular" ? "popular" : "recent";
-}
-
-function parseIsPublic(value: FormDataEntryValue | null): boolean | null {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) return null;
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  return null;
 }
 
 function resolveMimeType(format: BookFormat, fileType: string): string {
@@ -140,6 +143,10 @@ function resolveChapterRawText(chapter: ParsedChapter): string {
     .filter(Boolean);
 
   return normalizeWhitespace(chunks.join("\n\n"));
+}
+
+function createOpaqueId(): string {
+  return `c${randomUUID().replace(/-/g, "").slice(0, 24)}`;
 }
 
 function resolveLocalBooksBlobRoot(): string {
@@ -185,13 +192,14 @@ function resolveBooksBlobStore(): BlobStore {
 }
 
 export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const scope = parseScope(searchParams.get("scope"));
   const authUser = await resolveAuthUser();
-  if (!authUser) {
+  if (scope === "library" && !authUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { searchParams } = new URL(request.url);
-  const scope = parseScope(searchParams.get("scope"));
+  const viewerUserId = authUser?.id || "__anonymous__";
   const sort = parseSort(searchParams.get("sort"));
   const q = String(searchParams.get("q") || "").trim();
 
@@ -203,11 +211,9 @@ export async function GET(request: Request) {
   andFilters.push({ analysisStatus: "completed" });
 
   if (scope === "library") {
-    andFilters.push({ ownerUserId: authUser.id });
-  } else if (scope === "favorites") {
-    andFilters.push({ isPublic: true });
-    andFilters.push({ ownerUserId: { not: authUser.id } });
-    andFilters.push({ likes: { some: { userId: authUser.id } } });
+    andFilters.push({
+      OR: [{ ownerUserId: authUser!.id }, { likes: { some: { userId: authUser!.id } } }],
+    });
   } else {
     andFilters.push({ isPublic: true });
   }
@@ -251,7 +257,7 @@ export async function GET(request: Request) {
         },
         likes: {
           where: {
-            userId: authUser.id,
+            userId: viewerUserId,
           },
           select: {
             bookId: true,
@@ -269,7 +275,7 @@ export async function GET(request: Request) {
     }),
   ]);
 
-  const cards = rows.map((row) => toBookCardDTO(row, authUser.id));
+  const cards = rows.map((row) => toBookCardDTO(row, authUser?.id || null));
 
   return NextResponse.json({
     items: cards,
@@ -314,7 +320,10 @@ export async function POST(request: Request) {
   let parsedTitle: string | null = null;
   let parsedAuthor: string | null = null;
   let parsedSummary: string | null = null;
-  let chaptersToCreate: Array<{ orderIndex: number; title: string; summary: string | null; rawText: string }> = [];
+  const preparedBookId = createOpaqueId();
+  const dualWriteRawText = parseBooleanEnv(process.env.BOOK_TEXT_CORPUS_DUAL_WRITE_ENABLED, true);
+  let chaptersToCreate: Array<{ id: string; orderIndex: number; title: string; summary: string | null; rawText: string }> =
+    [];
 
   try {
     const parsed = await parseBook({
@@ -332,6 +341,7 @@ export async function POST(request: Request) {
     chaptersToCreate = normalizedBook.chapters.map((chapter, index) => {
       const orderIndex = index + 1;
       return {
+        id: createOpaqueId(),
         orderIndex,
         title: resolveChapterTitle(chapter, orderIndex),
         summary: null,
@@ -364,65 +374,123 @@ export async function POST(request: Request) {
     ownerId: authUser.id,
   });
 
-  const created = await prisma.$transaction(async (tx) => {
-    const createdBook = await tx.book.create({
-      data: {
-        ownerUserId: authUser.id,
-        title: resolvedBookTitle,
-        author: parsedAuthor,
-        coverUrl: resolvedCoverUrl,
-        summary: parsedSummary,
-        chapterCount: chaptersToCreate.length,
-        isPublic: parseIsPublic(formData.get("isPublic")) ?? authUser.defaultBookVisibilityPublic,
-        analysisState: "queued",
-        analysisStatus: "queued",
-        analysisError: null,
-        analysisTotalBlocks: 0,
-        analysisCheckedBlocks: 0,
-        analysisPromptTokens: 0,
-        analysisCompletionTokens: 0,
-        analysisTotalTokens: 0,
-        analysisChapterStatsJson: [],
-        analysisRequestedAt: new Date(),
-        analysisStartedAt: null,
-        analysisFinishedAt: null,
-        analysisCompletedAt: null,
-        fileName: fileEntry.name,
-        mimeType: resolveMimeType(format, fileEntry.type),
-        sizeBytes: blob.sizeBytes,
-        storageProvider: blob.provider,
-        storageKey: blob.storageKey,
-        fileSha256: blob.sha256,
-        chapters: {
-          create: chaptersToCreate,
-        },
-      },
-      include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            image: true,
+  let textCorpusBlobStore: BlobStore;
+  let textCorpusBlob: Awaited<ReturnType<typeof putBookTextCorpus>>;
+  try {
+    textCorpusBlobStore = createBookTextCorpusBlobStoreFromEnv();
+    textCorpusBlob = await putBookTextCorpus({
+      store: textCorpusBlobStore,
+      bookId: preparedBookId,
+      chapters: chaptersToCreate.map((chapter) => ({
+        chapterId: chapter.id,
+        orderIndex: chapter.orderIndex,
+        title: chapter.title,
+        rawText: chapter.rawText,
+      })),
+    });
+  } catch {
+    return NextResponse.json({ error: "Failed to store parsed text corpus" }, { status: 500 });
+  }
+
+  const created = await (async () => {
+    try {
+      return await prisma.$transaction(async (tx): Promise<
+        Prisma.BookGetPayload<{
+          include: {
+            owner: {
+              select: {
+                id: true;
+                name: true;
+                email: true;
+                image: true;
+              };
+            };
+          };
+        }>
+      > => {
+        const createdBook = await tx.book.create({
+          data: {
+            id: preparedBookId,
+            ownerUserId: authUser.id,
+            title: resolvedBookTitle,
+            author: parsedAuthor,
+            coverUrl: resolvedCoverUrl,
+            summary: parsedSummary,
+            chapterCount: chaptersToCreate.length,
+            isPublic: false,
+            analysisState: "queued",
+            analysisStatus: "queued",
+            analysisError: null,
+            analysisTotalBlocks: 0,
+            analysisCheckedBlocks: 0,
+            analysisPromptTokens: 0,
+            analysisCompletionTokens: 0,
+            analysisTotalTokens: 0,
+            analysisChapterStatsJson: [],
+            analysisRequestedAt: new Date(),
+            analysisStartedAt: null,
+            analysisFinishedAt: null,
+            analysisCompletedAt: null,
+            fileName: fileEntry.name,
+            mimeType: resolveMimeType(format, fileEntry.type),
+            sizeBytes: blob.sizeBytes,
+            storageProvider: blob.provider,
+            storageKey: blob.storageKey,
+            fileSha256: blob.sha256,
+            textCorpusStorageProvider: textCorpusBlob.provider,
+            textCorpusStorageKey: textCorpusBlob.storageKey,
+            textCorpusSizeBytes: textCorpusBlob.sizeBytes,
+            textCorpusSha256: textCorpusBlob.sha256,
+            textCorpusCompression: textCorpusBlob.compression,
+            textCorpusSchemaVersion: textCorpusBlob.schemaVersion,
+            chapters: {
+              create: chaptersToCreate.map((chapter) => ({
+                id: chapter.id,
+                orderIndex: chapter.orderIndex,
+                title: chapter.title,
+                summary: chapter.summary,
+                rawText: dualWriteRawText ? chapter.rawText : null,
+              })),
+            },
           },
-        },
-      },
-    });
+          include: {
+            owner: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+          },
+        });
 
-    await enqueueOutboxEvent({
-      client: tx,
-      aggregateType: "book",
-      aggregateId: createdBook.id,
-      eventType: "book.npz-analysis.requested",
-      payloadJson: {
-        bookId: createdBook.id,
-        requestedAt: new Date().toISOString(),
-        source: "auto_upload",
-      },
-    });
+        await enqueueOutboxEvent({
+          client: tx,
+          aggregateType: "book",
+          aggregateId: createdBook.id,
+          eventType: "book.npz-analysis.requested",
+          payloadJson: {
+            bookId: createdBook.id,
+            ownerUserId: createdBook.ownerUserId,
+            requestedAt: new Date().toISOString(),
+            requestId: randomUUID(),
+            triggerSource: "auto_upload",
+            source: "auto_upload",
+          },
+        });
 
-    return createdBook;
-  });
+        return createdBook;
+      });
+    } catch (error) {
+      try {
+        await textCorpusBlobStore.delete(textCorpusBlob.storageKey);
+      } catch {
+        // keep upload flow resilient; orphan cleanup can run later if needed
+      }
+      throw error;
+    }
+  })();
 
   const dto = toBookCoreDTO(created);
   dto.canManage = true;

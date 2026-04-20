@@ -2,8 +2,6 @@
 
 import { motion } from "motion/react";
 import {
-  BookOpen,
-  Heart,
   Calendar,
   Mail,
   Crown,
@@ -12,8 +10,7 @@ import {
   Sun,
   Moon,
 } from "lucide-react";
-import { currentUser, mockBooks, plans } from "@/lib/mockData";
-import { useState } from "react";
+import { currentUser } from "@/lib/mockData";
 import Link from "next/link";
 import { useTheme } from "@/lib/ThemeContext";
 import { UserAvatar } from "@/components/UserAvatar";
@@ -23,63 +20,14 @@ interface ProfileProps {
     name: string | null;
     email: string | null;
     image: string | null;
-    defaultBookVisibilityPublic: boolean;
   };
 }
 
 export function Profile({ authUser }: ProfileProps) {
   const displayName = authUser.name?.trim() || currentUser.name;
   const displayEmail = authUser.email?.trim() || currentUser.email;
-  const myBooks = mockBooks.filter((b) => b.uploadedBy.id === currentUser.id);
-  const publicBooks = myBooks.filter((b) => b.isPublic);
-  const totalLikes = publicBooks.reduce(
-    (sum, book) => sum + book.likesCount,
-    0,
-  );
-  const [showPlans, setShowPlans] = useState(false);
-  const [defaultBookVisibilityPublic, setDefaultBookVisibilityPublic] = useState(
-    authUser.defaultBookVisibilityPublic,
-  );
-  const [privacySaving, setPrivacySaving] = useState(false);
-  const [privacyError, setPrivacyError] = useState<string | null>(null);
+  const showPlans = false;
   const { theme, toggleTheme } = useTheme();
-
-  async function handleDefaultBookVisibilityChange(nextValue: boolean) {
-    const previousValue = defaultBookVisibilityPublic;
-    setDefaultBookVisibilityPublic(nextValue);
-    setPrivacyError(null);
-    setPrivacySaving(true);
-
-    try {
-      const response = await fetch("/api/profile/settings", {
-        method: "PATCH",
-        headers: {
-          "content-type": "application/json",
-        },
-        body: JSON.stringify({
-          defaultBookVisibilityPublic: nextValue,
-        }),
-      });
-
-      const payload = await response.json().catch(() => ({}));
-      if (!response.ok) {
-        throw new Error(String(payload?.error || "Не удалось сохранить настройки"));
-      }
-
-      const savedValue =
-        typeof payload?.defaultBookVisibilityPublic === "boolean"
-          ? payload.defaultBookVisibilityPublic
-          : nextValue;
-      setDefaultBookVisibilityPublic(savedValue);
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Не удалось сохранить настройки";
-      setDefaultBookVisibilityPublic(previousValue);
-      setPrivacyError(message);
-    } finally {
-      setPrivacySaving(false);
-    }
-  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -110,40 +58,6 @@ export function Profile({ authUser }: ProfileProps) {
                 <span>На платформе с марта 2026</span>
               </div>
             </div>
-          </div>
-        </motion.div>
-
-        {/* Stats */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-12"
-        >
-          <div className="p-6 bg-card border border-border rounded-lg">
-            <div className="flex items-center gap-3 mb-2">
-              <BookOpen className="w-5 h-5 text-primary" />
-              <span className="text-3xl text-foreground">{myBooks.length}</span>
-            </div>
-            <p className="text-sm text-muted-foreground">Загружено книг</p>
-          </div>
-
-          <div className="p-6 bg-card border border-border rounded-lg">
-            <div className="flex items-center gap-3 mb-2">
-              <BookOpen className="w-5 h-5 text-primary" />
-              <span className="text-3xl text-foreground">
-                {publicBooks.length}
-              </span>
-            </div>
-            <p className="text-sm text-muted-foreground">Публичных анализов</p>
-          </div>
-
-          <div className="p-6 bg-card border border-border rounded-lg">
-            <div className="flex items-center gap-3 mb-2">
-              <Heart className="w-5 h-5 text-primary" />
-              <span className="text-3xl text-foreground">{totalLikes}</span>
-            </div>
-            <p className="text-sm text-muted-foreground">Получено лайков</p>
           </div>
         </motion.div>
 
@@ -191,22 +105,6 @@ export function Profile({ authUser }: ProfileProps) {
                   {currentUser.plan.features.maxBooks === "unlimited"
                     ? "Безлимитно книг"
                     : `До ${currentUser.plan.features.maxBooks} книг`}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                {currentUser.plan.features.privateBooks ? (
-                  <Check className="w-4 h-4 text-primary" />
-                ) : (
-                  <div className="w-4 h-4" />
-                )}
-                <span
-                  className={
-                    currentUser.plan.features.privateBooks
-                      ? "text-muted-foreground"
-                      : "text-muted-foreground/50"
-                  }
-                >
-                  Приватные книги
                 </span>
               </div>
               <div className="flex items-center gap-2">
@@ -262,11 +160,11 @@ export function Profile({ authUser }: ProfileProps) {
                   </li>
                   <li className="flex items-center gap-2">
                     <Check className="w-4 h-4 text-primary" />
-                    Только публичные книги
+                    Базовый анализ
                   </li>
                   <li className="flex items-center gap-2">
                     <Check className="w-4 h-4 text-primary" />
-                    Базовый анализ
+                    Доступ к каталогу
                   </li>
                 </ul>
                 <button
@@ -296,11 +194,11 @@ export function Profile({ authUser }: ProfileProps) {
                   </li>
                   <li className="flex items-center gap-2">
                     <Check className="w-4 h-4 text-primary" />
-                    Приватные книги
+                    Расширенный анализ
                   </li>
                   <li className="flex items-center gap-2">
                     <Check className="w-4 h-4 text-primary" />
-                    Расширенный анализ
+                    Приоритетная обработка
                   </li>
                   <li className="flex items-center gap-2">
                     <Check className="w-4 h-4 text-primary" />
@@ -355,54 +253,6 @@ export function Profile({ authUser }: ProfileProps) {
                   </>
                 )}
               </button>
-            </div>
-
-            <div className="p-6 bg-card border border-border rounded-lg">
-              <h3 className="text-foreground mb-2">Уведомления</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                Получайте уведомления о новых лайках и комментариях
-              </p>
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  defaultChecked
-                  className="w-5 h-5 rounded border-border text-primary focus:ring-primary"
-                />
-                <span className="text-sm text-foreground">
-                  Включить уведомления
-                </span>
-              </label>
-            </div>
-
-            <div className="p-6 bg-card border border-border rounded-lg">
-              <h3 className="text-foreground mb-2">Конфиденциальность</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                По умолчанию делать загруженные книги публичными
-              </p>
-              <label
-                className={`flex items-center gap-3 ${
-                  privacySaving ? "cursor-not-allowed opacity-70" : "cursor-pointer"
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  checked={defaultBookVisibilityPublic}
-                  onChange={(event) => {
-                    void handleDefaultBookVisibilityChange(event.target.checked);
-                  }}
-                  disabled={privacySaving}
-                  className="w-5 h-5 rounded border-border text-primary focus:ring-primary"
-                />
-                <span className="text-sm text-foreground">
-                  Публиковать автоматически
-                </span>
-              </label>
-              {privacySaving ? (
-                <p className="text-xs text-muted-foreground mt-3">Сохраняем...</p>
-              ) : null}
-              {privacyError ? (
-                <p className="text-xs text-destructive mt-3">{privacyError}</p>
-              ) : null}
             </div>
 
             <div className="p-6 bg-card border border-border rounded-lg">

@@ -545,12 +545,7 @@ export function BookChat() {
               </p>
             </div>
             {book ? (
-              <BookSettings
-                book={book}
-                onBookUpdated={(updatedBook) => {
-                  setBook(updatedBook);
-                }}
-              />
+              <BookSettings book={book} />
             ) : null}
           </div>
         </div>

@@ -139,12 +139,35 @@ function normalizeChapterStats(value: unknown): BookAnalysisStatusDTO["chapterSt
     .sort((left, right) => left.chapterOrderIndex - right.chapterOrderIndex);
 }
 
+function normalizeDegradation(value: unknown): {
+  degraded: boolean;
+  degradationReasons: string[];
+} {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      degraded: false,
+      degradationReasons: [],
+    };
+  }
+
+  const record = value as Record<string, unknown>;
+  const degradationReasons = Array.isArray(record.degradationReasons)
+    ? record.degradationReasons.map((item) => asString(item)).filter(Boolean)
+    : [];
+
+  return {
+    degraded: Boolean(record.degraded),
+    degradationReasons,
+  };
+}
+
 export async function buildBookAnalysisStatusDTO(bookId: string): Promise<BookAnalysisStatusDTO> {
   const [book, sourceChapterCount, sceneCount, paragraphEmbeddingCount] = await Promise.all([
     prisma.book.findUnique({
       where: { id: bookId },
       select: {
         id: true,
+        latestAnalysisRunId: true,
         analysisStatus: true,
         analysisError: true,
         analysisStartedAt: true,
@@ -156,6 +179,18 @@ export async function buildBookAnalysisStatusDTO(bookId: string): Promise<BookAn
     prisma.bookAnalysisScene.count({ where: { bookId } }),
     prisma.bookParagraphEmbedding.count({ where: { bookId } }),
   ]);
+
+  const latestRunQualityFlags =
+    book?.latestAnalysisRunId
+      ? (
+          await prisma.bookAnalysisRun.findUnique({
+            where: { id: book.latestAnalysisRunId },
+            select: {
+              qualityFlagsJson: true,
+            },
+          })
+        )?.qualityFlagsJson
+      : null;
 
   const resolvedStatus =
     book?.analysisStatus === "queued" ||
@@ -243,6 +278,7 @@ export async function buildBookAnalysisStatusDTO(bookId: string): Promise<BookAn
 
   const chatReadiness = buildBookChatReadiness(analyzers, capabilitySnapshot);
   const chapterStats = normalizeChapterStats(book?.analysisChapterStatsJson);
+  const degradation = normalizeDegradation(latestRunQualityFlags);
   const shouldPoll = resolvedStatus === "queued" || resolvedStatus === "running";
 
   return {
@@ -261,6 +297,8 @@ export async function buildBookAnalysisStatusDTO(bookId: string): Promise<BookAn
       validationFailures: 0,
     },
     chapterStats,
+    degraded: degradation.degraded,
+    degradationReasons: degradation.degradationReasons,
     shouldPoll,
     pollIntervalMs: shouldPoll ? 2500 : 0,
   };

@@ -130,6 +130,8 @@ export interface SceneDTO {
 export interface BookAnalysisDTO {
   configured: boolean;
   status: BookAnalysisStatus;
+  degraded: boolean;
+  degradationReasons: string[];
   checkedBlocks: number;
   totalBlocks: number;
   remainingBlocks: number;
@@ -210,6 +212,25 @@ function normalizeAnalysisStatus(value: unknown): BookAnalysisStatus {
   }
 
   return "not_started";
+}
+
+function normalizeDegradation(value: unknown): { degraded: boolean; degradationReasons: string[] } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return {
+      degraded: false,
+      degradationReasons: [],
+    };
+  }
+
+  const record = value as Record<string, unknown>;
+  const degradationReasons = Array.isArray(record.degradationReasons)
+    ? record.degradationReasons.map((item) => asString(item)).filter(Boolean)
+    : [];
+
+  return {
+    degraded: Boolean(record.degraded),
+    degradationReasons,
+  };
 }
 
 function normalizeChapterAnalysisStatus(value: unknown): BookAnalysisChapterStatDTO["status"] {
@@ -415,6 +436,7 @@ export function toBookAnalysisDTO(params: {
     analysisFinishedAt: Date | string | null;
     updatedAt: Date | string;
   };
+  latestRunQualityFlags?: unknown;
   artifactSummary?: {
     total?: number;
     failed?: number;
@@ -453,6 +475,7 @@ export function toBookAnalysisDTO(params: {
   const startedAt = asNullableIso(params.book.analysisStartedAt);
   const finishedAt = asNullableIso(params.book.analysisFinishedAt);
   const totalTokens = asNonNegativeInt(params.book.analysisTotalTokens);
+  const degradation = normalizeDegradation(params.latestRunQualityFlags);
   const artifacts: BookAnalysisArtifactSummaryDTO = {
     total: asNonNegativeInt(params.artifactSummary?.total),
     failed: asNonNegativeInt(params.artifactSummary?.failed),
@@ -462,6 +485,8 @@ export function toBookAnalysisDTO(params: {
   return {
     configured: Boolean(params.configured),
     status: normalizeAnalysisStatus(params.book.analysisStatus),
+    degraded: degradation.degraded,
+    degradationReasons: degradation.degradationReasons,
     checkedBlocks,
     totalBlocks,
     remainingBlocks: Math.max(0, totalBlocks - checkedBlocks),

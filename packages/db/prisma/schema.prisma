@@ -41,6 +41,11 @@ enum AnalysisStatus {
   failed
 }
 
+enum UserRole {
+  user
+  admin
+}
+
 enum BookAnalyzerType {
   summary
   characters
@@ -258,7 +263,7 @@ model Book {
   coverUrl                 String?
   summary                  String?
   chapterCount             Int               @default(0)
-  isPublic                 Boolean           @default(true)
+  isPublic                 Boolean           @default(false)
   analysisState            BookAnalysisState @default(queued)
   analysisStatus           AnalysisStatus    @default(not_started)
   analysisError            String?
@@ -280,6 +285,12 @@ model Book {
   storageProvider          String
   storageKey               String
   fileSha256               String
+  textCorpusStorageProvider String?
+  textCorpusStorageKey     String?
+  textCorpusSizeBytes      Int?
+  textCorpusSha256         String?
+  textCorpusCompression    String?
+  textCorpusSchemaVersion  String?
   createdAt                DateTime          @default(now())
   updatedAt                DateTime          @updatedAt
 
@@ -924,15 +935,18 @@ model BookChatMessage {
 model BookChatThread {
   id        String   @id @default(cuid())
   bookId    String
+  ownerUserId String
   title     String
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   book     Book                    @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  owner    User                    @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   messages BookChatThreadMessage[]
   turnMetrics BookChatTurnMetric[]
 
   @@index([bookId, updatedAt])
+  @@index([ownerUserId, updatedAt])
   @@index([createdAt])
 }
 
@@ -1789,11 +1803,15 @@ model User {
   emailVerified               DateTime?
   image                       String?
   defaultBookVisibilityPublic Boolean           @default(true)
+  role                        UserRole          @default(user)
   accounts                    Account[]
   sessions                    Session[]
   books                       Book[]
   bookLikes                   BookLike[]
   bookChatSessions            BookChatSession[]
+  chatThreads                 BookChatThread[]
+
+  @@index([role])
 }
 
 model Account {

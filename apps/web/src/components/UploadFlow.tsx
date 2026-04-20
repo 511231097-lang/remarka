@@ -1,19 +1,13 @@
 "use client";
 
 import { motion } from "motion/react";
-import { AlertCircle, CheckCircle2, Crown, FileText, Globe, Loader2, Lock, Upload } from "lucide-react";
-import Link from "next/link";
+import { AlertCircle, CheckCircle2, FileText, Loader2, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { createBook, getBookAnalysisStatus } from "@/lib/booksClient";
 import type { BookAnalysisChapterStatusDTO, BookAnalysisStatusDTO } from "@/lib/books";
-import { currentUser } from "@/lib/mockData";
 
 type UploadStep = "select" | "metadata" | "processing" | "complete";
-
-interface UploadFlowProps {
-  defaultBookVisibilityPublic: boolean;
-}
 
 function resolveChapterStateLabel(state: BookAnalysisChapterStatusDTO["state"]) {
   if (state === "completed") return "Прошла";
@@ -87,14 +81,10 @@ function resolveProcessingState(status: BookAnalysisStatusDTO | null, hasCreated
   };
 }
 
-export function UploadFlow({ defaultBookVisibilityPublic }: UploadFlowProps) {
-  const canCreatePrivate = currentUser.plan.features.privateBooks;
+export function UploadFlow() {
   const [step, setStep] = useState<UploadStep>("select");
   const [fileName, setFileName] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isPublic, setIsPublic] = useState(
-    canCreatePrivate ? defaultBookVisibilityPublic : true,
-  );
   const [createdBookId, setCreatedBookId] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<BookAnalysisStatusDTO | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -191,7 +181,6 @@ export function UploadFlow({ defaultBookVisibilityPublic }: UploadFlowProps) {
     try {
       const created = await createBook({
         file: selectedFile,
-        isPublic,
       });
 
       setCreatedBookId(created.id);
@@ -244,7 +233,7 @@ export function UploadFlow({ defaultBookVisibilityPublic }: UploadFlowProps) {
           className="max-w-md w-full space-y-6"
         >
           <div className="text-center space-y-2 mb-8">
-            <h1 className="text-2xl text-foreground">Настройки публикации</h1>
+            <h1 className="text-2xl text-foreground">Подтверждение загрузки</h1>
             <p className="text-muted-foreground">{fileName}</p>
           </div>
 
@@ -256,68 +245,8 @@ export function UploadFlow({ defaultBookVisibilityPublic }: UploadFlowProps) {
               </div>
             )}
 
-            <div>
-              <h3 className="text-foreground mb-4">Видимость анализа</h3>
-              <div className="space-y-3">
-                <label className="flex items-start gap-3 p-4 border border-border rounded-lg cursor-pointer hover:border-primary/30 transition-colors">
-                  <input
-                    type="radio"
-                    name="visibility"
-                    checked={isPublic}
-                    onChange={() => setIsPublic(true)}
-                    className="mt-1"
-                  />
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Globe className="w-4 h-4 text-primary" />
-                      <span className="text-foreground">Публичная</span>
-                    </div>
-                    <p className="text-sm text-muted-foreground">
-                      Анализ будет доступен всем пользователям в каталоге
-                    </p>
-                  </div>
-                </label>
-
-                <label
-                  className={`flex items-start gap-3 p-4 border border-border rounded-lg ${
-                    canCreatePrivate
-                      ? "cursor-pointer hover:border-primary/30"
-                      : "opacity-60 cursor-not-allowed"
-                  } transition-colors`}
-                >
-                  <input
-                    type="radio"
-                    name="visibility"
-                    checked={!isPublic}
-                    onChange={() => canCreatePrivate && setIsPublic(false)}
-                    disabled={!canCreatePrivate}
-                    className="mt-1"
-                  />
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Lock className="w-4 h-4" />
-                      <span className="text-foreground">Приватная</span>
-                      {!canCreatePrivate && (
-                        <span className="flex items-center gap-1 text-xs px-2 py-0.5 bg-primary/10 text-primary rounded-full">
-                          <Crown className="w-3 h-3" />
-                          Плюс
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-sm text-muted-foreground">
-                      Только вы сможете видеть этот анализ
-                    </p>
-                    {!canCreatePrivate && (
-                      <Link
-                        href="/plans"
-                        className="text-xs text-primary hover:underline mt-2 inline-block"
-                      >
-                        Обновить до тарифа Плюс
-                      </Link>
-                    )}
-                  </div>
-                </label>
-              </div>
+            <div className="rounded-lg border border-border bg-secondary/30 p-4 text-sm text-muted-foreground">
+              Книга будет добавлена в вашу библиотеку после завершения загрузки.
             </div>
 
             <button

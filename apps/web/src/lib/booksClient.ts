@@ -13,13 +13,14 @@ import type {
   BookChatStreamFinalEventDTO,
   BookChatStreamRequestDTO,
   BookCoreDTO,
-  BookLikeStateDTO,
+  BookLibraryStateDTO,
+  BookShowcaseDTO,
   BooksListResponseDTO,
   LiterarySectionKeyDTO,
 } from "@/lib/books";
 
 export interface ListBooksParams {
-  scope: "explore" | "library" | "favorites";
+  scope: "explore" | "library";
   q?: string;
   sort?: "recent" | "popular";
   page?: number;
@@ -65,17 +66,15 @@ export async function getBook(bookId: string): Promise<BookCoreDTO> {
   return safe.json();
 }
 
-export async function updateBookVisibility(bookId: string, isPublic: boolean): Promise<BookCoreDTO> {
-  const response = await fetch(`/api/books/${bookId}`, {
-    method: "PATCH",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify({ isPublic }),
+export async function getBookShowcase(bookId: string): Promise<BookShowcaseDTO | null> {
+  const response = await fetch(`/api/books/${bookId}/showcase`, {
+    method: "GET",
+    cache: "no-store",
   });
 
-  const safe = await ensureOk(response, "Не удалось обновить настройки книги");
-  return safe.json();
+  const safe = await ensureOk(response, "Не удалось загрузить витрину книги");
+  const payload = (await safe.json()) as { item?: BookShowcaseDTO | null };
+  return payload?.item || null;
 }
 
 export async function deleteBook(bookId: string): Promise<void> {
@@ -86,21 +85,21 @@ export async function deleteBook(bookId: string): Promise<void> {
   await ensureOk(response, "Не удалось удалить книгу");
 }
 
-export async function likeBook(bookId: string): Promise<BookLikeStateDTO> {
-  const response = await fetch(`/api/books/${bookId}/like`, {
+export async function addBookToLibrary(bookId: string): Promise<BookLibraryStateDTO> {
+  const response = await fetch(`/api/books/${bookId}/library`, {
     method: "POST",
   });
 
-  const safe = await ensureOk(response, "Не удалось поставить лайк");
+  const safe = await ensureOk(response, "Не удалось добавить книгу в библиотеку");
   return safe.json();
 }
 
-export async function unlikeBook(bookId: string): Promise<BookLikeStateDTO> {
-  const response = await fetch(`/api/books/${bookId}/like`, {
+export async function removeBookFromLibrary(bookId: string): Promise<BookLibraryStateDTO> {
+  const response = await fetch(`/api/books/${bookId}/library`, {
     method: "DELETE",
   });
 
-  const safe = await ensureOk(response, "Не удалось снять лайк");
+  const safe = await ensureOk(response, "Не удалось убрать книгу из библиотеки");
   return safe.json();
 }
 
@@ -116,7 +115,6 @@ export async function getBookChapters(bookId: string): Promise<BookChapterDTO[]>
 
 export interface CreateBookInput {
   file: File;
-  isPublic: boolean;
 }
 
 export type BookAnalyzerState = BookAnalyzerStateDTO;
@@ -127,7 +125,6 @@ export type BookChatStreamEvent = BookChatStreamEventDTO;
 export async function createBook(input: CreateBookInput): Promise<BookCoreDTO> {
   const formData = new FormData();
   formData.set("file", input.file);
-  formData.set("isPublic", String(input.isPublic));
 
   const response = await fetch("/api/books", {
     method: "POST",

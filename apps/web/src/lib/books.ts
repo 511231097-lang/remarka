@@ -16,6 +16,7 @@ import type {
   BookQuoteTag,
   BookQuoteTagLink,
   BookQuoteType,
+  BookSummaryArtifact,
   BookTheme,
   BookThemeQuote,
   User,
@@ -41,9 +42,11 @@ export interface BookCardDTO {
   charactersCount: number;
   themesCount: number;
   locationsCount: number;
-  likesCount: number;
-  isLiked: boolean;
-  canLike: boolean;
+  libraryUsersCount: number;
+  isInLibrary: boolean;
+  canAddToLibrary: boolean;
+  canRemoveFromLibrary: boolean;
+  isOwner: boolean;
 }
 
 export interface BookCoreDTO {
@@ -67,10 +70,10 @@ export interface BooksListResponseDTO {
   total: number;
 }
 
-export interface BookLikeStateDTO {
+export interface BookLibraryStateDTO {
   bookId: string;
-  isLiked: boolean;
-  likesCount: number;
+  isInLibrary: boolean;
+  libraryUsersCount: number;
 }
 
 export interface BookChapterDTO {
@@ -200,6 +203,71 @@ export interface BookLiterarySectionDTO {
 export interface BookLiteraryAnalysisDTO {
   bookId: string;
   sections: Record<LiterarySectionKeyDTO, BookLiterarySectionDTO>;
+  updatedAt: string;
+}
+
+export interface BookShowcaseThemeDTO {
+  name: string;
+  description: string;
+}
+
+export interface BookShowcaseSummaryDTO {
+  shortSummary: string;
+  mainIdea: string;
+}
+
+export interface BookShowcaseCharacterDTO {
+  name: string;
+  description: string;
+  rank: number;
+}
+
+export interface BookShowcaseEventDTO {
+  title: string;
+  importance: "critical" | "high" | "medium";
+  description: string;
+}
+
+export interface BookShowcaseQuoteDTO {
+  text: string;
+  chapterOrderIndex: number | null;
+  chapterTitle: string | null;
+}
+
+export interface BookShowcaseBlockStatsDTO {
+  ok: boolean;
+  usedFallback: boolean;
+  attempts: number;
+  elapsedMs: number;
+  modelInputTokens: number;
+  modelOutputTokens: number;
+  modelTotalTokens: number;
+  embeddingInputTokens: number;
+  totalCostUsd: number;
+  totalLatencyMs: number;
+}
+
+export interface BookShowcaseStatsDTO {
+  totalElapsedMs: number;
+  fallbackBlocks: Array<"summary" | "themes" | "characters" | "events" | "quotes">;
+  blocks: {
+    summary: BookShowcaseBlockStatsDTO;
+    themes: BookShowcaseBlockStatsDTO;
+    characters: BookShowcaseBlockStatsDTO;
+    events: BookShowcaseBlockStatsDTO;
+    quotes: BookShowcaseBlockStatsDTO;
+  };
+}
+
+export interface BookShowcaseDTO {
+  bookId: string;
+  summary: BookShowcaseSummaryDTO;
+  themes: BookShowcaseThemeDTO[];
+  characters: BookShowcaseCharacterDTO[];
+  keyEvents: BookShowcaseEventDTO[];
+  quotes: BookShowcaseQuoteDTO[];
+  stats: BookShowcaseStatsDTO;
+  generationMode: "chat_blocks" | "fallback" | "unknown";
   updatedAt: string;
 }
 
@@ -411,6 +479,8 @@ export interface BookAnalysisStatusDTO {
     validationFailures: number;
   };
   chapterStats: BookAnalysisChapterStatusDTO[];
+  degraded: boolean;
+  degradationReasons: string[];
   shouldPoll: boolean;
   pollIntervalMs: number;
 }
@@ -564,9 +634,14 @@ export function toBookOwnerDTO(owner: Pick<User, "id" | "name" | "email" | "imag
   };
 }
 
-export function toBookCardDTO(book: BookCardProjection, viewerUserId: string): BookCardDTO {
-  const isLiked = book.likes.length > 0;
-  const canLike = book.isPublic && book.ownerUserId !== viewerUserId;
+export function toBookCardDTO(book: BookCardProjection, viewerUserId?: string | null): BookCardDTO {
+  const normalizedViewerUserId = String(viewerUserId || "").trim();
+  const isViewerAuthenticated = Boolean(normalizedViewerUserId);
+  const isOwner = isViewerAuthenticated && book.ownerUserId === normalizedViewerUserId;
+  const hasLibraryEntry = isViewerAuthenticated && book.likes.length > 0;
+  const isInLibrary = isOwner || hasLibraryEntry;
+  const canAddToLibrary = isViewerAuthenticated && book.isPublic && !isOwner && !hasLibraryEntry;
+  const canRemoveFromLibrary = isViewerAuthenticated && !isOwner && hasLibraryEntry;
 
   return {
     id: book.id,
@@ -581,9 +656,11 @@ export function toBookCardDTO(book: BookCardProjection, viewerUserId: string): B
     charactersCount: book._count.bookCharacters,
     themesCount: book._count.bookThemes,
     locationsCount: book._count.bookLocations,
-    likesCount: book._count.likes,
-    isLiked,
-    canLike,
+    libraryUsersCount: book._count.likes,
+    isInLibrary,
+    canAddToLibrary,
+    canRemoveFromLibrary,
+    isOwner,
   };
 }
 
@@ -1167,6 +1244,189 @@ export function toBookLiteraryAnalysisDTO(
     bookId: analysis.bookId,
     sections,
     updatedAt: analysis.updatedAt.toISOString(),
+  };
+}
+
+function clampShowcaseText(value: unknown, maxChars: number): string {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, Math.max(1, maxChars - 1)).trimEnd()}…`;
+}
+
+function asShowcaseThemeList(value: unknown): BookShowcaseThemeDTO[] {
+  if (!Array.isArray(value)) return [];
+  const out: BookShowcaseThemeDTO[] = [];
+  for (const item of value) {
+    const row = asObject(item);
+    if (!row) continue;
+    const name = clampShowcaseText(row.name, 100);
+    const description = clampShowcaseText(row.description, 260);
+    if (!name || !description) continue;
+    out.push({ name, description });
+    if (out.length >= 10) break;
+  }
+  return out;
+}
+
+function asShowcaseCharacterList(value: unknown): BookShowcaseCharacterDTO[] {
+  if (!Array.isArray(value)) return [];
+  const out: BookShowcaseCharacterDTO[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index];
+    const row = asObject(item);
+    if (!row) continue;
+    const name = clampShowcaseText(row.name, 120);
+    const description = clampShowcaseText(row.description, 260);
+    const rankRaw = Number.parseInt(String(row.rank || ""), 10);
+    const rank = Number.isFinite(rankRaw) && rankRaw > 0 ? rankRaw : index + 1;
+    if (!name || !description) continue;
+    out.push({ name, description, rank });
+    if (out.length >= 10) break;
+  }
+  return out.sort((left, right) => left.rank - right.rank).map((item, index) => ({ ...item, rank: index + 1 }));
+}
+
+function asShowcaseEventList(value: unknown): BookShowcaseEventDTO[] {
+  if (!Array.isArray(value)) return [];
+  const out: BookShowcaseEventDTO[] = [];
+  for (const item of value) {
+    const row = asObject(item);
+    if (!row) continue;
+    const title = clampShowcaseText(row.title, 120);
+    const importanceRaw = String(row.importance || "").trim().toLowerCase();
+    const importance =
+      importanceRaw === "critical" || importanceRaw === "high" || importanceRaw === "medium"
+        ? (importanceRaw as "critical" | "high" | "medium")
+        : null;
+    const description = clampShowcaseText(row.description, 260);
+    if (!title || !importance || !description) continue;
+    out.push({ title, importance, description });
+    if (out.length >= 10) break;
+  }
+  return out;
+}
+
+function asShowcaseQuoteList(value: unknown): BookShowcaseQuoteDTO[] {
+  if (!Array.isArray(value)) return [];
+  const out: BookShowcaseQuoteDTO[] = [];
+  const seen = new Set<string>();
+  for (const item of value) {
+    const row = asObject(item);
+    if (!row) continue;
+    const text = clampShowcaseText(row.text, 360);
+    const chapterOrderIndexRaw = Number.parseInt(String(row.chapterOrderIndex || ""), 10);
+    const chapterOrderIndex = Number.isFinite(chapterOrderIndexRaw) && chapterOrderIndexRaw > 0 ? chapterOrderIndexRaw : null;
+    const chapterTitle = clampShowcaseText(row.chapterTitle, 180) || null;
+    if (!text || text.length < 10) continue;
+    const dedupeKey = text.toLocaleLowerCase("ru");
+    if (seen.has(dedupeKey)) continue;
+    seen.add(dedupeKey);
+    out.push({
+      text,
+      chapterOrderIndex,
+      chapterTitle,
+    });
+    if (out.length >= 10) break;
+  }
+  return out;
+}
+
+function resolveShowcaseGenerationMode(value: unknown): "chat_blocks" | "fallback" | "unknown" {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (normalized === "chat_blocks") return "chat_blocks";
+  if (normalized === "fallback") return "fallback";
+  return "unknown";
+}
+
+const SHOWCASE_BLOCK_KEYS = ["summary", "themes", "characters", "events", "quotes"] as const;
+type ShowcaseBlockKey = (typeof SHOWCASE_BLOCK_KEYS)[number];
+
+function toNonNegativeInteger(value: unknown): number {
+  const parsed = Number.parseInt(String(value || "").trim(), 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return parsed;
+}
+
+function toNonNegativeNumber(value: unknown): number {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0) return 0;
+  return parsed;
+}
+
+function asShowcaseBlockStats(value: unknown): BookShowcaseBlockStatsDTO {
+  const row = asObject(value) || {};
+  return {
+    ok: Boolean(row.ok),
+    usedFallback: Boolean(row.usedFallback),
+    attempts: toNonNegativeInteger(row.attempts),
+    elapsedMs: toNonNegativeInteger(row.elapsedMs),
+    modelInputTokens: toNonNegativeInteger(row.modelInputTokens),
+    modelOutputTokens: toNonNegativeInteger(row.modelOutputTokens),
+    modelTotalTokens: toNonNegativeInteger(row.modelTotalTokens),
+    embeddingInputTokens: toNonNegativeInteger(row.embeddingInputTokens),
+    totalCostUsd: Number(toNonNegativeNumber(row.totalCostUsd).toFixed(8)),
+    totalLatencyMs: toNonNegativeInteger(row.totalLatencyMs),
+  };
+}
+
+function asShowcaseStats(value: unknown): BookShowcaseStatsDTO {
+  const row = asObject(value) || {};
+  const blocks = asObject(row.blocks) || {};
+
+  const fallbackBlocks = Array.isArray(row.fallbackBlocks)
+    ? row.fallbackBlocks
+        .map((item) => String(item || "").trim().toLowerCase())
+        .filter((item): item is ShowcaseBlockKey =>
+          SHOWCASE_BLOCK_KEYS.some((blockKey) => blockKey === item)
+        )
+    : [];
+
+  return {
+    totalElapsedMs: toNonNegativeInteger(row.totalElapsedMs),
+    fallbackBlocks,
+    blocks: {
+      summary: asShowcaseBlockStats(blocks.summary),
+      themes: asShowcaseBlockStats(blocks.themes),
+      characters: asShowcaseBlockStats(blocks.characters),
+      events: asShowcaseBlockStats(blocks.events),
+      quotes: asShowcaseBlockStats(blocks.quotes),
+    },
+  };
+}
+
+export function toBookShowcaseDTO(
+  artifact: Pick<BookSummaryArtifact, "bookId" | "summary" | "metadataJson" | "updatedAt">
+): BookShowcaseDTO | null {
+  const metadata = asObject(artifact.metadataJson) || {};
+  const showcaseSource = asObject(metadata.showcase) || metadata;
+  const summarySource = asObject(showcaseSource.summary) || showcaseSource;
+
+  const shortSummary = clampShowcaseText(summarySource.shortSummary || artifact.summary, 360);
+  const mainIdea = clampShowcaseText(summarySource.mainIdea, 380);
+  const themes = asShowcaseThemeList(showcaseSource.themes);
+  const characters = asShowcaseCharacterList(showcaseSource.characters);
+  const keyEvents = asShowcaseEventList(showcaseSource.keyEvents);
+  const quotes = asShowcaseQuoteList(showcaseSource.quotes);
+  const stats = asShowcaseStats(metadata.stats);
+
+  if (!shortSummary && !mainIdea && themes.length === 0 && characters.length === 0 && keyEvents.length === 0 && quotes.length === 0) {
+    return null;
+  }
+
+  return {
+    bookId: artifact.bookId,
+    summary: {
+      shortSummary: shortSummary || "Краткая сводка временно недоступна.",
+      mainIdea: mainIdea || "Основная идея временно недоступна.",
+    },
+    themes,
+    characters,
+    keyEvents,
+    quotes,
+    stats,
+    generationMode: resolveShowcaseGenerationMode(metadata.generationMode),
+    updatedAt: artifact.updatedAt.toISOString(),
   };
 }
 

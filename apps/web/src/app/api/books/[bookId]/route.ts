@@ -129,52 +129,6 @@ export async function GET(_request: Request, context: RouteContext) {
   return NextResponse.json(dto);
 }
 
-export async function PATCH(request: Request, context: RouteContext) {
-  const authUser = await resolveAuthUser();
-  if (!authUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const resolved = await resolveBook(context);
-  if (resolved.error) return resolved.error;
-  const { book, bookId } = resolved;
-
-  if (book.ownerUserId !== authUser.id) {
-    return NextResponse.json({ error: "Book not found" }, { status: 404 });
-  }
-
-  let payload: unknown;
-  try {
-    payload = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const isPublic = (payload as { isPublic?: unknown })?.isPublic;
-  if (typeof isPublic !== "boolean") {
-    return NextResponse.json({ error: "isPublic must be a boolean" }, { status: 400 });
-  }
-
-  const updated = await prisma.book.update({
-    where: { id: bookId },
-    data: { isPublic },
-    include: {
-      owner: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          image: true,
-        },
-      },
-    },
-  });
-
-  const dto = toBookCoreDTO(updated);
-  dto.canManage = true;
-  return NextResponse.json(dto);
-}
-
 export async function DELETE(_request: Request, context: RouteContext) {
   const authUser = await resolveAuthUser();
   if (!authUser) {

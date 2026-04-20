@@ -37,7 +37,7 @@ async function resolveContext(context: RouteContext) {
   const book = await resolveAccessibleBook({ bookId, userId: authUser.id });
   if (!book) return { error: NextResponse.json({ error: "Book not found" }, { status: 404 }) };
 
-  return { bookId: book.id, sessionId };
+  return { bookId: book.id, sessionId, authUserId: authUser.id };
 }
 
 export async function GET(_request: Request, context: RouteContext) {
@@ -45,7 +45,10 @@ export async function GET(_request: Request, context: RouteContext) {
   if ("error" in resolved) return resolved.error;
 
   try {
-    const threads = await listBookChatThreads(resolved.bookId);
+    const threads = await listBookChatThreads({
+      bookId: resolved.bookId,
+      ownerUserId: resolved.authUserId,
+    });
     const thread = threads.find((item) => item.id === resolved.sessionId);
     if (!thread) return NextResponse.json({ error: "Session not found" }, { status: 404 });
 
@@ -68,6 +71,7 @@ export async function DELETE(_request: Request, context: RouteContext) {
     await deleteBookChatThread({
       bookId: resolved.bookId,
       threadId: resolved.sessionId,
+      ownerUserId: resolved.authUserId,
     });
 
     return new NextResponse(null, { status: 204 });

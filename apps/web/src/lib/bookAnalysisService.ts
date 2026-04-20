@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { Prisma } from "@prisma/client";
 import {
   createArtifactBlobStoreFromEnv,
@@ -121,11 +122,22 @@ async function readBookAnalysisArtifactSummary(bookId: string, runId?: string | 
 export async function getBookAnalysis(bookId: string): Promise<BookAnalysisDTO | null> {
   const row = await readBookAnalysisRecord(bookId);
   if (!row) return null;
-  const artifactSummary = await readBookAnalysisArtifactSummary(bookId, row.latestAnalysisRunId);
+  const [artifactSummary, latestRun] = await Promise.all([
+    readBookAnalysisArtifactSummary(bookId, row.latestAnalysisRunId),
+    row.latestAnalysisRunId
+      ? prisma.bookAnalysisRun.findUnique({
+          where: { id: row.latestAnalysisRunId },
+          select: {
+            qualityFlagsJson: true,
+          },
+        })
+      : null,
+  ]);
 
   return toBookAnalysisDTO({
     configured: hasVertexApiKey(),
     book: row,
+    latestRunQualityFlags: latestRun?.qualityFlagsJson ?? null,
     scenes: row.analysisScenes,
     artifactSummary,
   });
@@ -436,6 +448,7 @@ export async function requestBookAnalysis(bookId: string, source: AnalysisTrigge
       select: {
         id: true,
         analysisStatus: true,
+        ownerUserId: true,
       },
     });
 
@@ -480,7 +493,10 @@ export async function requestBookAnalysis(bookId: string, source: AnalysisTrigge
       eventType: "book.npz-analysis.requested",
       payloadJson: {
         bookId,
+        ownerUserId: book.ownerUserId,
         requestedAt,
+        requestId: randomUUID(),
+        triggerSource: source,
         source,
       } as Prisma.InputJsonValue,
     });
@@ -496,6 +512,7 @@ export async function requestBookAnalysis(bookId: string, source: AnalysisTrigge
   return toBookAnalysisDTO({
     configured: hasVertexApiKey(),
     book: row,
+    latestRunQualityFlags: null,
     scenes: row.analysisScenes,
     artifactSummary,
   });

@@ -35,7 +35,10 @@ export async function GET(_request: Request, context: RouteContext) {
   if (!book) return NextResponse.json({ error: "Book not found" }, { status: 404 });
 
   try {
-    const threads = await listBookChatThreads(book.id);
+    const threads = await listBookChatThreads({
+      bookId: book.id,
+      ownerUserId: authUser.id,
+    });
     return NextResponse.json({
       items: threads.map(toSessionDTO),
     });
@@ -70,6 +73,7 @@ export async function POST(request: Request, context: RouteContext) {
   try {
     const thread = await createBookChatThread({
       bookId: book.id,
+      ownerUserId: authUser.id,
       title,
     });
 

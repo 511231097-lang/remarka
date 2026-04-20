@@ -1,12 +1,24 @@
 "use client";
 
 import { motion } from "motion/react";
-import { BookOpen, Users, Lightbulb, Heart, TrendingUp, Clock, Search, ChevronLeft, ChevronRight, MapPin } from "lucide-react";
+import {
+  BookOpen,
+  BookmarkCheck,
+  BookmarkPlus,
+  Users,
+  Lightbulb,
+  TrendingUp,
+  Clock,
+  Search,
+  ChevronLeft,
+  ChevronRight,
+  MapPin,
+} from "lucide-react";
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { UserAvatar } from "@/components/UserAvatar";
 import { displayAuthor, type BookCardDTO } from "@/lib/books";
-import { likeBook, listBooks, unlikeBook } from "@/lib/booksClient";
+import { addBookToLibrary, listBooks, removeBookFromLibrary } from "@/lib/booksClient";
 
 type SortBy = "recent" | "popular";
 
@@ -16,7 +28,7 @@ export function Explore() {
   const [sortBy, setSortBy] = useState<SortBy>("popular");
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
-  const [likePendingIds, setLikePendingIds] = useState<Set<string>>(new Set());
+  const [libraryPendingIds, setLibraryPendingIds] = useState<Set<string>>(new Set());
   const [books, setBooks] = useState<BookCardDTO[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
@@ -68,16 +80,18 @@ export function Explore() {
     };
   }, [currentPage, searchQuery, sortBy]);
 
-  const toggleLike = async (book: BookCardDTO) => {
-    if (!book.canLike) return;
-    if (likePendingIds.has(book.id)) return;
+  const toggleLibrary = async (book: BookCardDTO) => {
+    if (!book.canAddToLibrary && !book.canRemoveFromLibrary) return;
+    if (libraryPendingIds.has(book.id)) return;
 
     const previousState = {
-      isLiked: book.isLiked,
-      likesCount: book.likesCount,
+      isInLibrary: book.isInLibrary,
+      libraryUsersCount: book.libraryUsersCount,
+      canAddToLibrary: book.canAddToLibrary,
+      canRemoveFromLibrary: book.canRemoveFromLibrary,
     };
 
-    setLikePendingIds((prev) => {
+    setLibraryPendingIds((prev) => {
       const next = new Set(prev);
       next.add(book.id);
       return next;
@@ -88,37 +102,41 @@ export function Explore() {
         item.id === book.id
           ? {
               ...item,
-              isLiked: !previousState.isLiked,
-              likesCount: Math.max(
+              isInLibrary: !previousState.isInLibrary,
+              libraryUsersCount: Math.max(
                 0,
-                previousState.likesCount + (previousState.isLiked ? -1 : 1),
+                previousState.libraryUsersCount + (previousState.isInLibrary ? -1 : 1)
               ),
+              canAddToLibrary: previousState.isInLibrary,
+              canRemoveFromLibrary: !previousState.isInLibrary,
             }
           : item,
       ),
     );
 
     try {
-      const likeState = previousState.isLiked
-        ? await unlikeBook(book.id)
-        : await likeBook(book.id);
+      const libraryState = previousState.isInLibrary
+        ? await removeBookFromLibrary(book.id)
+        : await addBookToLibrary(book.id);
 
       setBooks((prev) =>
         prev.map((item) =>
           item.id === book.id
             ? {
                 ...item,
-                isLiked: likeState.isLiked,
-                likesCount: likeState.likesCount,
+                isInLibrary: libraryState.isInLibrary,
+                libraryUsersCount: libraryState.libraryUsersCount,
+                canAddToLibrary: !libraryState.isInLibrary && !item.isOwner,
+                canRemoveFromLibrary: libraryState.isInLibrary && !item.isOwner,
               }
             : item,
         ),
       );
-    } catch (likeError) {
+    } catch (libraryError) {
       const message =
-        likeError instanceof Error
-          ? likeError.message
-          : "Не удалось обновить лайк";
+        libraryError instanceof Error
+          ? libraryError.message
+          : "Не удалось обновить библиотеку";
       setError(message);
 
       setBooks((prev) =>
@@ -126,14 +144,16 @@ export function Explore() {
           item.id === book.id
             ? {
                 ...item,
-                isLiked: previousState.isLiked,
-                likesCount: previousState.likesCount,
+                isInLibrary: previousState.isInLibrary,
+                libraryUsersCount: previousState.libraryUsersCount,
+                canAddToLibrary: previousState.canAddToLibrary,
+                canRemoveFromLibrary: previousState.canRemoveFromLibrary,
               }
             : item,
         ),
       );
     } finally {
-      setLikePendingIds((prev) => {
+      setLibraryPendingIds((prev) => {
         const next = new Set(prev);
         next.delete(book.id);
         return next;
@@ -237,7 +257,7 @@ export function Explore() {
             className="text-center py-16"
           >
             <p className="text-muted-foreground mb-4">
-              {searchQuery ? "Ничего не найдено" : "Пока нет публичных анализов"}
+              {searchQuery ? "Ничего не найдено" : "Пока нет доступных анализов"}
             </p>
             {searchQuery && (
               <button
@@ -311,21 +331,24 @@ export function Explore() {
 
                 <div className="flex flex-col items-end gap-3">
                   <button
-                    onClick={() => void toggleLike(book)}
-                    disabled={!book.canLike || likePendingIds.has(book.id)}
+                    onClick={() => void toggleLibrary(book)}
+                    disabled={(!book.canAddToLibrary && !book.canRemoveFromLibrary) || libraryPendingIds.has(book.id)}
                     className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                      !book.canLike
+                      (!book.canAddToLibrary && !book.canRemoveFromLibrary) || libraryPendingIds.has(book.id)
                         ? "bg-secondary text-muted-foreground/70 cursor-not-allowed"
-                        : book.isLiked
+                        : book.isInLibrary
                           ? "bg-primary/10 text-primary"
                           : "bg-secondary text-muted-foreground hover:bg-secondary/80"
                     }`}
                   >
-                    <Heart
-                      className={`w-4 h-4 ${book.isLiked ? "fill-current" : ""}`}
-                    />
-                    <span className="text-sm">{book.likesCount}</span>
+                    {book.isInLibrary ? <BookmarkCheck className="w-4 h-4" /> : <BookmarkPlus className="w-4 h-4" />}
+                    <span className="text-sm">
+                      {book.isOwner ? "Ваша книга" : book.isInLibrary ? "В библиотеке" : "В библиотеку"}
+                    </span>
                   </button>
+                  <span className="text-xs text-muted-foreground">
+                    В библиотеках: {book.libraryUsersCount}
+                  </span>
                 </div>
               </div>
             </motion.div>

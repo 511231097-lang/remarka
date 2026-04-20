@@ -7,6 +7,20 @@ export {
   putArtifactPayload,
   getArtifactPayload,
 } from "./artifactPayloadStore";
+export {
+  BOOK_TEXT_CORPUS_SCHEMA_VERSION,
+  createBookTextCorpusBlobStoreFromEnv,
+  encodeBookTextCorpus,
+  decodeBookTextCorpus,
+  putBookTextCorpus,
+  getBookTextCorpus,
+  resolveBookTextCorpus,
+  clearBookTextCorpusCache,
+  type BookTextCorpusChapter,
+  type BookTextCorpusPayload,
+  type BookTextCorpusBlobPointer,
+  type ResolvedBookTextCorpus,
+} from "./bookTextCorpusStore";
 export { convertUsd, readCurrencyRates, resolvePricingVersion, resolveTokenPricing, type CurrencyRates, type TokenPricing } from "./modelPricing";
 export { enqueueOutboxEvent } from "./outbox";
 export { createNpzPrismaAdapter } from "./npzPrismaAdapter";

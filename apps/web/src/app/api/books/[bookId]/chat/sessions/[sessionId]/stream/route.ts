@@ -127,6 +127,7 @@ export async function POST(request: Request, context: RouteContext) {
           const result = await streamBookChatThreadReply({
             bookId: book.id,
             threadId: sessionId,
+            ownerUserId: authUser.id,
             userText: message,
             selectedTools,
             onToolCall: async (event) => {

@@ -48,6 +48,7 @@ export async function GET(_request: Request, context: RouteContext) {
     const messages = await listBookChatMessages({
       bookId: book.id,
       threadId: sessionId,
+      ownerUserId: authUser.id,
     });
 
     return NextResponse.json({

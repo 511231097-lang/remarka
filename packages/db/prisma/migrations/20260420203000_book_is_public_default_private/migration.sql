@@ -1,0 +1,2 @@
+ALTER TABLE "Book"
+ALTER COLUMN "isPublic" SET DEFAULT false;

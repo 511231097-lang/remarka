@@ -1,13 +1,13 @@
 "use client";
 
 import { motion } from "motion/react";
-import { BookOpen } from "lucide-react";
+import { BookOpen, Lightbulb, ListTree, Sparkles, Users } from "lucide-react";
 import { useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { BookSettings } from "./BookSettings";
 import { ChatPreview } from "./ChatPreview";
-import { getBook } from "@/lib/booksClient";
-import { displayAuthor, type BookCoreDTO } from "@/lib/books";
+import { getBook, getBookShowcase } from "@/lib/booksClient";
+import { displayAuthor, type BookCoreDTO, type BookShowcaseDTO } from "@/lib/books";
 import { useBookChatReadiness } from "@/lib/useBookChatReadiness";
 
 const COVER_THEMES = [
@@ -63,11 +63,131 @@ function resolveBookSummary(book: BookCoreDTO): string {
   return "Краткое описание книги пока не добавлено. Для новых FB2 оно будет подхватываться из annotation, если она есть в файле.";
 }
 
+function resolveEventImportanceLabel(value: BookShowcaseDTO["keyEvents"][number]["importance"]): string {
+  if (value === "critical") return "Критический";
+  if (value === "high") return "Высокий";
+  return "Средний";
+}
+
+function ShowcaseBlock({ showcase }: { showcase: BookShowcaseDTO }) {
+  return (
+    <section className="mt-10 rounded-2xl border border-border bg-card p-6 lg:p-8">
+      <div className="mb-6 flex items-center gap-3">
+        <div className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
+          <Sparkles className="h-5 w-5" />
+        </div>
+        <div>
+          <h2 className="text-xl text-foreground lg:text-2xl">Витрина книги</h2>
+          <p className="text-xs text-muted-foreground">
+            Обновлено {new Date(showcase.updatedAt).toLocaleDateString("ru-RU")}
+          </p>
+        </div>
+      </div>
+
+      <div className="space-y-6">
+        {showcase.summary.shortSummary ? (
+          <div>
+            <h3 className="mb-2 text-sm uppercase tracking-[0.16em] text-muted-foreground">Краткая сводка</h3>
+            <p className="text-sm leading-7 text-foreground/85">{showcase.summary.shortSummary}</p>
+          </div>
+        ) : null}
+
+        {showcase.summary.mainIdea ? (
+          <div>
+            <h3 className="mb-2 text-sm uppercase tracking-[0.16em] text-muted-foreground">Основная идея</h3>
+            <p className="text-sm leading-7 text-foreground/85">{showcase.summary.mainIdea}</p>
+          </div>
+        ) : null}
+
+        {showcase.themes.length > 0 ? (
+          <div>
+            <div className="mb-3 flex items-center gap-2 text-foreground">
+              <Lightbulb className="h-4 w-4 text-primary" />
+              <h3 className="text-base">Ключевые темы</h3>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              {showcase.themes.map((theme) => (
+                <article key={`${theme.name}:${theme.description}`} className="rounded-xl border border-border/80 p-4">
+                  <p className="text-sm text-foreground">{theme.name}</p>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{theme.description}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {showcase.characters.length > 0 ? (
+          <div>
+            <div className="mb-3 flex items-center gap-2 text-foreground">
+              <Users className="h-4 w-4 text-primary" />
+              <h3 className="text-base">Персонажи</h3>
+            </div>
+            <div className="space-y-3">
+              {showcase.characters.map((character) => (
+                <article key={`${character.name}:${character.rank}`} className="rounded-xl border border-border/80 p-4">
+                  <p className="text-sm text-foreground">
+                    {character.name} <span className="text-muted-foreground">• #{character.rank}</span>
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{character.description}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {showcase.keyEvents.length > 0 ? (
+          <div>
+            <div className="mb-3 flex items-center gap-2 text-foreground">
+              <ListTree className="h-4 w-4 text-primary" />
+              <h3 className="text-base">Ключевые события</h3>
+            </div>
+            <div className="space-y-3">
+              {showcase.keyEvents.map((event) => (
+                <article key={`${event.title}:${event.description}`} className="rounded-xl border border-border/80 p-4">
+                  <p className="text-sm text-foreground">
+                    {event.title}{" "}
+                    <span className="text-muted-foreground">• {resolveEventImportanceLabel(event.importance)}</span>
+                  </p>
+                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{event.description}</p>
+                </article>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        {showcase.quotes.length > 0 ? (
+          <div>
+            <h3 className="mb-2 text-sm uppercase tracking-[0.16em] text-muted-foreground">Популярные цитаты</h3>
+            <div className="space-y-3">
+              {showcase.quotes.map((quote, index) => (
+                <blockquote
+                  key={`${index}:${quote.text.slice(0, 48)}`}
+                  className="rounded-xl border border-border/80 bg-muted/30 px-4 py-3 text-sm leading-7 text-foreground/90"
+                >
+                  <p className="whitespace-pre-wrap">“{quote.text}”</p>
+                  {quote.chapterOrderIndex ? (
+                    <footer className="mt-2 text-xs text-muted-foreground">
+                      Глава {quote.chapterOrderIndex}
+                      {quote.chapterTitle ? ` • ${quote.chapterTitle}` : ""}
+                    </footer>
+                  ) : null}
+                </blockquote>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    </section>
+  );
+}
+
 export function BookOverview() {
   const params = useParams<{ bookId: string }>();
   const bookId = String(params.bookId || "");
 
   const [book, setBook] = useState<BookCoreDTO | null>(null);
+  const [showcase, setShowcase] = useState<BookShowcaseDTO | null>(null);
+  const [showcaseLoading, setShowcaseLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { readiness, loading: readinessLoading, error: readinessError } = useBookChatReadiness(bookId);
@@ -79,18 +199,26 @@ export function BookOverview() {
     async function load() {
       setLoading(true);
       setError(null);
+      setShowcaseLoading(true);
 
-      const bookResult = await Promise.allSettled([getBook(bookId)]);
+      const [bookResult, showcaseResult] = await Promise.allSettled([getBook(bookId), getBookShowcase(bookId)]);
 
       if (!active) return;
 
-      if (bookResult[0]?.status === "fulfilled") {
-        setBook(bookResult[0].value);
+      if (bookResult?.status === "fulfilled") {
+        setBook(bookResult.value);
       } else {
         setBook(null);
-        setError(bookResult[0]?.reason instanceof Error ? bookResult[0].reason.message : "Не удалось загрузить книгу");
+        setError(bookResult?.reason instanceof Error ? bookResult.reason.message : "Не удалось загрузить книгу");
       }
 
+      if (showcaseResult?.status === "fulfilled") {
+        setShowcase(showcaseResult.value);
+      } else {
+        setShowcase(null);
+      }
+
+      setShowcaseLoading(false);
       setLoading(false);
     }
 
@@ -132,12 +260,7 @@ export function BookOverview() {
                     </div>
 
                     <div className="flex items-center gap-2">
-                      <BookSettings
-                        book={book}
-                        onBookUpdated={(updatedBook) => {
-                          setBook(updatedBook);
-                        }}
-                      />
+                      <BookSettings book={book} />
                     </div>
                   </div>
 
@@ -146,6 +269,24 @@ export function BookOverview() {
                   </p>
                 </div>
               </div>
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.05 }}
+            >
+              {showcaseLoading ? (
+                <section className="mt-10 rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
+                  Загружаем витрину книги...
+                </section>
+              ) : showcase ? (
+                <ShowcaseBlock showcase={showcase} />
+              ) : (
+                <section className="mt-10 rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
+                  Витрина книги ещё не собрана. Она появится автоматически после завершения пост-обработки анализа.
+                </section>
+              )}
             </motion.div>
 
             <motion.div

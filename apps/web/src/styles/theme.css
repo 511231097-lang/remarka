@@ -222,4 +222,16 @@
     font-weight: var(--font-weight-normal);
     line-height: 1.5;
   }
+
+  /* Legacy page roots still use viewport-based heights.
+     With global header/footer, normalize them to the app content area. */
+  .app-content :where(.min-h-screen) {
+    min-height: 100%;
+    box-sizing: border-box;
+  }
+
+  .app-content :where(.h-screen, .h-\[100dvh\]) {
+    height: 100%;
+    box-sizing: border-box;
+  }
 }

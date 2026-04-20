@@ -8,6 +8,7 @@ import {
   createNpzPrismaAdapter,
   ensureBookContentVersion,
   putArtifactPayload,
+  resolveBookTextCorpus,
   resolvePricingVersion,
   resolveTokenPricing,
   upsertBookAnalysisChapterMetric,
@@ -147,6 +148,13 @@ type ChapterAnalysisStat = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+};
+
+type AnalysisChapterInput = {
+  id: string;
+  orderIndex: number;
+  title: string;
+  rawText: string;
 };
 
 type StageMetricSnapshot = {
@@ -674,12 +682,37 @@ function clampChars(value: string, maxChars: number): string {
 
 function isRetriableChunkError(error: Error): boolean {
   const message = String(error.message || "").toLocaleLowerCase("en-US");
-  return (
-    message.includes("resource exhausted") ||
-    message.includes("error-code-429") ||
-    message.includes("status 429") ||
-    message.includes("429")
-  );
+  const statusMatch = message.match(/\bstatus[\s:=]+(\d{3})\b/);
+  const statusCode = statusMatch ? Number.parseInt(statusMatch[1] || "", 10) : Number.NaN;
+  if (Number.isFinite(statusCode)) {
+    if (statusCode === 408 || statusCode === 429) return true;
+    if (statusCode >= 500 && statusCode <= 599) return true;
+  }
+
+  const transientFragments = [
+    "resource exhausted",
+    "error-code-429",
+    "rate limit",
+    "too many requests",
+    "status 429",
+    "status 408",
+    "timeout",
+    "timed out",
+    "abort",
+    "aborted",
+    "fetch failed",
+    "network",
+    "connection reset",
+    "econnreset",
+    "etimedout",
+    "econnrefused",
+    "socket hang up",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+  ];
+
+  return transientFragments.some((fragment) => message.includes(fragment));
 }
 
 function delay(ms: number) {
@@ -1517,6 +1550,7 @@ async function syncRunScopedMetrics(params: {
   embeddingModel: string;
   extractModel: string;
   runError?: string | null;
+  qualityFlags?: Record<string, unknown>;
 }) {
   for (const stageKey of RUN_STAGE_KEYS) {
     const stageSnapshots = Array.from(params.runContext.chapterStageMetrics.values())
@@ -1594,6 +1628,11 @@ async function syncRunScopedMetrics(params: {
       sceneCount,
       artifactCount,
       storageBytesJson: stageStorageBytesJson(storageBytes) as unknown as Prisma.InputJsonValue,
+      ...(params.qualityFlags !== undefined
+        ? {
+            qualityFlagsJson: params.qualityFlags as unknown as Prisma.InputJsonValue,
+          }
+        : {}),
       startedAt: params.startedAt,
       completedAt: params.runState === "running" ? null : params.finishedAt ?? new Date(),
     },
@@ -2225,17 +2264,6 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
       fileSha256: true,
       fileName: true,
       mimeType: true,
-      chapters: {
-        orderBy: {
-          orderIndex: "asc",
-        },
-        select: {
-          id: true,
-          orderIndex: true,
-          title: true,
-          rawText: true,
-        },
-      },
     },
   });
 
@@ -2243,7 +2271,19 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
     throw new Error("Book not found");
   }
 
-  const chapterStats: ChapterAnalysisStat[] = book.chapters.map((chapter: any) => ({
+  const resolvedCorpus = await resolveBookTextCorpus({
+    client: prisma,
+    bookId: book.id,
+    logger: params.logger,
+  });
+  const chapters: AnalysisChapterInput[] = resolvedCorpus.chapters.map((chapter) => ({
+    id: chapter.chapterId,
+    orderIndex: chapter.orderIndex,
+    title: chapter.title,
+    rawText: chapter.rawText,
+  }));
+
+  const chapterStats: ChapterAnalysisStat[] = chapters.map((chapter) => ({
     chapterId: chapter.id,
     chapterOrderIndex: chapter.orderIndex,
     chapterTitle: chapter.title,
@@ -2331,7 +2371,7 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
     sceneWindowStrategy: SCENE_WINDOW_STRATEGY,
     sceneWindowSize: SCENE_CHUNK_SIZE,
     sceneWindowOverlap: SCENE_CHUNK_OVERLAP,
-    chapters: book.chapters.length,
+    chapters: chapters.length,
   });
 
   await prisma.$transaction(async (tx: any) => {
@@ -2395,7 +2435,7 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
     return progressQueue;
   };
 
-  const analyzeChapter = async (chapter: (typeof book.chapters)[number]): Promise<ChapterRunResult> => {
+  const analyzeChapter = async (chapter: AnalysisChapterInput): Promise<ChapterRunResult> => {
     const chapterStat = chapterStats.find((item) => item.chapterId === chapter.id);
     if (!chapterStat) {
       return {
@@ -2887,21 +2927,21 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
     }
   };
 
-  const chapterQueue = book.chapters.slice();
+  const chapterQueue = chapters.slice();
   const inFlightChapters = new Map<number, Promise<{ taskId: number; result: ChapterRunResult }>>();
   const effectiveChapterConcurrency = Math.min(Math.max(1, ANALYSIS_CHAPTER_CONCURRENCY), chapterQueue.length || 1);
   let nextChapterTaskId = 1;
-  let firstError: Error | null = null;
+  const chapterFailures: Array<{ chapterId: string; error: Error }> = [];
 
   params.logger.info("Book chapter batching started", {
     bookId: book.id,
-    chapters: book.chapters.length,
+    chapters: chapters.length,
     chapterConcurrency: effectiveChapterConcurrency,
     chunkConcurrency: ANALYSIS_CHUNK_CONCURRENCY,
   });
 
   const launchNextChapter = () => {
-    while (inFlightChapters.size < effectiveChapterConcurrency && chapterQueue.length > 0 && !firstError) {
+    while (inFlightChapters.size < effectiveChapterConcurrency && chapterQueue.length > 0) {
       const nextChapter = chapterQueue.shift();
       if (!nextChapter) break;
 
@@ -2922,8 +2962,11 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
     const settled = await Promise.race(inFlightChapters.values());
     inFlightChapters.delete(settled.taskId);
 
-    if (!settled.result.ok && !firstError) {
-      firstError = settled.result.error;
+    if (!settled.result.ok) {
+      chapterFailures.push({
+        chapterId: settled.result.chapterId,
+        error: settled.result.error,
+      });
       params.logger.error("Chapter analysis failed", {
         bookId: book.id,
         chapterId: settled.result.chapterId,
@@ -2935,8 +2978,31 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
   }
 
   await progressQueue;
-  if (firstError) {
-    throw firstError;
+  const failedChapterIds = chapterStats.filter((item) => item.status === "failed").map((item) => item.chapterId);
+  const successfulChapterCount = chapterStats.filter((item) => item.status === "completed").length;
+  const degradationReasons = chapterFailures.length > 0 ? ["chapter_partial_failures"] : [];
+
+  if (chapterFailures.length > 0 && successfulChapterCount === 0) {
+    const finalError = chapterFailures[0]?.error || new Error("Analysis failed without usable output");
+    await syncRunScopedMetrics({
+      bookId: book.id,
+      runContext,
+      chapterStats,
+      runState: "failed",
+      startedAt,
+      finishedAt: new Date(),
+      chatModel: client.config.chatModel,
+      embeddingModel: client.config.embeddingModel,
+      extractModel: client.config.chatModel,
+      runError: finalError.message,
+      qualityFlags: {
+        degraded: false,
+        degradationReasons: ["no_usable_output"],
+        failedChapterIds,
+        retryExhausted: false,
+      },
+    });
+    throw finalError;
   }
 
   const completedAt = new Date();
@@ -2956,18 +3022,40 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
     chatModel: client.config.chatModel,
     embeddingModel: client.config.embeddingModel,
     extractModel: client.config.chatModel,
+    qualityFlags: {
+      degraded: chapterFailures.length > 0,
+      degradationReasons,
+      failedChapterIds,
+      retryExhausted: false,
+    },
   });
 
-  params.logger.info("Book analysis completed", {
-    bookId: book.id,
-    chapters: book.chapters.length,
-  });
+  if (chapterFailures.length > 0) {
+    params.logger.warn("Book analysis completed with degradation", {
+      bookId: book.id,
+      chapters: chapters.length,
+      failedChapterCount: failedChapterIds.length,
+      failedChapterIds,
+      degradationReasons,
+    });
+  } else {
+    params.logger.info("Book analysis completed", {
+      bookId: book.id,
+      chapters: chapters.length,
+    });
+  }
 }
 
 export async function markBookAnalysisFailed(params: {
   bookId: string;
   error: string;
   logger: AnalysisLogger;
+  qualityFlags?: {
+    degraded?: boolean;
+    degradationReasons?: string[];
+    failedChapterIds?: string[];
+    retryExhausted?: boolean;
+  };
 }) {
   const book = await prisma.book.findUnique({
     where: { id: params.bookId },
@@ -3005,6 +3093,14 @@ export async function markBookAnalysisFailed(params: {
         data: {
           state: "failed",
           error: String(params.error || "Analysis failed").slice(0, 2000),
+          qualityFlagsJson: ({
+            degraded: Boolean(params.qualityFlags?.degraded),
+            degradationReasons: Array.isArray(params.qualityFlags?.degradationReasons)
+              ? params.qualityFlags?.degradationReasons
+              : [],
+            failedChapterIds: Array.isArray(params.qualityFlags?.failedChapterIds) ? params.qualityFlags?.failedChapterIds : [],
+            retryExhausted: Boolean(params.qualityFlags?.retryExhausted),
+          } as unknown) as Prisma.InputJsonValue,
           completedAt: new Date(),
         },
       });
