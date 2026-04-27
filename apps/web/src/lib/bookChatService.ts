@@ -242,6 +242,7 @@ const EVIDENCE_FRAGMENT_EMBEDDING_VERSION = Math.max(
   Number.parseInt(String(process.env.EVIDENCE_FRAGMENT_EMBEDDING_VERSION || "1"), 10) || 1
 );
 const BOOK_EVIDENCE_FRAGMENTS_ENABLED = readBoolEnv("BOOK_EVIDENCE_FRAGMENTS_ENABLED", false);
+const BOOK_CHAT_EVAL_RETRIEVAL_METRICS_ENABLED = readBoolEnv("BOOK_CHAT_EVAL_RETRIEVAL_METRICS_ENABLED", false);
 const EVIDENCE_FRAGMENT_MAX_RESULTS = 32;
 const EVIDENCE_FRAGMENT_BOOST = 0.06;
 const SLOT_REPAIR_LOCAL_WINDOW_PARAGRAPHS = 12;
@@ -5003,6 +5004,49 @@ function makeEvidenceGroupId(group: Pick<EvidenceGroup, "chapterOrderIndex" | "p
   )}`;
 }
 
+function buildEvalRetrievedParagraphRefs(groups: readonly EvidenceGroup[]) {
+  if (!BOOK_CHAT_EVAL_RETRIEVAL_METRICS_ENABLED) return undefined;
+
+  const rows: Array<{
+    chapterId: string;
+    chapterOrderIndex: number;
+    paragraphIndex: number;
+    groupId: string;
+  }> = [];
+  const seen = new Set<string>();
+
+  for (const group of groups) {
+    const chapterId = String(group.chapterId || "").trim();
+    if (!chapterId) continue;
+    const groupId = String(group.id || makeEvidenceGroupId(group)).trim();
+    for (let paragraphIndex = group.paragraphStart; paragraphIndex <= group.paragraphEnd; paragraphIndex += 1) {
+      if (!Number.isFinite(paragraphIndex) || paragraphIndex <= 0) continue;
+      const key = makeParagraphRefKey(chapterId, paragraphIndex);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      rows.push({
+        chapterId,
+        chapterOrderIndex: Math.max(0, Number(group.chapterOrderIndex || 0)),
+        paragraphIndex,
+        groupId,
+      });
+      if (rows.length >= 40) return rows;
+    }
+  }
+
+  return rows;
+}
+
+function buildEvalRetrievedParagraphRefsFromHits(hits: readonly HybridParagraphSearchHit[]) {
+  if (!BOOK_CHAT_EVAL_RETRIEVAL_METRICS_ENABLED) return undefined;
+
+  return hits.slice(0, 40).map((hit) => ({
+    chapterId: hit.chapterId,
+    chapterOrderIndex: hit.chapterOrderIndex,
+    paragraphIndex: hit.paragraphIndex,
+  }));
+}
+
 function computeEvidenceConfidence(score: number, matchedBy: readonly EvidenceMatchedBy[]): EvidenceConfidence {
   if (matchedBy.includes("rerank") && score >= 0.75) return "high";
   if (matchedBy.includes("semantic") && matchedBy.includes("lexical")) return "high";
@@ -5979,6 +6023,7 @@ async function compileEvidencePack(params: {
           latencyMs: meta.latencyMs,
           error: meta.error,
         })),
+        retrievedParagraphRefs: buildEvalRetrievedParagraphRefs(selectedGroups),
       },
     });
     toolRuns.push({
@@ -6161,6 +6206,7 @@ async function compileEvidencePack(params: {
         latencyMs: meta.latencyMs,
         error: meta.error,
       })),
+      retrievedParagraphRefs: buildEvalRetrievedParagraphRefs(selectedGroups),
     },
   });
   toolRuns.push({
@@ -8701,6 +8747,7 @@ function createEvidenceToolChatTools(params: {
             semanticConfidence: search.semanticConfidence,
             queryTerms: search.queryTerms,
             rerank: search.rerank,
+            retrievedParagraphRefs: buildEvalRetrievedParagraphRefsFromHits(hitsForPrompt.slice(0, safeTopK)),
             totalMs: search.totalMs,
             ...autoExpandedMeta,
           },
@@ -9597,6 +9644,7 @@ function createBookChatTools(params: {
             rerankMs: search.rerankMs,
             mergeMs: search.mergeMs,
             totalMs: search.totalMs,
+            retrievedParagraphRefs: buildEvalRetrievedParagraphRefsFromHits(search.hits.slice(0, safeTopK)),
             ...autoExpandedMeta,
           },
         });

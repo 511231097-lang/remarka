@@ -1,7 +1,6 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { prisma } from "@remarka/db";
-import { answerBookChatQuestion } from "../src/lib/bookChatService";
 import { requestBookAnalysis } from "../src/lib/bookAnalysisService";
 import { DEFAULT_ENABLED_BOOK_CHAT_TOOLS, isBookChatToolName, type BookChatToolName } from "../src/lib/bookChatTools";
 import { resolveTokenPricing } from "../src/lib/modelPricing";
@@ -12,6 +11,20 @@ type CliOptions = {
   baselinePath?: string;
   runAnalysisOverride?: boolean;
   maxQuestionsOverride?: number;
+  golden: boolean;
+};
+
+type GoldenCategory = "factual" | "chain" | "comparison" | "character" | "theme" | "quote";
+
+type GoldenQuestion = {
+  id: string;
+  bookId: string;
+  question: string;
+  category: GoldenCategory;
+  expectedParagraphIds: string[];
+  expectedKeywords: string[];
+  minRecallK: number;
+  expectedFirstTool?: string;
 };
 
 type EvalThresholds = {
@@ -52,6 +65,9 @@ type LlmStepUsage = {
 };
 
 type QuestionEval = {
+  id?: string;
+  bookId?: string;
+  category?: GoldenCategory;
   question: string;
   answer: string;
   answerPreview: string;
@@ -70,6 +86,19 @@ type QuestionEval = {
   chatModel: string;
   embeddingModel: string;
   llmSteps: LlmStepUsage[];
+  golden?: {
+    expectedParagraphIds: string[];
+    expectedParagraphRefs: string[];
+    retrievedParagraphRefs: string[];
+    recallAt5: number;
+    recallAt10: number;
+    mrr: number;
+    keywordCoverage: number;
+    matchedKeywords: string[];
+    expectedFirstTool: string | null;
+    actualFirstTool: string | null;
+    toolCorrect: boolean | null;
+  };
   quality: {
     hasCitations: boolean;
     usedTools: boolean;
@@ -114,6 +143,11 @@ type AggregateMetrics = {
   toolUseRate: number;
   fallbackRate: number;
   groundedProxyRate: number;
+  recallAt5: number;
+  recallAt10: number;
+  mrr: number;
+  keywordCoverage: number;
+  toolCorrectnessRate: number | null;
   stepMetrics: Array<{
     step: string;
     calls: number;
@@ -150,6 +184,10 @@ type EvalReport = {
       costIncreasePct: number;
       p95LatencyIncreasePct: number;
       groundedProxyDeltaPp: number;
+      recallAt5Delta?: number;
+      recallAt10Delta?: number;
+      mrrDelta?: number;
+      keywordCoverageDelta?: number;
     };
     regression: {
       cost: boolean;
@@ -161,6 +199,8 @@ type EvalReport = {
 };
 
 const DEFAULT_CONFIG_PATH = "evals/chat-regression.v1.json";
+const DEFAULT_GOLDEN_SET_DIR = "evals/golden-set";
+const DEFAULT_GOLDEN_RESULTS_DIR = "evals/results";
 const DEFAULT_ANALYSIS_TIMEOUT_MINUTES = 120;
 const DEFAULT_ANALYSIS_POLL_SECONDS = 15;
 const DEFAULT_THRESHOLDS: EvalThresholds = {
@@ -169,12 +209,25 @@ const DEFAULT_THRESHOLDS: EvalThresholds = {
   groundedProxyDropPp: 0.1,
 };
 
+let answerBookChatQuestionLoader:
+  | Promise<typeof import("../src/lib/bookChatService")["answerBookChatQuestion"]>
+  | null = null;
+
+async function answerBookChatQuestion(params: Parameters<typeof import("../src/lib/bookChatService")["answerBookChatQuestion"]>[0]) {
+  if (!answerBookChatQuestionLoader) {
+    answerBookChatQuestionLoader = import("../src/lib/bookChatService").then((module) => module.answerBookChatQuestion);
+  }
+  const handler = await answerBookChatQuestionLoader;
+  return handler(params);
+}
+
 function parseArgs(argv: string[]): CliOptions {
   let configPath = DEFAULT_CONFIG_PATH;
   let outputPath: string | undefined;
   let baselinePath: string | undefined;
   let runAnalysisOverride: boolean | undefined;
   let maxQuestionsOverride: number | undefined;
+  let golden = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = String(argv[index] || "").trim();
@@ -194,6 +247,10 @@ function parseArgs(argv: string[]): CliOptions {
     if (token === "--baseline" && next) {
       baselinePath = next;
       index += 1;
+      continue;
+    }
+    if (token === "--golden") {
+      golden = true;
       continue;
     }
     if (token === "--run-analysis" && next) {
@@ -217,6 +274,7 @@ function parseArgs(argv: string[]): CliOptions {
     baselinePath,
     runAnalysisOverride,
     maxQuestionsOverride,
+    golden,
   };
 }
 
@@ -569,6 +627,10 @@ function aggregateQuestions(items: QuestionEval[]): AggregateMetrics {
   const groundedHits = items.filter((item) => item.quality.groundedProxy).length;
   const fallbackHits = items.filter((item) => item.fallbackUsed).length;
   const latencies = items.map((item) => item.totalLatencyMs);
+  const goldenItems = items.filter((item) => item.golden);
+  const toolChecks = goldenItems
+    .map((item) => item.golden?.toolCorrect)
+    .filter((value): value is boolean => typeof value === "boolean");
 
   const stepBucket = new Map<
     string,
@@ -629,6 +691,27 @@ function aggregateQuestions(items: QuestionEval[]): AggregateMetrics {
     toolUseRate: count > 0 ? round(toolHits / count, 6) : 0,
     fallbackRate: count > 0 ? round(fallbackHits / count, 6) : 0,
     groundedProxyRate: count > 0 ? round(groundedHits / count, 6) : 0,
+    recallAt5:
+      goldenItems.length > 0
+        ? round(goldenItems.reduce((sum, item) => sum + Number(item.golden?.recallAt5 || 0), 0) / goldenItems.length, 6)
+        : 0,
+    recallAt10:
+      goldenItems.length > 0
+        ? round(goldenItems.reduce((sum, item) => sum + Number(item.golden?.recallAt10 || 0), 0) / goldenItems.length, 6)
+        : 0,
+    mrr:
+      goldenItems.length > 0
+        ? round(goldenItems.reduce((sum, item) => sum + Number(item.golden?.mrr || 0), 0) / goldenItems.length, 6)
+        : 0,
+    keywordCoverage:
+      goldenItems.length > 0
+        ? round(
+            goldenItems.reduce((sum, item) => sum + Number(item.golden?.keywordCoverage || 0), 0) / goldenItems.length,
+            6
+          )
+        : 0,
+    toolCorrectnessRate:
+      toolChecks.length > 0 ? round(toolChecks.filter(Boolean).length / toolChecks.length, 6) : null,
     stepMetrics,
   };
 }
@@ -645,6 +728,10 @@ function buildComparison(params: {
   const costIncreasePct = (params.current.totalCostUsd - params.baseline.totalCostUsd) / baselineCost;
   const p95LatencyIncreasePct = (params.current.p95LatencyMs - params.baseline.p95LatencyMs) / baselineLatency;
   const groundedProxyDeltaPp = params.current.groundedProxyRate - params.baseline.groundedProxyRate;
+  const recallAt5Delta = params.current.recallAt5 - asNumber(params.baseline.recallAt5);
+  const recallAt10Delta = params.current.recallAt10 - asNumber(params.baseline.recallAt10);
+  const mrrDelta = params.current.mrr - asNumber(params.baseline.mrr);
+  const keywordCoverageDelta = params.current.keywordCoverage - asNumber(params.baseline.keywordCoverage);
 
   const costFail = costIncreasePct > params.thresholds.costIncreasePct;
   const latencyFail = p95LatencyIncreasePct > params.thresholds.p95LatencyIncreasePct;
@@ -656,6 +743,10 @@ function buildComparison(params: {
       costIncreasePct: round(costIncreasePct, 6),
       p95LatencyIncreasePct: round(p95LatencyIncreasePct, 6),
       groundedProxyDeltaPp: round(groundedProxyDeltaPp, 6),
+      recallAt5Delta: round(recallAt5Delta, 6),
+      recallAt10Delta: round(recallAt10Delta, 6),
+      mrrDelta: round(mrrDelta, 6),
+      keywordCoverageDelta: round(keywordCoverageDelta, 6),
     },
     regression: {
       cost: costFail,
@@ -666,13 +757,387 @@ function buildComparison(params: {
   };
 }
 
+function normalizeGoldenString(value: unknown): string {
+  return String(value || "").trim();
+}
+
+function normalizeStringList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return Array.from(
+    new Set(value.map((item) => String(item || "").trim()).filter(Boolean))
+  );
+}
+
+function parseGoldenCategory(value: unknown): GoldenCategory {
+  const normalized = normalizeGoldenString(value);
+  if (
+    normalized === "factual" ||
+    normalized === "chain" ||
+    normalized === "comparison" ||
+    normalized === "character" ||
+    normalized === "theme" ||
+    normalized === "quote"
+  ) {
+    return normalized;
+  }
+  throw new Error(`Unsupported golden question category: ${normalized}`);
+}
+
+function parseGoldenQuestion(line: string, filePath: string, lineNumber: number): GoldenQuestion {
+  const parsed = JSON.parse(line) as Record<string, unknown>;
+  const id = normalizeGoldenString(parsed.id);
+  const bookId = normalizeGoldenString(parsed.bookId);
+  const question = normalizeGoldenString(parsed.question);
+  const expectedParagraphIds = normalizeStringList(parsed.expectedParagraphIds);
+  const expectedKeywords = normalizeStringList(parsed.expectedKeywords);
+  const minRecallK = Math.max(1, Number.parseInt(String(parsed.minRecallK || 5), 10) || 5);
+  if (!id || !bookId || !question) {
+    throw new Error(`Invalid golden question identity at ${filePath}:${lineNumber}`);
+  }
+  if (!expectedParagraphIds.length) {
+    throw new Error(`Golden question must include expectedParagraphIds at ${filePath}:${lineNumber}`);
+  }
+
+  return {
+    id,
+    bookId,
+    question,
+    category: parseGoldenCategory(parsed.category),
+    expectedParagraphIds,
+    expectedKeywords,
+    minRecallK,
+    expectedFirstTool: normalizeGoldenString(parsed.expectedFirstTool) || undefined,
+  };
+}
+
+async function loadGoldenQuestions(goldenSetDir: string): Promise<GoldenQuestion[]> {
+  const questionsDir = path.join(goldenSetDir, "questions");
+  const files = (await readdir(questionsDir))
+    .filter((file) => file.endsWith(".jsonl"))
+    .sort((left, right) => left.localeCompare(right));
+  const questions: GoldenQuestion[] = [];
+  for (const file of files) {
+    const filePath = path.join(questionsDir, file);
+    const raw = await readFile(filePath, "utf-8");
+    const lines = raw.split("\n");
+    for (const [index, line] of lines.entries()) {
+      const trimmed = line.trim();
+      if (!trimmed) continue;
+      questions.push(parseGoldenQuestion(trimmed, filePath, index + 1));
+    }
+  }
+  if (!questions.length) {
+    throw new Error(`No golden questions found in ${questionsDir}`);
+  }
+  return questions;
+}
+
+function makeParagraphRef(row: { chapterId: string; paragraphIndex: number }) {
+  return `${String(row.chapterId || "").trim()}:${Math.max(0, Number(row.paragraphIndex || 0))}`;
+}
+
+async function loadExpectedParagraphRefs(questions: readonly GoldenQuestion[]) {
+  const paragraphIds = Array.from(new Set(questions.flatMap((question) => question.expectedParagraphIds)));
+  const rows = paragraphIds.length
+    ? await prisma.bookParagraph.findMany({
+        where: {
+          id: {
+            in: paragraphIds,
+          },
+        },
+        select: {
+          id: true,
+          chapterId: true,
+          paragraphIndex: true,
+        },
+      })
+    : [];
+  const refById = new Map(rows.map((row) => [row.id, makeParagraphRef(row)]));
+  const missing = paragraphIds.filter((id) => !refById.has(id));
+  if (missing.length) {
+    throw new Error(`Golden expectedParagraphIds not found: ${missing.join(", ")}`);
+  }
+  return refById;
+}
+
+function extractRetrievedParagraphRefs(toolRuns: unknown): string[] {
+  if (!Array.isArray(toolRuns)) return [];
+  const rows: string[] = [];
+  const seen = new Set<string>();
+  for (const run of toolRuns) {
+    if (!run || typeof run !== "object") continue;
+    const meta = (run as { resultMeta?: unknown }).resultMeta;
+    if (!meta || typeof meta !== "object") continue;
+    const refs = (meta as { retrievedParagraphRefs?: unknown }).retrievedParagraphRefs;
+    if (!Array.isArray(refs)) continue;
+    for (const item of refs) {
+      if (!item || typeof item !== "object") continue;
+      const chapterId = normalizeGoldenString((item as Record<string, unknown>).chapterId);
+      const paragraphIndex = Number((item as Record<string, unknown>).paragraphIndex);
+      if (!chapterId || !Number.isFinite(paragraphIndex) || paragraphIndex <= 0) continue;
+      const ref = makeParagraphRef({ chapterId, paragraphIndex });
+      if (seen.has(ref)) continue;
+      seen.add(ref);
+      rows.push(ref);
+    }
+  }
+  return rows;
+}
+
+function calculateRecall(expectedRefs: readonly string[], retrievedRefs: readonly string[], topK: number): number {
+  if (!expectedRefs.length) return 0;
+  const retrieved = new Set(retrievedRefs.slice(0, Math.max(1, topK)));
+  const hits = expectedRefs.filter((ref) => retrieved.has(ref)).length;
+  return round(hits / expectedRefs.length, 6);
+}
+
+function calculateMrr(expectedRefs: readonly string[], retrievedRefs: readonly string[]): number {
+  const expected = new Set(expectedRefs);
+  for (const [index, ref] of retrievedRefs.entries()) {
+    if (expected.has(ref)) return round(1 / (index + 1), 6);
+  }
+  return 0;
+}
+
+function calculateKeywordCoverage(answer: string, keywords: readonly string[]) {
+  if (!keywords.length) {
+    return {
+      keywordCoverage: 0,
+      matchedKeywords: [],
+    };
+  }
+  const normalizedAnswer = answer.toLocaleLowerCase("ru-RU");
+  const matchedKeywords = keywords.filter((keyword) => normalizedAnswer.includes(keyword.toLocaleLowerCase("ru-RU")));
+  return {
+    keywordCoverage: round(matchedKeywords.length / keywords.length, 6),
+    matchedKeywords,
+  };
+}
+
+function firstMeaningfulTool(toolRuns: unknown): string | null {
+  if (!Array.isArray(toolRuns)) return null;
+  for (const run of toolRuns) {
+    if (!run || typeof run !== "object") continue;
+    const tool = normalizeGoldenString((run as { tool?: unknown }).tool);
+    if (!tool || tool === "planner" || tool.startsWith("llm_")) continue;
+    return tool;
+  }
+  return null;
+}
+
 function createDefaultOutputPath(): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
   return `evals/results/chat-regression-${timestamp}.json`;
 }
 
+function createDefaultGoldenOutputPath(): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${DEFAULT_GOLDEN_RESULTS_DIR}/golden-${timestamp}.json`;
+}
+
+function createDefaultBaselineOutputPath(): string {
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  return `${DEFAULT_GOLDEN_RESULTS_DIR}/baseline-${timestamp}.json`;
+}
+
+async function findLatestGoldenBaseline(resultsDir: string): Promise<string | null> {
+  let files: string[];
+  try {
+    files = await readdir(resultsDir);
+  } catch {
+    return null;
+  }
+  const candidates = files.filter(
+    (file) => (file.startsWith("baseline-") || file.startsWith("golden-")) && file.endsWith(".json")
+  );
+  const rows = await Promise.all(
+    candidates.map(async (file) => {
+      const filePath = path.join(resultsDir, file);
+      const fileStat = await stat(filePath);
+      return {
+        filePath,
+        mtimeMs: fileStat.mtimeMs,
+      };
+    })
+  );
+  rows.sort((left, right) => right.mtimeMs - left.mtimeMs);
+  return rows[0]?.filePath || null;
+}
+
+async function runGolden() {
+  process.env.BOOK_CHAT_EVAL_RETRIEVAL_METRICS_ENABLED =
+    process.env.BOOK_CHAT_EVAL_RETRIEVAL_METRICS_ENABLED || "1";
+
+  const options = parseArgs(process.argv.slice(2));
+  const goldenSetDir = resolvePathFromCwd(DEFAULT_GOLDEN_SET_DIR);
+  const questions = await loadGoldenQuestions(goldenSetDir);
+  const expectedRefById = await loadExpectedParagraphRefs(questions);
+  const questionsByBook = new Map<string, GoldenQuestion[]>();
+  for (const question of questions) {
+    const rows = questionsByBook.get(question.bookId) || [];
+    rows.push(question);
+    questionsByBook.set(question.bookId, rows);
+  }
+
+  const chatTools = normalizeTools(undefined);
+  const thresholds = DEFAULT_THRESHOLDS;
+  const baselinePath = options.baselinePath
+    ? resolvePathFromCwd(options.baselinePath)
+    : await findLatestGoldenBaseline(resolvePathFromCwd(DEFAULT_GOLDEN_RESULTS_DIR));
+
+  const booksReport: EvalBookReport[] = [];
+  const bookEntries = Array.from(questionsByBook.entries()).sort((left, right) => left[0].localeCompare(right[0]));
+  for (const [bookIndex, [bookId, bookQuestions]] of bookEntries.entries()) {
+    const bookRecord = await prisma.book.findUnique({
+      where: { id: bookId },
+      select: { id: true, title: true },
+    });
+    if (!bookRecord) {
+      throw new Error(`Book not found: ${bookId}`);
+    }
+
+    process.stdout.write(`\n[${bookIndex + 1}/${bookEntries.length}] ${bookRecord.title} (${bookId})\n`);
+    const analysis = await runAnalysisIfNeeded({
+      bookId,
+      runAnalysis: false,
+      timeoutMinutes: DEFAULT_ANALYSIS_TIMEOUT_MINUTES,
+      pollSeconds: DEFAULT_ANALYSIS_POLL_SECONDS,
+    });
+    process.stdout.write(`  analysis result: ${analysis.state}${analysis.runId ? ` (run ${analysis.runId})` : ""}\n`);
+
+    const questionReports: QuestionEval[] = [];
+    for (const [questionIndex, question] of bookQuestions.entries()) {
+      process.stdout.write(`  q${questionIndex + 1}/${bookQuestions.length} ${question.id}: ${question.question.slice(0, 80)}\n`);
+      const result = await answerBookChatQuestion({
+        bookId,
+        enabledTools: chatTools,
+        messages: [
+          {
+            role: "user",
+            content: question.question,
+          },
+        ],
+      });
+
+      const llmSteps = parseLlmSteps(result.llmStepRuns as any);
+      const answerText = String(result.answer || "").trim();
+      const expectedParagraphRefs = question.expectedParagraphIds.map((id) => expectedRefById.get(id) || "");
+      const retrievedParagraphRefs = extractRetrievedParagraphRefs(result.toolRuns);
+      const keywordMetrics = calculateKeywordCoverage(answerText, question.expectedKeywords);
+      const actualFirstTool = firstMeaningfulTool(result.toolRuns);
+      const expectedFirstTool = question.expectedFirstTool || null;
+
+      questionReports.push({
+        id: question.id,
+        bookId,
+        category: question.category,
+        question: question.question,
+        answer: answerText,
+        answerPreview: answerText.replace(/\s+/g, " ").slice(0, 240),
+        totalLatencyMs: Math.max(0, Number(result.metrics.totalLatencyMs || 0)),
+        modelInputTokens: Math.max(0, Number(result.metrics.modelInputTokens || 0)),
+        modelOutputTokens: Math.max(0, Number(result.metrics.modelOutputTokens || 0)),
+        modelTotalTokens: Math.max(0, Number(result.metrics.modelTotalTokens || 0)),
+        embeddingInputTokens: Math.max(0, Number(result.metrics.embeddingInputTokens || 0)),
+        chatCostUsd: round(Math.max(0, Number(result.metrics.chatCostUsd || 0))),
+        embeddingCostUsd: round(Math.max(0, Number(result.metrics.embeddingCostUsd || 0))),
+        totalCostUsd: round(Math.max(0, Number(result.metrics.totalCostUsd || 0))),
+        citationCount: Math.max(0, Number(result.metrics.citationCount || 0)),
+        toolRunCount: Array.isArray(result.toolRuns) ? result.toolRuns.length : 0,
+        fallbackUsed: Boolean(result.metrics.fallbackUsed),
+        fallbackKind: result.metrics.fallbackKind ? String(result.metrics.fallbackKind) : null,
+        chatModel: String(result.metrics.chatModel || "").trim(),
+        embeddingModel: String(result.metrics.embeddingModel || "").trim(),
+        llmSteps,
+        golden: {
+          expectedParagraphIds: question.expectedParagraphIds,
+          expectedParagraphRefs,
+          retrievedParagraphRefs,
+          recallAt5: calculateRecall(expectedParagraphRefs, retrievedParagraphRefs, 5),
+          recallAt10: calculateRecall(expectedParagraphRefs, retrievedParagraphRefs, 10),
+          mrr: calculateMrr(expectedParagraphRefs, retrievedParagraphRefs),
+          keywordCoverage: keywordMetrics.keywordCoverage,
+          matchedKeywords: keywordMetrics.matchedKeywords,
+          expectedFirstTool,
+          actualFirstTool,
+          toolCorrect: expectedFirstTool ? actualFirstTool === expectedFirstTool : null,
+        },
+        quality: {
+          hasCitations: Number(result.metrics.citationCount || 0) > 0,
+          usedTools: (Array.isArray(result.toolRuns) ? result.toolRuns.length : 0) > 0,
+          groundedProxy: Number(result.metrics.citationCount || 0) > 0 && !Boolean(result.metrics.fallbackUsed),
+        },
+      });
+    }
+
+    booksReport.push({
+      bookId,
+      label: bookRecord.title,
+      analysis,
+      aggregate: aggregateQuestions(questionReports),
+      questions: questionReports,
+    });
+  }
+
+  const overall = aggregateQuestions(booksReport.flatMap((book) => book.questions));
+  const report: EvalReport = {
+    version: "v1",
+    generatedAt: new Date().toISOString(),
+    configPath: goldenSetDir,
+    name: "golden-set",
+    runAnalysis: false,
+    thresholds,
+    chatTools,
+    books: booksReport,
+    overall,
+  };
+
+  if (baselinePath) {
+    const baselineRaw = await readFile(baselinePath, "utf-8");
+    const baseline = JSON.parse(baselineRaw) as Partial<EvalReport>;
+    if (baseline?.overall) {
+      report.comparison = buildComparison({
+        baselinePath,
+        current: overall,
+        baseline: baseline.overall as AggregateMetrics,
+        thresholds,
+      });
+    }
+  }
+
+  const outputPath = resolvePathFromCwd(options.outputPath || createDefaultGoldenOutputPath());
+  await mkdir(path.dirname(outputPath), { recursive: true });
+  await writeFile(outputPath, JSON.stringify(report, null, 2), "utf-8");
+
+  let baselineCreatedPath: string | null = null;
+  if (!baselinePath) {
+    baselineCreatedPath = resolvePathFromCwd(createDefaultBaselineOutputPath());
+    await copyFile(outputPath, baselineCreatedPath);
+  }
+
+  process.stdout.write(`\nSaved report: ${outputPath}\n`);
+  if (baselineCreatedPath) {
+    process.stdout.write(`Saved baseline: ${baselineCreatedPath}\n`);
+  }
+  process.stdout.write(
+    `Golden overall: recall@5=${report.overall.recallAt5}, recall@10=${report.overall.recallAt10}, mrr=${report.overall.mrr}, keyword_coverage=${report.overall.keywordCoverage}, costUsd=${report.overall.totalCostUsd}, p95=${report.overall.p95LatencyMs}ms\n`
+  );
+  if (report.comparison) {
+    process.stdout.write(
+      `Golden deltas: recall@5=${report.comparison.deltas.recallAt5Delta}, recall@10=${report.comparison.deltas.recallAt10Delta}, mrr=${report.comparison.deltas.mrrDelta}, keyword_coverage=${report.comparison.deltas.keywordCoverageDelta}\n`
+    );
+    process.stdout.write(`Regression status: ${report.comparison.regression.failed ? "FAILED" : "OK"}\n`);
+    if (report.comparison.regression.failed) process.exitCode = 2;
+  }
+}
+
 async function run() {
   const options = parseArgs(process.argv.slice(2));
+  if (options.golden) {
+    await runGolden();
+    return;
+  }
+
   const configPath = resolvePathFromCwd(options.configPath);
   const config = await loadConfig(configPath);
 
