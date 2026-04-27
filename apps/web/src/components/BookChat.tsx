@@ -1,20 +1,15 @@
 "use client";
 
 import { motion } from "motion/react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
+import { Bot, Brain, MessageSquare, Plus, Send, Trash2, User } from "lucide-react";
 import Link from "next/link";
-import { useParams, useRouter } from "next/navigation";
-import { ArrowLeft, Bot, MessageSquare, Plus, Send, Trash2, User } from "lucide-react";
-import { ChatModePill } from "./BookChatReadiness";
+import { BookPreviewStage } from "./BookGalleryCard";
 import { BookSettings } from "./BookSettings";
+import { ChatModePill, ChatReadinessGate } from "./BookChatReadiness";
 import { ChatMessageMarkdown } from "./ChatMessageMarkdown";
-import {
-  BOOK_CHAT_TOOL_META,
-  BOOK_CHAT_TOOL_NAMES,
-  DEFAULT_ENABLED_BOOK_CHAT_TOOLS,
-  isBookChatToolName,
-  type BookChatToolName,
-} from "@/lib/bookChatTools";
+import { ChatSidebarLegal } from "./SiteFooter";
 import {
   createBookChatSession,
   deleteBookChatSession,
@@ -23,7 +18,17 @@ import {
   listBookChatSessions,
   streamBookChatMessage,
 } from "@/lib/booksClient";
-import type { BookChatMessageDTO, BookChatSessionDTO, BookChatStreamFinalEventDTO, BookCoreDTO } from "@/lib/books";
+import {
+  appendBookDetailSource,
+  resolveBookDetailSource,
+  type BookDetailSource,
+} from "@/lib/bookDetailNavigation";
+import {
+  type BookChatMessageDTO,
+  type BookChatSessionDTO,
+  type BookChatStreamFinalEventDTO,
+  type BookCoreDTO,
+} from "@/lib/books";
 import { useBookChatReadiness } from "@/lib/useBookChatReadiness";
 
 interface UiMessage extends BookChatMessageDTO {
@@ -37,6 +42,50 @@ function formatTime(value: string): string {
     hour: "2-digit",
     minute: "2-digit",
   });
+}
+
+function formatSessionTime(value: string | null, fallback: string): string {
+  const date = new Date(value || fallback);
+  if (Number.isNaN(date.getTime())) return "Недавно";
+
+  const now = new Date();
+  const isSameDay =
+    date.getFullYear() === now.getFullYear() &&
+    date.getMonth() === now.getMonth() &&
+    date.getDate() === now.getDate();
+
+  return new Intl.DateTimeFormat("ru-RU", {
+    day: isSameDay ? undefined : "2-digit",
+    month: isSameDay ? undefined : "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+const MAX_STREAM_REASONING_CHARS = 480;
+const RUSSIAN_REASONING_PLACEHOLDER = "Анализирую запрос, сверяю факты по книге и подбираю релевантные фрагменты.";
+
+function normalizeReasoningDeltaForDisplay(delta: string): string {
+  const normalized = String(delta || "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!normalized) return "";
+
+  const hasCyrillic = /[а-яё]/i.test(normalized);
+  const hasLatin = /[a-z]/i.test(normalized);
+  if (hasCyrillic || !hasLatin) return normalized;
+  return RUSSIAN_REASONING_PLACEHOLDER;
+}
+
+function appendReasoningPreview(current: string | null, delta: string): string {
+  const normalizedDelta = normalizeReasoningDeltaForDisplay(delta);
+  if (!normalizedDelta) return String(current || "");
+
+  const currentNormalized = String(current || "").trim();
+  if (currentNormalized.endsWith(normalizedDelta)) return currentNormalized;
+  const merged = `${currentNormalized} ${normalizedDelta}`.trim();
+  if (merged.length <= MAX_STREAM_REASONING_CHARS) return merged;
+  return `...${merged.slice(-MAX_STREAM_REASONING_CHARS)}`;
 }
 
 function makeGreeting(bookTitle: string): UiMessage {
@@ -75,82 +124,76 @@ function toAssistantMessageFromFinal(final: BookChatStreamFinalEventDTO): UiMess
   };
 }
 
-function getBookChatToolsStorageKey(bookId: string): string {
-  return `book-chat-enabled-tools:${bookId}`;
-}
-
-function normalizeStoredToolSelection(value: unknown): BookChatToolName[] {
-  if (!Array.isArray(value)) return [...DEFAULT_ENABLED_BOOK_CHAT_TOOLS];
-
-  const selected = Array.from(
-    new Set(
-      value
-        .filter((item): item is BookChatToolName => isBookChatToolName(item))
-        .map((item) => item)
-    )
-  );
-
-  return selected;
+function resolveSourceWithFallback(source: BookDetailSource | null, canManage: boolean | undefined): BookDetailSource {
+  return source || (canManage ? "library" : "explore");
 }
 
 export function BookChat() {
   const params = useParams<{ bookId: string; sessionId?: string }>();
+  const searchParams = useSearchParams();
   const bookId = String(params.bookId || "");
   const routeSessionId = String(params.sessionId || "").trim() || null;
   const router = useRouter();
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const pendingHandledRef = useRef(false);
+  const isSendingRef = useRef(false);
+  const activeStreamAbortRef = useRef<AbortController | null>(null);
 
   const [book, setBook] = useState<BookCoreDTO | null>(null);
   const [bookError, setBookError] = useState<string | null>(null);
-
   const [sessions, setSessions] = useState<BookChatSessionDTO[]>([]);
-  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(routeSessionId);
   const [messages, setMessages] = useState<UiMessage[]>([]);
-  const [selectedTools, setSelectedTools] = useState<BookChatToolName[]>([...DEFAULT_ENABLED_BOOK_CHAT_TOOLS]);
-
   const [inputValue, setInputValue] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
+  const [streamReasoning, setStreamReasoning] = useState<string | null>(null);
   const { readiness, loading: readinessLoading, error: readinessError } = useBookChatReadiness(bookId);
+  const activeSessionId = routeSessionId || currentSessionId;
 
-  const currentSession = useMemo(
-    () => sessions.find((session) => session.id === currentSessionId) || null,
-    [sessions, currentSessionId]
-  );
-  const selectedToolSet = useMemo(() => new Set(selectedTools), [selectedTools]);
+  const source = resolveBookDetailSource(searchParams.get("from"));
+  const resolvedSource = resolveSourceWithFallback(source, book?.canManage);
+  const readinessUnavailable = !readinessLoading && !readiness;
+
+  const buildBookPath = (path: string) => appendBookDetailSource(path, resolvedSource);
+
+  useEffect(() => {
+    return () => {
+      activeStreamAbortRef.current?.abort();
+      activeStreamAbortRef.current = null;
+      isSendingRef.current = false;
+    };
+  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
-  useLayoutEffect(() => {
-    if (!bookId) return;
-    try {
-      const raw = window.localStorage.getItem(getBookChatToolsStorageKey(bookId));
-      if (!raw) {
-        setSelectedTools([...DEFAULT_ENABLED_BOOK_CHAT_TOOLS]);
-        return;
-      }
-      const parsed = JSON.parse(raw);
-      const normalized = normalizeStoredToolSelection(parsed);
-      setSelectedTools(normalized.length ? normalized : []);
-    } catch {
-      setSelectedTools([...DEFAULT_ENABLED_BOOK_CHAT_TOOLS]);
-    }
-  }, [bookId]);
-
   useEffect(() => {
     if (!bookId) return;
-    try {
-      window.localStorage.setItem(getBookChatToolsStorageKey(bookId), JSON.stringify(selectedTools));
-    } catch {
-      // Ignore storage failures in private mode / restricted environments.
+    let active = true;
+
+    async function loadBookData() {
+      try {
+        const nextBook = await getBook(bookId);
+        if (!active) return;
+        setBook(nextBook);
+        setBookError(null);
+      } catch (error) {
+        if (!active) return;
+        setBook(null);
+        setBookError(error instanceof Error ? error.message : "Не удалось загрузить книгу");
+      }
     }
-  }, [bookId, selectedTools]);
+
+    void loadBookData();
+    return () => {
+      active = false;
+    };
+  }, [bookId]);
 
   const refreshSessions = async (preferredSessionId?: string | null): Promise<string | null> => {
     if (!bookId) return null;
+
     const nextSessions = await listBookChatSessions(bookId);
     setSessions(nextSessions);
 
@@ -179,30 +222,6 @@ export function BookChat() {
     const nextMessages = await getBookChatMessages(bookId, sessionId);
     setMessages(nextMessages.length > 0 ? nextMessages : [makeGreeting(book?.title || "Книга")]);
   };
-
-  useEffect(() => {
-    if (!bookId) return;
-    let active = true;
-
-    async function loadBookData() {
-      try {
-        const nextBook = await getBook(bookId);
-        if (!active) return;
-
-        setBook(nextBook);
-        setBookError(null);
-      } catch (error) {
-        if (!active) return;
-        setBook(null);
-        setBookError(error instanceof Error ? error.message : "Не удалось загрузить чат");
-      }
-    }
-
-    void loadBookData();
-    return () => {
-      active = false;
-    };
-  }, [bookId]);
 
   useEffect(() => {
     if (!bookId || !readiness?.canChat) {
@@ -252,24 +271,41 @@ export function BookChat() {
   }, [routeSessionId, sessions]);
 
   useEffect(() => {
-    if (!bookId || !readiness?.canChat || sessions.length === 0) return;
-    if (currentSessionId && currentSessionId !== routeSessionId) {
-      router.replace(`/book/${bookId}/chat/${currentSessionId}`);
+    if (!bookId || !readiness?.canChat) return;
+
+    if (!routeSessionId) {
+      if (currentSessionId) {
+        router.replace(buildBookPath(`/book/${bookId}/chat/${currentSessionId}`));
+      }
       return;
     }
-    if (!currentSessionId && routeSessionId) {
-      router.replace(`/book/${bookId}/chat`);
+
+    if (sessions.length === 0) return;
+    if (sessions.some((session) => session.id === routeSessionId)) return;
+
+    const fallbackSessionId =
+      (currentSessionId && sessions.some((session) => session.id === currentSessionId) ? currentSessionId : null) ||
+      sessions[0]?.id ||
+      null;
+
+    if (fallbackSessionId) {
+      router.replace(buildBookPath(`/book/${bookId}/chat/${fallbackSessionId}`));
+      return;
     }
-  }, [bookId, currentSessionId, readiness?.canChat, routeSessionId, router]);
+
+    if (routeSessionId) {
+      router.replace(buildBookPath(`/book/${bookId}/chat`));
+    }
+  }, [bookId, currentSessionId, routeSessionId, readiness?.canChat, router, resolvedSource, sessions]);
 
   useEffect(() => {
-    if (!currentSessionId || !readiness?.canChat) return;
-    const activeSessionId: string = currentSessionId;
+    if (!activeSessionId || !readiness?.canChat) return;
     let active = true;
+    const nextActiveSessionId = activeSessionId;
 
     async function loadCurrentMessages() {
       try {
-        const nextMessages = await getBookChatMessages(bookId, activeSessionId);
+        const nextMessages = await getBookChatMessages(bookId, nextActiveSessionId);
         if (!active) return;
         setMessages(nextMessages.length > 0 ? nextMessages : [makeGreeting(book?.title || "Книга")]);
       } catch (error) {
@@ -298,18 +334,19 @@ export function BookChat() {
     return () => {
       active = false;
     };
-  }, [bookId, currentSessionId, book?.title, readiness?.canChat]);
+  }, [activeSessionId, book?.title, bookId, readiness?.canChat]);
 
   const ensureActiveSession = async (): Promise<string> => {
     if (!readiness?.canChat) {
-      throw new Error("Чат еще не готов");
+      throw new Error("Чат ещё не готов");
     }
-    if (currentSessionId) return currentSessionId;
+    if (activeSessionId) return activeSessionId;
+
     const created = await createBookChatSession(bookId, {
       title: "Новый чат",
     });
     await refreshSessions(created.id);
-    router.replace(`/book/${bookId}/chat/${created.id}`);
+    router.replace(buildBookPath(`/book/${bookId}/chat/${created.id}`));
     return created.id;
   };
 
@@ -320,34 +357,38 @@ export function BookChat() {
     });
     await refreshSessions(created.id);
     setMessages([makeGreeting(book?.title || "Книга")]);
-    router.push(`/book/${bookId}/chat/${created.id}`);
+    router.push(buildBookPath(`/book/${bookId}/chat/${created.id}`));
   };
 
   const removeSession = async (sessionId: string) => {
     if (!bookId || isLoading || !readiness?.canChat) return;
     await deleteBookChatSession(bookId, sessionId);
     const nextSessionId = await refreshSessions();
+
     if (nextSessionId) {
-      router.replace(`/book/${bookId}/chat/${nextSessionId}`);
+      router.replace(buildBookPath(`/book/${bookId}/chat/${nextSessionId}`));
       return;
     }
-    router.replace(`/book/${bookId}/chat`);
+
+    router.replace(buildBookPath(`/book/${bookId}/chat`));
   };
 
-  const sendMessage = async (
-    questionRaw: string,
-    options?: { forcedSessionId?: string; entryContext?: "overview" | "section" | "full_chat" }
-  ) => {
+  const sendMessage = async (questionRaw: string) => {
     if (!bookId || !readiness?.canChat) return;
     const question = String(questionRaw || "").trim();
-    if (!question || isLoading || selectedTools.length === 0) return;
+    if (!question || isLoading || isSendingRef.current) return;
 
+    isSendingRef.current = true;
+    const streamAbortController = new AbortController();
+    activeStreamAbortRef.current?.abort();
+    activeStreamAbortRef.current = streamAbortController;
     setInputValue("");
     setIsLoading(true);
     setStreamStatus("Разбираю вопрос и подбираю опоры в тексте");
+    setStreamReasoning(null);
 
     try {
-      const sessionId = options?.forcedSessionId || (await ensureActiveSession());
+      const sessionId = await ensureActiveSession();
       const optimisticUserMessage: UiMessage = {
         id: `local:user:${Date.now()}`,
         role: "user",
@@ -366,24 +407,30 @@ export function BookChat() {
       const assistantDraftId = `local:assistant:${Date.now() + 1}`;
       let assistantStarted = false;
 
-      setMessages((current) => [
-        ...current.filter((message) => !message.pending),
-        optimisticUserMessage,
-      ]);
+      setMessages((current) => [...current.filter((message) => !message.pending), optimisticUserMessage]);
 
       await streamBookChatMessage({
         bookId,
         sessionId,
+        signal: streamAbortController.signal,
         input: {
           message: question,
-          entryContext: options?.entryContext || "full_chat",
-          selectedTools,
+          entryContext: "full_chat",
         },
         onEvent: (event) => {
+          if (streamAbortController.signal.aborted) return;
           if (event.type === "status") {
             if (assistantStarted) return;
             const text = String(event.text || "").trim();
             if (text) setStreamStatus(text);
+            return;
+          }
+
+          if (event.type === "reasoning") {
+            if (assistantStarted) return;
+            const text = String(event.text || "");
+            if (!text) return;
+            setStreamReasoning((current) => appendReasoningPreview(current, text));
             return;
           }
 
@@ -392,6 +439,7 @@ export function BookChat() {
             if (!token) return;
             assistantStarted = true;
             setStreamStatus(null);
+            setStreamReasoning(null);
             setMessages((current) =>
               current.some((message) => message.id === assistantDraftId)
                 ? current.map((message) =>
@@ -427,6 +475,7 @@ export function BookChat() {
 
           if (event.type === "final" && event.final) {
             setStreamStatus(null);
+            setStreamReasoning(null);
             const finalMessage = toAssistantMessageFromFinal(event.final);
             setMessages((current) =>
               assistantStarted && current.some((message) => message.id === assistantDraftId)
@@ -439,8 +488,10 @@ export function BookChat() {
 
       await Promise.all([refreshSessions(sessionId), loadMessages(sessionId)]);
     } catch (error) {
+      if (streamAbortController.signal.aborted) return;
       const errorMessage = error instanceof Error ? error.message : "Не удалось получить ответ";
       setStreamStatus(null);
+      setStreamReasoning(null);
       setMessages((current) => [
         ...current.filter((message) => !message.pending),
         {
@@ -460,286 +511,206 @@ export function BookChat() {
         },
       ]);
     } finally {
+      if (activeStreamAbortRef.current === streamAbortController) {
+        activeStreamAbortRef.current = null;
+      }
+      isSendingRef.current = false;
       setIsLoading(false);
       setStreamStatus(null);
+      setStreamReasoning(null);
     }
   };
-
-  const toggleTool = (tool: BookChatToolName) => {
-    setSelectedTools((current) =>
-      current.includes(tool) ? current.filter((item) => item !== tool) : [...current, tool]
-    );
-  };
-
-  useEffect(() => {
-    if (!book || !currentSessionId || pendingHandledRef.current) return;
-
-    try {
-      const pending = sessionStorage.getItem("book-chat-pending-message");
-      if (!pending) {
-        pendingHandledRef.current = true;
-        return;
-      }
-
-      const pendingSessionId = String(sessionStorage.getItem("book-chat-pending-session-id") || "").trim();
-      const pendingEntryContext = String(sessionStorage.getItem("book-chat-pending-entry-context") || "").trim();
-      sessionStorage.removeItem("book-chat-pending-message");
-      sessionStorage.removeItem("book-chat-pending-session-id");
-      sessionStorage.removeItem("book-chat-pending-entry-context");
-
-      pendingHandledRef.current = true;
-      const entryContext = pendingEntryContext === "overview" ? "overview" : "full_chat";
-
-      if (pendingSessionId && pendingSessionId !== currentSessionId) {
-        setCurrentSessionId(pendingSessionId);
-        void sendMessage(pending, { forcedSessionId: pendingSessionId, entryContext });
-      } else {
-        void sendMessage(pending, { forcedSessionId: currentSessionId, entryContext });
-      }
-    } catch {
-      pendingHandledRef.current = true;
-    }
-  }, [book, currentSessionId]);
 
   if (bookError) {
     return (
-      <div className="min-h-screen bg-background">
-        <div className="max-w-4xl mx-auto px-6 py-8 lg:py-12">
-          <div className="p-4 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive">
-            {bookError}
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!readinessLoading && readinessError && !readiness) {
-    return (
-      <div className="min-h-screen bg-background">
-        <div className="max-w-4xl mx-auto px-6 py-8 lg:py-12">
-          <div className="p-4 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive">
-            {readinessError}
-          </div>
+      <div className="container" style={{ paddingBottom: 72, paddingTop: 40 }}>
+        <div className="card" style={{ borderColor: "var(--mark)", color: "var(--mark)", padding: 18 }}>
+          {bookError}
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen h-[100dvh] overflow-hidden bg-background">
-      <div className="mx-auto flex h-full min-h-0 max-w-5xl flex-col px-6 py-6 lg:py-8">
-        <div className="mb-6 shrink-0 lg:mb-8">
-          <Link
-            href={`/book/${bookId}`}
-            className="inline-flex items-center gap-2 text-sm text-muted-foreground hover:text-foreground transition-colors mb-4"
-          >
-            <ArrowLeft className="w-4 h-4" />
-            Назад к обзору
-          </Link>
-          <div className="flex items-start justify-between gap-4">
-            <div>
-              <h1 className="text-2xl lg:text-3xl text-foreground mb-1">{book?.title || "Чат"}</h1>
-              <p className="text-muted-foreground">{book?.author || ""}</p>
-              <p className="text-sm text-muted-foreground mt-2">
-                Экспертный разбор персонажей, сцен, конфликтов и смысла книги.
-              </p>
+    <div className="screen-fade" style={{ borderTop: "1px solid var(--rule)", display: "grid", gridTemplateColumns: "288px minmax(0,1fr) 320px", height: "calc(100svh - 64px)" }}>
+      <aside style={{ background: "var(--paper-2)", borderRight: "1px solid var(--rule)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ padding: "18px 18px 12px" }}>
+          <button className="btn btn-mark btn-block" onClick={() => void createSession()} disabled={isLoading || !readiness?.canChat}>
+            <Plus size={16} /> Новый чат
+          </button>
+        </div>
+        <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "4px 8px 18px" }}>
+          <div className="mono" style={{ color: "var(--ink-faint)", padding: "8px 12px 6px" }}>Чаты по книге</div>
+          {readinessLoading && !readiness ? <div className="muted" style={{ fontSize: 13, padding: 12 }}>Проверяем готовность чата...</div> : null}
+          {readinessUnavailable ? <div className="muted" style={{ fontSize: 13, lineHeight: 1.55, padding: 12 }}>Не удалось проверить готовность чата.</div> : null}
+          {!readinessLoading && readiness && !readiness.canChat ? (
+            <div className="muted" style={{ fontSize: 13, lineHeight: 1.55, padding: 12 }}>
+              Список чатов появится, когда книга станет доступна для диалога.
             </div>
+          ) : null}
+          {readiness?.canChat && sessions.map((session) => {
+            const isActive = activeSessionId === session.id;
+            return (
+              <div key={session.id} style={{ alignItems: "flex-start", background: isActive ? "var(--cream)" : "transparent", borderRadius: "var(--r)", display: "flex", gap: 6, padding: "9px 10px" }}>
+                <button
+                  onClick={() => {
+                    if (session.id !== activeSessionId) router.push(buildBookPath(`/book/${bookId}/chat/${session.id}`));
+                  }}
+                  style={{ flex: 1, minWidth: 0, textAlign: "left" }}
+                >
+                  <div style={{ color: isActive ? "var(--ink)" : "var(--ink-soft)", fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.title}</div>
+                  <div className="mono" style={{ color: "var(--ink-faint)", fontSize: 9, marginTop: 3 }}>{formatSessionTime(session.lastMessageAt, session.updatedAt)}</div>
+                </button>
+                <button className="btn-plain" disabled={isLoading || sessions.length <= 1} onClick={() => void removeSession(session.id)} title="Удалить чат" style={{ opacity: sessions.length <= 1 ? 0.3 : 1, padding: 4 }}>
+                  <Trash2 size={14} />
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        <ChatSidebarLegal />
+      </aside>
+
+      <main style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ alignItems: "center", borderBottom: "1px solid var(--rule)", display: "flex", gap: 16, justifyContent: "space-between", padding: "14px 32px" }}>
+          <div className="row-sm" style={{ minWidth: 0 }}>
             {book ? (
-              <BookSettings book={book} />
-            ) : null}
+              <>
+                <div style={{ flexShrink: 0, width: 28 }}><BookPreviewStage book={book} size="sm" /></div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontFamily: "var(--font-serif)", fontSize: 15, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{book.title}</div>
+                  <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 2 }}>По книге · {book.author || "Автор не указан"}</div>
+                </div>
+              </>
+            ) : (
+              <div className="muted">Книга</div>
+            )}
+          </div>
+          <div className="row-sm">
+            <button className="btn btn-ghost btn-sm" title="UI-заглушка: общий чат по библиотеке пока не подключён">Вся библиотека</button>
+            <Link className="btn btn-plain btn-sm" href={buildBookPath(`/book/${bookId}`)}>Разбор</Link>
           </div>
         </div>
 
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="flex min-h-0 flex-1 flex-col gap-4"
-        >
-          {readinessLoading && !readiness ? (
-            <div className="rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
-              Проверяем готовность чата...
-            </div>
-          ) : null}
-          {!readinessLoading && readiness && !readiness.canChat ? (
-            <div className="rounded-2xl border border-border bg-card p-6 lg:p-8">
-              <div className="max-w-2xl">
-                <h2 className="text-lg text-foreground">Чат еще подготавливается</h2>
-                <p className="mt-2 text-sm leading-6 text-muted-foreground">
-                  Статус анализа перенесен на главную страницу книги. Как только fast lane будет готов, чат откроется
-                  автоматически.
-                </p>
-                <Link
-                  href={`/book/${bookId}`}
-                  className="mt-4 inline-flex items-center gap-2 rounded-lg border border-border bg-background px-4 py-2 text-sm text-foreground transition-colors hover:border-primary/30 hover:bg-primary/5"
-                >
-                  <ArrowLeft className="w-4 h-4" />
-                  Открыть главную страницу
-                </Link>
-              </div>
-            </div>
-          ) : null}
+        {readinessError && !readiness && !readinessLoading ? (
+          <div className="card" style={{ borderColor: "var(--mark)", color: "var(--mark)", margin: 24, padding: 14 }}>{readinessError}</div>
+        ) : null}
 
-          {readinessLoading && !readiness ? null : readiness && !readiness.canChat ? null : (
-            <div className="flex min-h-0 flex-1 flex-col gap-4">
-              <div className="shrink-0 rounded-xl border border-border bg-card p-3">
-                <div className="flex items-center justify-between gap-3">
-                  <div className="flex items-center gap-2 overflow-x-auto">
-                    {sessions.map((session) => (
-                      <button
-                        key={session.id}
-                        onClick={() => {
-                          setCurrentSessionId(session.id);
-                          router.push(`/book/${bookId}/chat/${session.id}`);
-                        }}
-                        className={`px-3 py-1.5 text-sm rounded-lg border transition-colors ${
-                          currentSessionId === session.id
-                            ? "bg-primary/10 border-primary/30 text-primary"
-                            : "bg-background border-border text-muted-foreground hover:text-foreground"
-                        }`}
-                      >
-                        {session.title}
-                      </button>
-                    ))}
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      onClick={() => {
-                        void createSession();
-                      }}
-                      className="p-2 rounded-lg border border-border hover:border-primary/30"
-                      title="Новый чат"
-                      disabled={isLoading}
-                    >
-                      <Plus className="w-4 h-4" />
-                    </button>
-                    {currentSession ? (
-                      <button
-                        onClick={() => {
-                          void removeSession(currentSession.id);
-                        }}
-                        className="p-2 rounded-lg border border-border hover:border-destructive/40"
-                        title="Удалить чат"
-                        disabled={isLoading}
-                      >
-                        <Trash2 className="w-4 h-4 text-destructive" />
-                      </button>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
+        {readinessLoading && !readiness ? <div className="muted" style={{ margin: "auto" }}>Проверяем готовность чата...</div> : null}
+        {readinessUnavailable ? <div className="muted" style={{ margin: "auto" }}>Не удалось получить состояние чата. Попробуйте обновить страницу.</div> : null}
+        {!readinessLoading && readiness && !readiness.canChat ? (
+          <div style={{ margin: "auto", maxWidth: 720, padding: 24 }}><ChatReadinessGate readiness={readiness} compact={false} /></div>
+        ) : null}
 
-              <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
-                <div className="min-h-0 flex-1 space-y-6 overflow-y-auto pr-2 pb-6">
-                  {messages.map((message) => (
+        {readiness?.canChat ? (
+          <>
+            <div style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "32px 48px" }}>
+              <div className="stack-xl" style={{ margin: "0 auto", maxWidth: 760 }}>
+                {messages.map((message) => (
+                  <div key={message.id} style={{ textAlign: message.role === "user" ? "right" : "left" }}>
+                    <div className="mono" style={{ color: "var(--ink-faint)", marginBottom: 6 }}>{message.role === "user" ? "Вы" : "Ремарка"}</div>
                     <div
-                      key={message.id}
-                      className={`flex gap-4 ${message.role === "user" ? "justify-end" : "justify-start"}`}
+                      style={{
+                        background: message.role === "user" ? "var(--ink)" : "transparent",
+                        borderLeft: message.role === "assistant" ? "2px solid var(--mark)" : "none",
+                        borderRadius: message.role === "user" ? "var(--r-lg)" : 0,
+                        borderTopRightRadius: message.role === "user" ? 4 : 0,
+                        color: message.role === "user" ? "var(--paper)" : "var(--ink)",
+                        display: "inline-block",
+                        fontFamily: message.role === "assistant" ? "var(--font-serif)" : "var(--font-sans)",
+                        fontSize: 15,
+                        lineHeight: 1.6,
+                        maxWidth: "85%",
+                        padding: message.role === "user" ? "14px 18px" : "0 0 0 18px",
+                        textAlign: "left",
+                      }}
                     >
-                      {message.role === "assistant" ? (
-                        <div className="w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center flex-shrink-0">
-                          <Bot className="w-5 h-5 text-primary" />
-                        </div>
-                      ) : null}
-                      <div
-                        className={`max-w-[78%] p-5 rounded-2xl ${
-                          message.role === "user"
-                            ? "bg-primary text-primary-foreground"
-                            : "bg-card border border-border text-foreground"
-                        }`}
-                      >
-                        <ChatMessageMarkdown
-                          content={message.content}
-                          inlineCitations={message.inlineCitations}
-                          className={message.role === "user" ? "text-primary-foreground" : "text-foreground"}
-                        />
-
-                        {message.role === "assistant" ? (
-                          <ChatModePill mode={message.mode} confidence={message.confidence} />
-                        ) : null}
-                        <span className="text-xs opacity-60 mt-3 block">{formatTime(message.createdAt)}</span>
-                      </div>
-                      {message.role === "user" ? (
-                        <div className="w-10 h-10 rounded-full bg-secondary flex items-center justify-center flex-shrink-0">
-                          <User className="w-5 h-5 text-primary" />
-                        </div>
-                      ) : null}
+                      <ChatMessageMarkdown content={message.content} inlineCitations={message.inlineCitations} className={message.role === "user" ? "text-primary-foreground" : "text-foreground"} />
+                      {message.role === "assistant" ? <ChatModePill mode={message.mode} confidence={message.confidence} /> : null}
+                      <span style={{ display: "block", fontFamily: "var(--font-mono)", fontSize: 10, marginTop: 10, opacity: 0.55 }}>{formatTime(message.createdAt)}</span>
                     </div>
-                  ))}
+                  </div>
+                ))}
 
-                  {isLoading && streamStatus ? (
-                    <div className="flex gap-2 items-center text-xs text-muted-foreground">
-                      <MessageSquare className="w-4 h-4" />
-                      {streamStatus}
-                    </div>
-                  ) : null}
-
-                  <div ref={messagesEndRef} />
-                </div>
-              </div>
-
-              <div className="shrink-0 border-t border-border bg-background/95 pt-4 pb-[calc(env(safe-area-inset-bottom)+0.25rem)] backdrop-blur supports-[backdrop-filter]:bg-background/80">
-                <div className="mb-3 flex flex-wrap items-center gap-2">
-                  <span className="text-xs text-muted-foreground">Инструменты чата:</span>
-                  {BOOK_CHAT_TOOL_NAMES.map((tool) => {
-                    const active = selectedToolSet.has(tool);
-                    return (
-                      <button
-                        key={tool}
-                        type="button"
-                        onClick={() => {
-                          toggleTool(tool);
-                        }}
-                        className={`rounded-full border px-3 py-1 text-xs transition-colors ${
-                          active
-                            ? "border-primary/40 bg-primary/10 text-primary"
-                            : "border-border bg-card text-muted-foreground hover:text-foreground"
-                        }`}
-                        title={BOOK_CHAT_TOOL_META[tool].description}
-                      >
-                        {BOOK_CHAT_TOOL_META[tool].label}
-                      </button>
-                    );
-                  })}
-                </div>
-                <p className="mb-3 text-xs text-muted-foreground">
-                  В следующий запрос уйдут только отмеченные инструменты, и системный prompt будет подстроен под этот
-                  набор.
-                </p>
-                {selectedTools.length === 0 ? (
-                  <div className="mb-3 rounded-xl border border-destructive/30 bg-destructive/10 px-4 py-3 text-xs text-destructive">
-                    Выбери хотя бы один инструмент, иначе чат не сможет опираться на данные книги.
+                {isLoading && (streamStatus || streamReasoning) ? (
+                  <div className="card muted" style={{ fontSize: 12, padding: 14 }}>
+                    {streamStatus ? <div className="row-sm"><MessageSquare size={14} /> {streamStatus}</div> : null}
+                    {streamReasoning ? <div className="row-sm" style={{ alignItems: "flex-start", marginTop: 8 }}><Brain size={14} /> <span>Мысли модели: {streamReasoning}</span></div> : null}
                   </div>
                 ) : null}
-                <div className="flex gap-3">
+                <div ref={messagesEndRef} />
+              </div>
+            </div>
+
+            <div style={{ padding: "20px 48px 28px" }}>
+              <div style={{ margin: "0 auto", maxWidth: 760 }}>
+                <div style={{ background: "var(--cream)", border: "1px solid var(--rule)", borderRadius: "var(--r-lg)", boxShadow: "var(--shadow-sm)", padding: "14px 18px" }}>
                   <textarea
+                    className="textarea"
+                    rows={2}
                     value={inputValue}
                     onChange={(event) => setInputValue(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" && !event.shiftKey) {
                         event.preventDefault();
-                        void sendMessage(inputValue, { entryContext: "full_chat" });
+                        void sendMessage(inputValue);
                       }
                     }}
-                    placeholder="Спросите про героя, сцену, конфликт или общий смысл книги..."
-                    className="flex-1 resize-none rounded-2xl border border-border bg-card px-5 py-4 text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-primary/20"
-                    rows={3}
+                    placeholder={book ? `Спросите о «${book.title}»...` : "Спросите о книге..."}
                     disabled={isLoading || !readiness?.canChat}
+                    style={{ background: "transparent", border: "none", boxShadow: "none", padding: 0 }}
                   />
-                  <button
-                    onClick={() => {
-                      void sendMessage(inputValue, { entryContext: "full_chat" });
-                    }}
-                    disabled={!inputValue.trim() || isLoading || !readiness?.canChat || selectedTools.length === 0}
-                    className="self-end rounded-2xl bg-primary px-8 py-4 text-primary-foreground transition-colors hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-50"
-                  >
-                    <Send className="w-5 h-5" />
-                  </button>
+                  <div className="row" style={{ justifyContent: "space-between", marginTop: 10 }}>
+                    <div className="mono" style={{ color: "var(--ink-faint)" }}>Enter отправить · Shift+Enter перенос</div>
+                    <button className="btn btn-mark btn-sm" onClick={() => void sendMessage(inputValue)} disabled={!inputValue.trim() || isLoading || !readiness?.canChat} style={{ opacity: inputValue.trim() ? 1 : 0.5 }}>
+                      <Send size={16} /> Отправить
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
-          )}
-        </motion.div>
-      </div>
+          </>
+        ) : null}
+      </main>
+
+      <aside style={{ background: "var(--paper-2)", borderLeft: "1px solid var(--rule)", overflow: "auto", padding: 28 }}>
+        <div className="mono" style={{ color: "var(--mark)", marginBottom: 10 }}>Контекст</div>
+        {book ? (
+          <>
+            <div style={{ marginBottom: 18, width: 120 }}><BookPreviewStage book={book} /></div>
+            <h2 style={{ fontSize: 24, letterSpacing: 0 }}>{book.title}</h2>
+            <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>{book.author || "Автор не указан"}</p>
+            <p className="soft" style={{ fontSize: 13, lineHeight: 1.65, marginTop: 18 }}>
+              Правая панель в макете предназначена для источников и цитат. Текущий backend отдаёт цитаты внутри ответа; отдельный source drawer пока перенесён как контекстная зона.
+            </p>
+            {book.canManage ? <div style={{ marginTop: 18 }}><BookSettings book={book} /></div> : null}
+          </>
+        ) : (
+          <p className="muted">Загружаем книгу...</p>
+        )}
+      </aside>
+
+      <style jsx>{`
+        @media (max-width: 1100px) {
+          div.screen-fade {
+            grid-template-columns: 240px minmax(0, 1fr) !important;
+          }
+          aside:last-of-type {
+            display: none !important;
+          }
+        }
+        @media (max-width: 760px) {
+          div.screen-fade {
+            display: flex !important;
+            flex-direction: column;
+            height: auto !important;
+            min-height: calc(100svh - 64px);
+          }
+          div.screen-fade > aside:first-of-type {
+            max-height: 260px;
+          }
+        }
+      `}</style>
     </div>
   );
 }

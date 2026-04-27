@@ -9,9 +9,11 @@ import type { BookCoreDTO } from "@/lib/books";
 
 interface BookSettingsProps {
   book: BookCoreDTO;
+  triggerClassName?: string;
+  triggerLabel?: string;
 }
 
-export function BookSettings({ book }: BookSettingsProps) {
+export function BookSettings({ book, triggerClassName, triggerLabel }: BookSettingsProps) {
   const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
@@ -51,10 +53,17 @@ export function BookSettings({ book }: BookSettingsProps) {
     <>
       <button
         onClick={openModal}
-        className="p-2 rounded-lg hover:bg-secondary transition-colors"
+        className={triggerClassName || "p-2 rounded-lg hover:bg-secondary transition-colors"}
         title="Настройки книги"
       >
-        <Settings className="w-5 h-5 text-muted-foreground hover:text-foreground" />
+        {triggerClassName ? (
+          <>
+            <Settings size={16} />
+            {triggerLabel ? <span>{triggerLabel}</span> : null}
+          </>
+        ) : (
+          <Settings className="w-5 h-5 text-muted-foreground hover:text-foreground" />
+        )}
       </button>
 
       {isOpen ? (

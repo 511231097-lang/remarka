@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useMemo, useState } from "react";
 import type { AdminMetricsWindow } from "@/lib/adminMetrics";
 import {
@@ -223,6 +224,12 @@ export function AdminBooksPage() {
                       <p className="text-muted-foreground">{book.author || "Автор не указан"}</p>
                       <p className="text-muted-foreground">{formatIso(book.createdAt)}</p>
                       <p className="text-muted-foreground">book {book.id}</p>
+                      <Link
+                        href={`/admin/book-search?bookId=${encodeURIComponent(book.id)}`}
+                        className="mt-2 inline-flex rounded-md border border-border px-2 py-1 text-[11px] text-muted-foreground transition-colors hover:border-primary/50 hover:text-foreground"
+                      >
+                        Искать по книге
+                      </Link>
                     </td>
                     <td className="py-2 pr-2 text-foreground">
                       <p>{displayUserName(book.owner)}</p>

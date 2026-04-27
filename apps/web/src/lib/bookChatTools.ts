@@ -7,7 +7,14 @@ export const BOOK_CHAT_TOOL_NAMES = [
 
 export type BookChatToolName = (typeof BOOK_CHAT_TOOL_NAMES)[number];
 
-export const DEFAULT_ENABLED_BOOK_CHAT_TOOLS: BookChatToolName[] = [...BOOK_CHAT_TOOL_NAMES];
+// TODO: temporary scene tools kill-switch. Flip BOOK_CHAT_SCENE_TOOLS_ENABLED=true to restore search_scenes/get_scene_context.
+export const BOOK_CHAT_SCENE_TOOLS_ENABLED = String(process.env.BOOK_CHAT_SCENE_TOOLS_ENABLED || "")
+  .trim()
+  .toLowerCase() === "true";
+
+export const DEFAULT_ENABLED_BOOK_CHAT_TOOLS: BookChatToolName[] = BOOK_CHAT_SCENE_TOOLS_ENABLED
+  ? [...BOOK_CHAT_TOOL_NAMES]
+  : ["search_paragraphs_hybrid", "get_paragraph_slice"];
 
 export const BOOK_CHAT_TOOL_META: Record<
   BookChatToolName,
@@ -18,7 +25,7 @@ export const BOOK_CHAT_TOOL_META: Record<
 > = {
   search_paragraphs_hybrid: {
     label: "Поиск абзацев",
-    description: "Гибридный поиск по абзацам для факт-чека и точных вопросов.",
+    description: "Гибридный поиск по абзацам; hits дают навигацию, primary evidence slices дают главный контекст.",
   },
   search_scenes: {
     label: "Поиск сцен",

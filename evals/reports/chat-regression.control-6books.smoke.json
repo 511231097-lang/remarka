@@ -1,0 +1,705 @@
+{
+  "version": "v1",
+  "generatedAt": "2026-04-21T17:27:38.395Z",
+  "configPath": "/home/west/Documents/myb/remarka/evals/chat-regression.control-6books.v1.json",
+  "name": "chat-regression-control-6books-v1",
+  "runAnalysis": false,
+  "thresholds": {
+    "costIncreasePct": 0.25,
+    "p95LatencyIncreasePct": 0.35,
+    "groundedProxyDropPp": 0.1
+  },
+  "chatTools": [
+    "search_paragraphs_hybrid",
+    "search_scenes",
+    "get_scene_context",
+    "get_paragraph_slice"
+  ],
+  "books": [
+    {
+      "bookId": "cf612551b844e457fb1d00948",
+      "label": "Так говорил Заратустра A [cmo7nixlc00idp809th7jtmu1]",
+      "analysis": {
+        "requested": false,
+        "state": "skipped",
+        "runId": "cmo7m8i601sm8kx92low99l5r",
+        "chatModel": "gemini-3.1-flash-lite-preview",
+        "embeddingModel": "gemini-embedding-001",
+        "llmPromptTokens": 505485,
+        "llmCompletionTokens": 112056,
+        "llmTotalTokens": 617541,
+        "embeddingInputTokens": 236287,
+        "llmCostUsd": 0.29445525,
+        "embeddingCostUsd": 0.03544305,
+        "totalCostUsd": 0.3298983,
+        "totalElapsedMs": 113842,
+        "llmLatencyMs": 491689,
+        "embeddingLatencyMs": 178900,
+        "llmCalls": 227,
+        "embeddingCalls": 12,
+        "startedAt": "2026-04-20T19:56:37.743Z",
+        "completedAt": "2026-04-20T19:58:31.585Z",
+        "error": null
+      },
+      "aggregate": {
+        "questions": 1,
+        "totalCostUsd": 0.017019,
+        "totalLatencyMs": 56795,
+        "avgLatencyMs": 56795,
+        "p95LatencyMs": 56795,
+        "totalInputTokens": 3552,
+        "totalOutputTokens": 826,
+        "totalTokens": 4378,
+        "totalEmbeddingInputTokens": 20,
+        "citationsRate": 1,
+        "toolUseRate": 1,
+        "fallbackRate": 0,
+        "groundedProxyRate": 1,
+        "stepMetrics": [
+          {
+            "step": "main",
+            "calls": 1,
+            "totalLatencyMs": 55759,
+            "avgLatencyMs": 55759,
+            "inputTokens": 3245,
+            "outputTokens": 815,
+            "totalTokens": 4060,
+            "totalCostUsd": 0.01627
+          },
+          {
+            "step": "planner",
+            "calls": 1,
+            "totalLatencyMs": 1032,
+            "avgLatencyMs": 1032,
+            "inputTokens": 307,
+            "outputTokens": 11,
+            "totalTokens": 318,
+            "totalCostUsd": 0.00009325
+          }
+        ]
+      },
+      "questions": [
+        {
+          "question": "Как связаны сцена с канатоходцем в прологе, образ «последнего человека» и идея сверхчеловека, и почему именно через эту связку задается исходное напряжение всей книги?",
+          "answerPreview": "В прологе книги эти три образа сплетаются в единую метафору, которая задает главный философский и драматический конфликт всего произведения: 1. **Канатоходец как метафора пути:** Заратустра прямо заявляет: *«Человек – это канат, натянутый м",
+          "totalLatencyMs": 56795,
+          "modelInputTokens": 3552,
+          "modelOutputTokens": 826,
+          "modelTotalTokens": 4378,
+          "embeddingInputTokens": 20,
+          "chatCostUsd": 0.017016,
+          "embeddingCostUsd": 0.000003,
+          "totalCostUsd": 0.017019,
+          "citationCount": 6,
+          "toolRunCount": 2,
+          "fallbackUsed": false,
+          "fallbackKind": null,
+          "chatModel": "gemini-3.1-pro-preview",
+          "embeddingModel": "gemini-embedding-001",
+          "llmSteps": [
+            {
+              "step": "planner",
+              "model": "gemini-3.1-flash-lite-preview",
+              "latencyMs": 1032,
+              "inputTokens": 307,
+              "outputTokens": 11,
+              "totalTokens": 318,
+              "chatCostUsd": 0.00009325
+            },
+            {
+              "step": "main",
+              "model": "gemini-3.1-pro-preview",
+              "latencyMs": 55759,
+              "inputTokens": 3245,
+              "outputTokens": 815,
+              "totalTokens": 4060,
+              "chatCostUsd": 0.01627
+            }
+          ],
+          "quality": {
+            "hasCitations": true,
+            "usedTools": true,
+            "groundedProxy": true
+          }
+        }
+      ]
+    },
+    {
+      "bookId": "c68dd911b861843568513be68",
+      "label": "Так говорил Заратустра B [cmo7nizms00ihp8099a0jcyye]",
+      "analysis": {
+        "requested": false,
+        "state": "skipped",
+        "runId": "cmo742gn306gjf5nmgv7ystmg",
+        "chatModel": "gemini-3.1-flash-lite-preview",
+        "embeddingModel": "gemini-embedding-001",
+        "llmPromptTokens": 619401,
+        "llmCompletionTokens": 137498,
+        "llmTotalTokens": 756899,
+        "embeddingInputTokens": 258763,
+        "llmCostUsd": 0.36109725,
+        "embeddingCostUsd": 0.03881445,
+        "totalCostUsd": 0.3999117,
+        "totalElapsedMs": 121037,
+        "llmLatencyMs": 578659,
+        "embeddingLatencyMs": 178597,
+        "llmCalls": 227,
+        "embeddingCalls": 12,
+        "startedAt": "2026-04-20T11:28:02.746Z",
+        "completedAt": "2026-04-20T11:30:03.783Z",
+        "error": null
+      },
+      "aggregate": {
+        "questions": 1,
+        "totalCostUsd": 0.0142738,
+        "totalLatencyMs": 29518,
+        "avgLatencyMs": 29518,
+        "p95LatencyMs": 29518,
+        "totalInputTokens": 2522,
+        "totalOutputTokens": 769,
+        "totalTokens": 3291,
+        "totalEmbeddingInputTokens": 12,
+        "citationsRate": 1,
+        "toolUseRate": 1,
+        "fallbackRate": 0,
+        "groundedProxyRate": 1,
+        "stepMetrics": [
+          {
+            "step": "main",
+            "calls": 1,
+            "totalLatencyMs": 28323,
+            "avgLatencyMs": 28323,
+            "inputTokens": 2215,
+            "outputTokens": 758,
+            "totalTokens": 2973,
+            "totalCostUsd": 0.013526
+          },
+          {
+            "step": "planner",
+            "calls": 1,
+            "totalLatencyMs": 1193,
+            "avgLatencyMs": 1193,
+            "inputTokens": 307,
+            "outputTokens": 11,
+            "totalTokens": 318,
+            "totalCostUsd": 0.00009325
+          }
+        ]
+      },
+      "questions": [
+        {
+          "question": "Как связаны сцена с канатоходцем в прологе, образ «последнего человека» и идея сверхчеловека, и почему именно через эту связку задается исходное напряжение всей книги?",
+          "answerPreview": "В прологе «Так говорил Заратустра» эти три образа образуют единую метафору, которая задает главный философский и драматический конфликт всей книги: 1. **Сверхчеловек** — это цель и идеал. Заратустра провозглашает, что «человек есть нечто, ч",
+          "totalLatencyMs": 29518,
+          "modelInputTokens": 2522,
+          "modelOutputTokens": 769,
+          "modelTotalTokens": 3291,
+          "embeddingInputTokens": 12,
+          "chatCostUsd": 0.014272,
+          "embeddingCostUsd": 0.0000018,
+          "totalCostUsd": 0.0142738,
+          "citationCount": 6,
+          "toolRunCount": 1,
+          "fallbackUsed": false,
+          "fallbackKind": null,
+          "chatModel": "gemini-3.1-pro-preview",
+          "embeddingModel": "gemini-embedding-001",
+          "llmSteps": [
+            {
+              "step": "planner",
+              "model": "gemini-3.1-flash-lite-preview",
+              "latencyMs": 1193,
+              "inputTokens": 307,
+              "outputTokens": 11,
+              "totalTokens": 318,
+              "chatCostUsd": 0.00009325
+            },
+            {
+              "step": "main",
+              "model": "gemini-3.1-pro-preview",
+              "latencyMs": 28323,
+              "inputTokens": 2215,
+              "outputTokens": 758,
+              "totalTokens": 2973,
+              "chatCostUsd": 0.013526
+            }
+          ],
+          "quality": {
+            "hasCitations": true,
+            "usedTools": true,
+            "groundedProxy": true
+          }
+        }
+      ]
+    },
+    {
+      "bookId": "ca0c432eb9adb46259ab7975c",
+      "label": "Гарри Поттер и философский камень A [cmo7nxqge00mjp809toie5vgb]",
+      "analysis": {
+        "requested": false,
+        "state": "skipped",
+        "runId": "cmo7k92i80lti145ssdz5vozn",
+        "chatModel": "gemini-3.1-flash-lite-preview",
+        "embeddingModel": "gemini-embedding-001",
+        "llmPromptTokens": 564432,
+        "llmCompletionTokens": 142734,
+        "llmTotalTokens": 707166,
+        "embeddingInputTokens": 311752,
+        "llmCostUsd": 0.355209,
+        "embeddingCostUsd": 0.0467628,
+        "totalCostUsd": 0.4019718,
+        "totalElapsedMs": 151773,
+        "llmLatencyMs": 588888,
+        "embeddingLatencyMs": 311485,
+        "llmCalls": 187,
+        "embeddingCalls": 34,
+        "startedAt": "2026-04-20T19:01:04.877Z",
+        "completedAt": "2026-04-20T19:03:36.650Z",
+        "error": null
+      },
+      "aggregate": {
+        "questions": 1,
+        "totalCostUsd": 0.02861065,
+        "totalLatencyMs": 41399,
+        "avgLatencyMs": 41399,
+        "p95LatencyMs": 41399,
+        "totalInputTokens": 4859,
+        "totalOutputTokens": 1574,
+        "totalTokens": 6433,
+        "totalEmbeddingInputTokens": 31,
+        "citationsRate": 1,
+        "toolUseRate": 1,
+        "fallbackRate": 0,
+        "groundedProxyRate": 1,
+        "stepMetrics": [
+          {
+            "step": "main",
+            "calls": 1,
+            "totalLatencyMs": 40571,
+            "avgLatencyMs": 40571,
+            "inputTokens": 4543,
+            "outputTokens": 1563,
+            "totalTokens": 6106,
+            "totalCostUsd": 0.027842
+          },
+          {
+            "step": "planner",
+            "calls": 1,
+            "totalLatencyMs": 826,
+            "avgLatencyMs": 826,
+            "inputTokens": 316,
+            "outputTokens": 11,
+            "totalTokens": 327,
+            "totalCostUsd": 0.0000955
+          }
+        ]
+      },
+      "questions": [
+        {
+          "question": "Какие именно улики по ходу книги заставляют Гарри, Рона и Гермиону подозревать Снегга, и какие детали при внимательном чтении, наоборот, указывают на Квиррелла?",
+          "answerPreview": "На протяжении всей книги Джоан Роулинг мастерски водит читателей и главных героев за нос, подкидывая ложные улики против Северуса Снегга и маскируя истинного злодея — профессора Квиррелла. **Почему Гарри, Рон и Гермиона подозревали Снегга (",
+          "totalLatencyMs": 41399,
+          "modelInputTokens": 4859,
+          "modelOutputTokens": 1574,
+          "modelTotalTokens": 6433,
+          "embeddingInputTokens": 31,
+          "chatCostUsd": 0.028606,
+          "embeddingCostUsd": 0.00000465,
+          "totalCostUsd": 0.02861065,
+          "citationCount": 6,
+          "toolRunCount": 2,
+          "fallbackUsed": false,
+          "fallbackKind": null,
+          "chatModel": "gemini-3.1-pro-preview",
+          "embeddingModel": "gemini-embedding-001",
+          "llmSteps": [
+            {
+              "step": "planner",
+              "model": "gemini-3.1-flash-lite-preview",
+              "latencyMs": 826,
+              "inputTokens": 316,
+              "outputTokens": 11,
+              "totalTokens": 327,
+              "chatCostUsd": 0.0000955
+            },
+            {
+              "step": "main",
+              "model": "gemini-3.1-pro-preview",
+              "latencyMs": 40571,
+              "inputTokens": 4543,
+              "outputTokens": 1563,
+              "totalTokens": 6106,
+              "chatCostUsd": 0.027842
+            }
+          ],
+          "quality": {
+            "hasCitations": true,
+            "usedTools": true,
+            "groundedProxy": true
+          }
+        }
+      ]
+    },
+    {
+      "bookId": "c811600b0dcd840f99eb84d47",
+      "label": "Гарри Поттер и философский камень B [cmo7nxtdn00mnp809js03cw8h]",
+      "analysis": {
+        "requested": false,
+        "state": "skipped",
+        "runId": "cmo7m3g5z0k1skx92gxfnas2d",
+        "chatModel": "gemini-3.1-flash-lite-preview",
+        "embeddingModel": "gemini-embedding-001",
+        "llmPromptTokens": 442730,
+        "llmCompletionTokens": 98198,
+        "llmTotalTokens": 540928,
+        "embeddingInputTokens": 245107,
+        "llmCostUsd": 0.2579795,
+        "embeddingCostUsd": 0.03676605,
+        "totalCostUsd": 0.29474555,
+        "totalElapsedMs": 116584,
+        "llmLatencyMs": 444690,
+        "embeddingLatencyMs": 255947,
+        "llmCalls": 189,
+        "embeddingCalls": 34,
+        "startedAt": "2026-04-20T19:52:41.874Z",
+        "completedAt": "2026-04-20T19:54:38.458Z",
+        "error": null
+      },
+      "aggregate": {
+        "questions": 1,
+        "totalCostUsd": 0.0319379,
+        "totalLatencyMs": 62275,
+        "avgLatencyMs": 62275,
+        "p95LatencyMs": 62275,
+        "totalInputTokens": 7546,
+        "totalOutputTokens": 1403,
+        "totalTokens": 8949,
+        "totalEmbeddingInputTokens": 66,
+        "citationsRate": 1,
+        "toolUseRate": 1,
+        "fallbackRate": 0,
+        "groundedProxyRate": 1,
+        "stepMetrics": [
+          {
+            "step": "main",
+            "calls": 1,
+            "totalLatencyMs": 61511,
+            "avgLatencyMs": 61511,
+            "inputTokens": 7230,
+            "outputTokens": 1392,
+            "totalTokens": 8622,
+            "totalCostUsd": 0.031164
+          },
+          {
+            "step": "planner",
+            "calls": 1,
+            "totalLatencyMs": 762,
+            "avgLatencyMs": 762,
+            "inputTokens": 316,
+            "outputTokens": 11,
+            "totalTokens": 327,
+            "totalCostUsd": 0.0000955
+          }
+        ]
+      },
+      "questions": [
+        {
+          "question": "Какие именно улики по ходу книги заставляют Гарри, Рона и Гермиону подозревать Снегга, и какие детали при внимательном чтении, наоборот, указывают на Квиррелла?",
+          "answerPreview": "В книге «Гарри Поттер и философский камень» Джоан Роулинг мастерски играет с ожиданиями читателя, подкидывая ложные улики против Снегга и пряча настоящие подсказки о Квиррелле. **Почему Гарри, Рон и Гермиона подозревают Снегга (ложные улики",
+          "totalLatencyMs": 62275,
+          "modelInputTokens": 7546,
+          "modelOutputTokens": 1403,
+          "modelTotalTokens": 8949,
+          "embeddingInputTokens": 66,
+          "chatCostUsd": 0.031928,
+          "embeddingCostUsd": 0.0000099,
+          "totalCostUsd": 0.0319379,
+          "citationCount": 6,
+          "toolRunCount": 4,
+          "fallbackUsed": false,
+          "fallbackKind": null,
+          "chatModel": "gemini-3.1-pro-preview",
+          "embeddingModel": "gemini-embedding-001",
+          "llmSteps": [
+            {
+              "step": "planner",
+              "model": "gemini-3.1-flash-lite-preview",
+              "latencyMs": 762,
+              "inputTokens": 316,
+              "outputTokens": 11,
+              "totalTokens": 327,
+              "chatCostUsd": 0.0000955
+            },
+            {
+              "step": "main",
+              "model": "gemini-3.1-pro-preview",
+              "latencyMs": 61511,
+              "inputTokens": 7230,
+              "outputTokens": 1392,
+              "totalTokens": 8622,
+              "chatCostUsd": 0.031164
+            }
+          ],
+          "quality": {
+            "hasCitations": true,
+            "usedTools": true,
+            "groundedProxy": true
+          }
+        }
+      ]
+    },
+    {
+      "bookId": "cf3f34d5e03f54b7487bc891a",
+      "label": "Война и мир. Шедевр мировой литературы в одном томе [cmo7n4ney00e3p809q8drdgeu]",
+      "analysis": {
+        "requested": false,
+        "state": "skipped",
+        "runId": "cmo7l6vwy22lr145s4y80mjb8",
+        "chatModel": "gemini-3.1-flash-lite-preview",
+        "embeddingModel": "gemini-embedding-001",
+        "llmPromptTokens": 2212916,
+        "llmCompletionTokens": 466896,
+        "llmTotalTokens": 2679812,
+        "embeddingInputTokens": 1290643,
+        "llmCostUsd": 1.253573,
+        "embeddingCostUsd": 0.19359645,
+        "totalCostUsd": 1.44716945,
+        "totalElapsedMs": 246076,
+        "llmLatencyMs": 1887264,
+        "embeddingLatencyMs": 382195,
+        "llmCalls": 621,
+        "embeddingCalls": 10,
+        "startedAt": "2026-04-20T19:27:22.635Z",
+        "completedAt": "2026-04-20T19:31:28.711Z",
+        "error": null
+      },
+      "aggregate": {
+        "questions": 1,
+        "totalCostUsd": 0.0254707,
+        "totalLatencyMs": 82469,
+        "avgLatencyMs": 82469,
+        "p95LatencyMs": 82469,
+        "totalInputTokens": 8339,
+        "totalOutputTokens": 732,
+        "totalTokens": 9071,
+        "totalEmbeddingInputTokens": 58,
+        "citationsRate": 1,
+        "toolUseRate": 1,
+        "fallbackRate": 0,
+        "groundedProxyRate": 1,
+        "stepMetrics": [
+          {
+            "step": "main",
+            "calls": 1,
+            "totalLatencyMs": 81751,
+            "avgLatencyMs": 81751,
+            "inputTokens": 8030,
+            "outputTokens": 721,
+            "totalTokens": 8751,
+            "totalCostUsd": 0.024712
+          },
+          {
+            "step": "planner",
+            "calls": 1,
+            "totalLatencyMs": 717,
+            "avgLatencyMs": 717,
+            "inputTokens": 309,
+            "outputTokens": 11,
+            "totalTokens": 320,
+            "totalCostUsd": 0.00009375
+          }
+        ]
+      },
+      "questions": [
+        {
+          "question": "Почему мировоззрение князя Андрея меняется после Аустерлица, и как этот перелом потом отзывается в его поведении перед Бородинским сражением?",
+          "answerPreview": "**Перелом после Аустерлица:** До Аустерлицкого сражения князь Андрей мечтал о личной славе (своем «Тулоне») и идеализировал Наполеона. Однако, лежа раненым на поле боя и глядя на «высокое, бесконечное небо», он переживает глубокий духовный ",
+          "totalLatencyMs": 82469,
+          "modelInputTokens": 8339,
+          "modelOutputTokens": 732,
+          "modelTotalTokens": 9071,
+          "embeddingInputTokens": 58,
+          "chatCostUsd": 0.025462,
+          "embeddingCostUsd": 0.0000087,
+          "totalCostUsd": 0.0254707,
+          "citationCount": 6,
+          "toolRunCount": 4,
+          "fallbackUsed": false,
+          "fallbackKind": null,
+          "chatModel": "gemini-3.1-pro-preview",
+          "embeddingModel": "gemini-embedding-001",
+          "llmSteps": [
+            {
+              "step": "planner",
+              "model": "gemini-3.1-flash-lite-preview",
+              "latencyMs": 717,
+              "inputTokens": 309,
+              "outputTokens": 11,
+              "totalTokens": 320,
+              "chatCostUsd": 0.00009375
+            },
+            {
+              "step": "main",
+              "model": "gemini-3.1-pro-preview",
+              "latencyMs": 81751,
+              "inputTokens": 8030,
+              "outputTokens": 721,
+              "totalTokens": 8751,
+              "chatCostUsd": 0.024712
+            }
+          ],
+          "quality": {
+            "hasCitations": true,
+            "usedTools": true,
+            "groundedProxy": true
+          }
+        }
+      ]
+    },
+    {
+      "bookId": "c1a02f076816e4e00a1dd4087",
+      "label": "Гарри Поттер и Тайная комната [cmo7prhuc00221qmvwrsdb1b5]",
+      "analysis": {
+        "requested": false,
+        "state": "skipped",
+        "runId": "cmo7m5z0j161skx92evi82rg3",
+        "chatModel": "gemini-3.1-flash-lite-preview",
+        "embeddingModel": "gemini-embedding-001",
+        "llmPromptTokens": 430522,
+        "llmCompletionTokens": 94839,
+        "llmTotalTokens": 525361,
+        "embeddingInputTokens": 232454,
+        "llmCostUsd": 0.249889,
+        "embeddingCostUsd": 0.0348681,
+        "totalCostUsd": 0.2847571,
+        "totalElapsedMs": 105955,
+        "llmLatencyMs": 419956,
+        "embeddingLatencyMs": 252332,
+        "llmCalls": 184,
+        "embeddingCalls": 36,
+        "startedAt": "2026-04-20T19:54:39.614Z",
+        "completedAt": "2026-04-20T19:56:25.569Z",
+        "error": null
+      },
+      "aggregate": {
+        "questions": 1,
+        "totalCostUsd": 0.0237648,
+        "totalLatencyMs": 116527,
+        "avgLatencyMs": 116527,
+        "p95LatencyMs": 116527,
+        "totalInputTokens": 7215,
+        "totalOutputTokens": 777,
+        "totalTokens": 7992,
+        "totalEmbeddingInputTokens": 72,
+        "citationsRate": 1,
+        "toolUseRate": 1,
+        "fallbackRate": 0,
+        "groundedProxyRate": 1,
+        "stepMetrics": [
+          {
+            "step": "main",
+            "calls": 1,
+            "totalLatencyMs": 115680,
+            "avgLatencyMs": 115680,
+            "inputTokens": 6893,
+            "outputTokens": 766,
+            "totalTokens": 7659,
+            "totalCostUsd": 0.022978
+          },
+          {
+            "step": "planner",
+            "calls": 1,
+            "totalLatencyMs": 844,
+            "avgLatencyMs": 844,
+            "inputTokens": 322,
+            "outputTokens": 11,
+            "totalTokens": 333,
+            "totalCostUsd": 0.000097
+          }
+        ]
+      },
+      "questions": [
+        {
+          "question": "Какие именно улики по ходу первой половины книги заставляют Гарри, Рона и Гермиону подозревать Драко Малфоя как наследника Слизерина, и какие детали позже доказывают, что они ошибались?",
+          "answerPreview": "**Почему Гарри, Рон и Гермиона подозревали Драко Малфоя:** 1. **Ненависть к маглорожденным:** После нападения на миссис Норрис Малфой злорадно крикнул в толпе: «Вы следующие, грязнокровки!». 2. **Семейная история:** Вся семья Малфоев училас",
+          "totalLatencyMs": 116527,
+          "modelInputTokens": 7215,
+          "modelOutputTokens": 777,
+          "modelTotalTokens": 7992,
+          "embeddingInputTokens": 72,
+          "chatCostUsd": 0.023754,
+          "embeddingCostUsd": 0.0000108,
+          "totalCostUsd": 0.0237648,
+          "citationCount": 6,
+          "toolRunCount": 5,
+          "fallbackUsed": false,
+          "fallbackKind": null,
+          "chatModel": "gemini-3.1-pro-preview",
+          "embeddingModel": "gemini-embedding-001",
+          "llmSteps": [
+            {
+              "step": "planner",
+              "model": "gemini-3.1-flash-lite-preview",
+              "latencyMs": 844,
+              "inputTokens": 322,
+              "outputTokens": 11,
+              "totalTokens": 333,
+              "chatCostUsd": 0.000097
+            },
+            {
+              "step": "main",
+              "model": "gemini-3.1-pro-preview",
+              "latencyMs": 115680,
+              "inputTokens": 6893,
+              "outputTokens": 766,
+              "totalTokens": 7659,
+              "chatCostUsd": 0.022978
+            }
+          ],
+          "quality": {
+            "hasCitations": true,
+            "usedTools": true,
+            "groundedProxy": true
+          }
+        }
+      ]
+    }
+  ],
+  "overall": {
+    "questions": 6,
+    "totalCostUsd": 0.14107685,
+    "totalLatencyMs": 388983,
+    "avgLatencyMs": 64831,
+    "p95LatencyMs": 116527,
+    "totalInputTokens": 34033,
+    "totalOutputTokens": 6081,
+    "totalTokens": 40114,
+    "totalEmbeddingInputTokens": 259,
+    "citationsRate": 1,
+    "toolUseRate": 1,
+    "fallbackRate": 0,
+    "groundedProxyRate": 1,
+    "stepMetrics": [
+      {
+        "step": "main",
+        "calls": 6,
+        "totalLatencyMs": 383595,
+        "avgLatencyMs": 63933,
+        "inputTokens": 32156,
+        "outputTokens": 6015,
+        "totalTokens": 38171,
+        "totalCostUsd": 0.136492
+      },
+      {
+        "step": "planner",
+        "calls": 6,
+        "totalLatencyMs": 5374,
+        "avgLatencyMs": 896,
+        "inputTokens": 1877,
+        "outputTokens": 66,
+        "totalTokens": 1943,
+        "totalCostUsd": 0.00056825
+      }
+    ]
+  }
+}

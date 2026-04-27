@@ -22,6 +22,8 @@ const BOOK_LOCK_PREFIX = "analysis-book";
 const SHOWCASE_BOOK_LOCK_PREFIX = "showcase-book";
 const WATCHDOG_REASON_STALE_RUNNING = "stale_running_requeued";
 const WATCHDOG_REASON_RETRY_EXHAUSTED = "watchdog_retry_exhausted";
+// TODO: temporary showcase kill-switch while scene extraction is disabled. Flip SHOWCASE_BUILD_ENABLED=true to restore.
+const SHOWCASE_BUILD_ENABLED = String(process.env.SHOWCASE_BUILD_ENABLED || "").trim().toLowerCase() === "true";
 
 interface AnalysisJobPayload {
   bookId: string;
@@ -764,6 +766,16 @@ async function executeQueueJob(params: {
       logger: scopedLogger,
     });
 
+    if (!SHOWCASE_BUILD_ENABLED) {
+      scopedLogger.info("Skipping showcase build request by SHOWCASE_BUILD_ENABLED=false", {
+        requestId: payload.requestId,
+      });
+      scopedLogger.info("Analysis queue job completed", {
+        requestId: payload.requestId,
+      });
+      return;
+    }
+
     const showcaseRequestedAt = new Date();
     const showcaseRequestId = `showcase:${payload.requestId}`;
     try {
@@ -845,6 +857,14 @@ async function executeShowcaseQueueJob(params: {
 }) {
   const payload = await normalizeShowcaseJobPayload(params.job?.data, `job:${asString(params.job?.id) || randomUUID()}`);
   const scopedLogger = createBookScopedLogger(payload.bookId);
+
+  if (!SHOWCASE_BUILD_ENABLED) {
+    scopedLogger.info("Skipping showcase queue job by SHOWCASE_BUILD_ENABLED=false", {
+      requestId: payload.requestId,
+      triggerSource: payload.triggerSource,
+    });
+    return;
+  }
 
   const bookLease = await acquireAdvisoryLease(params.lockPool, `${SHOWCASE_BOOK_LOCK_PREFIX}:${payload.bookId}`);
   if (!bookLease) {

@@ -8,6 +8,7 @@
   "dependencies": {
     "@xmldom/xmldom": "^0.8.11",
     "jszip": "^3.10.1",
+    "pdfjs-dist": "^5.6.205",
     "zod": "^3.23.8"
   }
 }

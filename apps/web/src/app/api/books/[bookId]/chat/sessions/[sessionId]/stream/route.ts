@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { isBookChatToolName, type BookChatToolName } from "@/lib/bookChatTools";
+import { BOOK_CHAT_SCENE_TOOLS_ENABLED, isBookChatToolName, type BookChatToolName } from "@/lib/bookChatTools";
 import { resolveAuthUser } from "@/lib/authUser";
 import { resolveAccessibleBook } from "@/lib/chatAccess";
 import { BookChatError, streamBookChatThreadReply } from "@/lib/bookChatService";
@@ -16,33 +16,41 @@ function toSseEvent(event: string, payload: Record<string, unknown>): string {
 
 function statusForToolCall(toolName: string): string {
   const normalized = String(toolName || "").trim().toLowerCase();
-  if (normalized === "search_paragraphs_hybrid" || normalized === "search_paragraphs_lexical") {
-    return "Ищу подходящий параграф";
+  if (
+    normalized === "search_paragraphs" ||
+    normalized === "search_paragraphs_hybrid" ||
+    normalized === "search_paragraphs_lexical"
+  ) {
+    return "Ищу подходящие абзацы";
   }
   if (normalized === "search_scenes") {
-    return "Ищу подходящую сцену";
+    return "Ищу подходящие сцены";
   }
   if (normalized === "get_scene_context") {
     return "Детально изучаю сцену";
   }
-  if (normalized === "get_paragraph_slice") {
-    return "Проверяю контекст фрагмента";
+  if (normalized === "read_passages" || normalized === "get_paragraph_slice") {
+    return "Читаю соседний контекст";
   }
   return "Проверяю релевантные фрагменты";
 }
 
 function statusForToolResult(toolName: string): string {
   const normalized = String(toolName || "").trim().toLowerCase();
-  if (normalized === "search_paragraphs_hybrid" || normalized === "search_paragraphs_lexical") {
+  if (
+    normalized === "search_paragraphs" ||
+    normalized === "search_paragraphs_hybrid" ||
+    normalized === "search_paragraphs_lexical"
+  ) {
     return "Нашёл релевантные абзацы, собираю ответ";
   }
   if (normalized === "search_scenes") {
-    return "Сцена найдена, собираю опорный контекст";
+    return "Сцены найдены, уточняю доказательства";
   }
   if (normalized === "get_scene_context") {
     return "Сцена изучена, формулирую вывод";
   }
-  if (normalized === "get_paragraph_slice") {
+  if (normalized === "read_passages" || normalized === "get_paragraph_slice") {
     return "Контекст проверен, формулирую ответ";
   }
   return "Собираю ответ";
@@ -82,7 +90,12 @@ export async function POST(request: Request, context: RouteContext) {
 
     const invalidTools = body.selectedTools
       .map((item) => String(item || "").trim())
-      .filter((item) => item && !isBookChatToolName(item));
+      .filter(
+        (item) =>
+          item &&
+          (!isBookChatToolName(item) ||
+            (!BOOK_CHAT_SCENE_TOOLS_ENABLED && (item === "search_scenes" || item === "get_scene_context")))
+      );
     if (invalidTools.length > 0) {
       return NextResponse.json(
         { error: `Unsupported tools: ${invalidTools.join(", ")}` },
@@ -103,11 +116,17 @@ export async function POST(request: Request, context: RouteContext) {
   }
 
   const encoder = new TextEncoder();
+  let closed = false;
 
   const stream = new ReadableStream<Uint8Array>({
     start(controller) {
       const sendEvent = (event: string, payload: Record<string, unknown>) => {
-        controller.enqueue(encoder.encode(toSseEvent(event, payload)));
+        if (closed || request.signal.aborted) return;
+        try {
+          controller.enqueue(encoder.encode(toSseEvent(event, payload)));
+        } catch {
+          closed = true;
+        }
       };
       let lastStatus = "";
       const sendStatus = (status: string) => {
@@ -130,6 +149,8 @@ export async function POST(request: Request, context: RouteContext) {
             ownerUserId: authUser.id,
             userText: message,
             selectedTools,
+            // Internal model thoughts are intentionally not streamed to the UI.
+            // Some providers emit many repeated reasoning deltas, which can flood the chat surface.
             onToolCall: async (event) => {
               sendStatus(statusForToolCall(event.toolName));
             },
@@ -157,7 +178,10 @@ export async function POST(request: Request, context: RouteContext) {
             referenceResolution: null,
           });
 
-          controller.close();
+          if (!closed) {
+            closed = true;
+            controller.close();
+          }
         } catch (error) {
           if (error instanceof BookChatError) {
             sendEvent("error", {
@@ -169,12 +193,16 @@ export async function POST(request: Request, context: RouteContext) {
               error: error instanceof Error ? error.message : "Chat stream failed",
             });
           }
-          controller.close();
+          if (!closed) {
+            closed = true;
+            controller.close();
+          }
         }
       })();
     },
     cancel() {
-      // Client can disconnect while backend keeps processing.
+      closed = true;
+      // Client can disconnect while backend keeps processing and persisting the answer.
     },
   });
 

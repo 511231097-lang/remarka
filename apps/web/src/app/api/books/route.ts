@@ -25,7 +25,7 @@ import { toBookCardDTO, toBookCoreDTO, type BookCardDTO } from "@/lib/books";
 
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 50;
-const DEFAULT_IMPORT_MAX_FILE_BYTES = 25 * 1024 * 1024;
+const DEFAULT_IMPORT_MAX_FILE_BYTES = 50 * 1024 * 1024;
 const DEFAULT_IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES = 50 * 1024 * 1024;
 const DEFAULT_LOCAL_BLOB_ROOT = "/tmp/remarka-imports";
 const DEFAULT_BOOKS_S3_REGION = "us-east-1";
@@ -118,6 +118,8 @@ function resolveMimeType(format: BookFormat, fileType: string): string {
   const normalized = String(fileType || "").trim();
   if (normalized) return normalized;
   if (format === "fb2") return "application/x-fictionbook+xml";
+  if (format === "epub") return "application/epub+zip";
+  if (format === "pdf") return "application/pdf";
   return "application/zip";
 }
 
@@ -308,7 +310,7 @@ export async function POST(request: Request) {
 
   const format = resolveUploadFormat(fileEntry.name);
   if (!format) {
-    return NextResponse.json({ error: "Unsupported format. Use FB2 or FB2 ZIP." }, { status: 415 });
+    return NextResponse.json({ error: "Unsupported format. Use FB2, FB2 ZIP, EPUB or PDF." }, { status: 415 });
   }
 
   const bytes = new Uint8Array(await fileEntry.arrayBuffer());
@@ -353,7 +355,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message, code: error.code }, { status: 422 });
     }
 
-    return NextResponse.json({ error: "Failed to parse FB2 file" }, { status: 422 });
+    console.error("Book import failed", error);
+    return NextResponse.json({ error: "Failed to parse book file" }, { status: 422 });
   }
 
   let blob: Awaited<ReturnType<BlobStore["put"]>>;

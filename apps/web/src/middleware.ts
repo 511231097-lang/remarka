@@ -8,6 +8,7 @@ function isPublicPath(pathname: string): boolean {
   if (PUBLIC_PATHS.includes(pathname)) return true;
   if (pathname.startsWith("/explore/")) return true;
   if (pathname.startsWith("/plans/")) return true;
+  if (pathname.startsWith("/legal/")) return true;
   if (pathname.startsWith("/api/auth/")) return true;
   if (pathname.startsWith("/api/")) return true;
   return false;

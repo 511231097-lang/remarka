@@ -98,3 +98,11 @@ export function canUseMvpBookChat(snapshot: BookCapabilitySnapshotDTO): boolean 
     snapshot.capabilities.get_processing_status !== "disabled"
   );
 }
+
+export function canUseParagraphOnlyBookChat(snapshot: BookCapabilitySnapshotDTO): boolean {
+  return (
+    snapshot.analysisState !== "failed" &&
+    snapshot.capabilities.read_passages !== "disabled" &&
+    snapshot.capabilities.get_processing_status !== "disabled"
+  );
+}

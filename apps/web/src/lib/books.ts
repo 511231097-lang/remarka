@@ -597,7 +597,7 @@ export interface BookChatStreamFinalEventDTO {
 }
 
 export interface BookChatStreamEventDTO {
-  type: "session" | "status" | "token" | "final" | "error";
+  type: "session" | "status" | "reasoning" | "token" | "final" | "error";
   sessionId?: string;
   text?: string;
   error?: string;

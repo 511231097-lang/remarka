@@ -19,6 +19,7 @@
     "db:migrate:deploy": "npm --prefix packages/db run prisma:migrate:deploy",
     "db:backfill:metrics": "node --import tsx packages/db/src/backfillMetrics.ts",
     "db:backfill:text-corpus": "node --import tsx packages/db/src/backfillBookTextCorpus.ts",
+    "eval:chat-regression": "node --import tsx apps/web/scripts/chatRegressionEval.ts",
     "test:unit": "npm --prefix apps/web run test:unit",
     "docker:up": "docker compose up --build -d",
     "docker:up:dev": "docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build -d",

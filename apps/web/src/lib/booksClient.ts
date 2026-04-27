@@ -215,6 +215,7 @@ export async function streamBookChatMessage(params: {
   bookId: string;
   sessionId: string;
   input: BookChatStreamRequestDTO;
+  signal?: AbortSignal;
   onEvent?: (event: BookChatStreamEvent) => void;
 }): Promise<BookChatStreamFinalEventDTO> {
   const response = await fetch(`/api/books/${params.bookId}/chat/sessions/${params.sessionId}/stream`, {
@@ -223,6 +224,7 @@ export async function streamBookChatMessage(params: {
       "content-type": "application/json",
     },
     body: JSON.stringify(params.input || {}),
+    signal: params.signal,
   });
 
   if (!response.ok) {
@@ -280,6 +282,14 @@ export async function streamBookChatMessage(params: {
       if (parsed.event === "status") {
         params.onEvent?.({
           type: "status",
+          text: String(payload?.text || ""),
+        });
+        continue;
+      }
+
+      if (parsed.event === "reasoning") {
+        params.onEvent?.({
+          type: "reasoning",
           text: String(payload?.text || ""),
         });
         continue;

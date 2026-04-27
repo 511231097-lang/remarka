@@ -3,9 +3,9 @@ const nextConfig = {
   transpilePackages: ["@remarka/contracts", "@remarka/db"],
   experimental: {
     serverActions: {
-      bodySizeLimit: "25mb",
+      bodySizeLimit: "50mb",
     },
-    middlewareClientMaxBodySize: "25mb",
+    middlewareClientMaxBodySize: "50mb",
   },
 };
 

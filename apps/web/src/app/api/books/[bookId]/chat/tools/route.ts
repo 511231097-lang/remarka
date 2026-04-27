@@ -6,6 +6,7 @@ import {
 } from "@/lib/bookChatService";
 import { resolveAuthUser } from "@/lib/authUser";
 import { resolveAccessibleBook } from "@/lib/chatAccess";
+import { BOOK_CHAT_SCENE_TOOLS_ENABLED } from "@/lib/bookChatTools";
 
 export const runtime = "nodejs";
 
@@ -33,6 +34,9 @@ function parseToolName(value: unknown): BookChatToolboxToolName {
   ) {
     throw new BookChatError("INVALID_TOOL", 400, "Unsupported tool");
   }
+  if (!BOOK_CHAT_SCENE_TOOLS_ENABLED && (tool === "search_scenes" || tool === "get_scene_context")) {
+    throw new BookChatError("INVALID_TOOL", 400, "Scene tools are temporarily disabled");
+  }
   return tool;
 }
 
@@ -40,10 +44,12 @@ export async function GET() {
   const authUser = await resolveAuthUser();
   if (!authUser) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const tools = (Object.keys(TOOL_DESCRIPTIONS) as BookChatToolboxToolName[]).map((tool) => ({
-    name: tool,
-    description: TOOL_DESCRIPTIONS[tool],
-  }));
+  const tools = (Object.keys(TOOL_DESCRIPTIONS) as BookChatToolboxToolName[])
+    .filter((tool) => BOOK_CHAT_SCENE_TOOLS_ENABLED || (tool !== "search_scenes" && tool !== "get_scene_context"))
+    .map((tool) => ({
+      name: tool,
+      description: TOOL_DESCRIPTIONS[tool],
+    }));
 
   return NextResponse.json({
     tools,

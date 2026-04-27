@@ -25,6 +25,18 @@ const DEFAULT_MODEL_PRICING_CATALOG: ModelPricingCatalog = {
     chatInputPer1MUsd: 0.25,
     chatOutputPer1MUsd: 1.5,
   },
+  "gemini-3.1-pro-preview": {
+    chatInputPer1MUsd: 2,
+    chatOutputPer1MUsd: 12,
+  },
+  "gemini-3.1-pro": {
+    chatInputPer1MUsd: 2,
+    chatOutputPer1MUsd: 12,
+  },
+  "gemini-2.5-flash": {
+    chatInputPer1MUsd: 0.3,
+    chatOutputPer1MUsd: 2.5,
+  },
   "gemini-2.5-flash-lite": {
     chatInputPer1MUsd: 0.1,
     chatOutputPer1MUsd: 0.4,

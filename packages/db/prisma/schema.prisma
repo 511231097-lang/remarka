@@ -195,6 +195,7 @@ enum BookEvidenceStageKey {
   paragraph_embeddings
   scene_chunk_llm
   scene_embeddings
+  evidence_fragments
   finalize
 }
 
@@ -348,6 +349,8 @@ model Book {
   analysisScenes       BookAnalysisScene[]
   sceneEmbeddings      BookSceneEmbedding[]
   paragraphEmbeddings  BookParagraphEmbedding[]
+  evidenceFragments    BookEvidenceFragment[]
+  evidenceFragmentEmbeddings BookEvidenceFragmentEmbedding[]
   chatThreads          BookChatThread[]
   chatTurnMetrics      BookChatTurnMetric[]
 
@@ -395,6 +398,8 @@ model BookChapter {
   analysisScenes      BookAnalysisScene[]
   sceneEmbeddings     BookSceneEmbedding[]
   paragraphEmbeddings BookParagraphEmbedding[]
+  evidenceFragments   BookEvidenceFragment[]
+  evidenceFragmentEmbeddings BookEvidenceFragmentEmbedding[]
   analysisArtifacts   BookAnalysisArtifact[]
   analysisChapterMetricsV2 BookAnalysisChapterMetric[]
   mentions            BookMention[]
@@ -473,6 +478,7 @@ model BookAnalysisScene {
   book      Book                @relation(fields: [bookId], references: [id], onDelete: Cascade)
   chapter   BookChapter         @relation(fields: [chapterId], references: [id], onDelete: Cascade)
   embedding BookSceneEmbedding?
+  evidenceFragments BookEvidenceFragment[]
 
   @@unique([bookId, chapterId, sceneIndex])
   @@index([bookId, chapterId])
@@ -508,6 +514,7 @@ model BookParagraphEmbedding {
   id               String                      @id @default(cuid())
   bookId           String
   chapterId        String
+  paragraphId      String?
   paragraphIndex   Int
   embeddingModel   String
   embeddingVersion Int                         @default(1)
@@ -521,9 +528,11 @@ model BookParagraphEmbedding {
 
   book    Book        @relation(fields: [bookId], references: [id], onDelete: Cascade)
   chapter BookChapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  paragraph BookParagraph? @relation(fields: [paragraphId], references: [id], onDelete: Cascade)
 
   @@unique([bookId, chapterId, paragraphIndex, embeddingVersion])
   @@index([bookId, chapterId, paragraphIndex])
+  @@index([paragraphId])
   @@index([bookId, embeddingVersion])
   @@index([embeddingModel])
 }
@@ -532,12 +541,15 @@ model BookParagraph {
   id             String   @id @default(cuid())
   bookId         String
   chapterId      String
+  chapterOrderIndex Int   @default(0)
+  paragraphIndex Int      @default(0)
   sceneId        String?
   orderIndex     Int
   orderInChapter Int
   startChar      Int
   endChar        Int
   text           String   @db.Text
+  textHash       String   @default("")
   createdAt      DateTime @default(now())
   updatedAt      DateTime @updatedAt
 
@@ -546,10 +558,67 @@ model BookParagraph {
   scene     BookScene?     @relation(fields: [sceneId], references: [id], onDelete: SetNull)
   sentences BookSentence[]
   mentions  BookMention[]
+  embeddings BookParagraphEmbedding[]
 
   @@unique([bookId, orderIndex])
+  @@unique([bookId, chapterId, paragraphIndex])
   @@index([chapterId, orderInChapter])
+  @@index([chapterId, paragraphIndex])
   @@index([sceneId, orderIndex])
+}
+
+model BookEvidenceFragment {
+  id               String   @id @default(cuid())
+  bookId           String
+  chapterId        String
+  primarySceneId   String?
+  sceneIdsJson     Json     @default("[]")
+  fragmentType     String
+  paragraphStart   Int
+  paragraphEnd     Int
+  orderIndex       Int
+  text             String   @db.Text
+  textHash         String
+  embeddingVersion Int      @default(1)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  book         Book                @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter      BookChapter         @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  primaryScene BookAnalysisScene?  @relation(fields: [primarySceneId], references: [id], onDelete: SetNull)
+  embedding    BookEvidenceFragmentEmbedding?
+
+  @@unique([bookId, chapterId, fragmentType, paragraphStart, paragraphEnd, embeddingVersion])
+  @@index([bookId])
+  @@index([bookId, chapterId])
+  @@index([bookId, fragmentType])
+  @@index([primarySceneId])
+}
+
+model BookEvidenceFragmentEmbedding {
+  id               String                      @id @default(cuid())
+  fragmentId       String                      @unique
+  bookId           String
+  chapterId        String
+  fragmentType     String
+  embeddingModel   String
+  embeddingVersion Int                         @default(1)
+  taskType         String
+  dimensions       Int
+  sourceText       String                      @db.Text
+  sourceTextHash   String
+  vector           Unsupported("vector(768)")?
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+
+  book     Book                 @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter  BookChapter          @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  fragment BookEvidenceFragment @relation(fields: [fragmentId], references: [id], onDelete: Cascade)
+
+  @@index([bookId, chapterId])
+  @@index([bookId, fragmentType])
+  @@index([bookId, embeddingVersion])
+  @@index([embeddingModel])
 }
 
 model BookSentence {
@@ -1802,7 +1871,6 @@ model User {
   email                       String?           @unique
   emailVerified               DateTime?
   image                       String?
-  defaultBookVisibilityPublic Boolean           @default(true)
   role                        UserRole          @default(user)
   accounts                    Account[]
   sessions                    Session[]

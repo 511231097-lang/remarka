@@ -26,8 +26,19 @@ const ANALYSIS_FINALIZE_STAGE = "finalize";
 const ANALYSIS_PARAGRAPH_STAGE = "paragraph_embeddings";
 const ANALYSIS_SCENE_CHUNK_STAGE = "scene_chunk_llm";
 const ANALYSIS_SCENE_EMBEDDING_STAGE = "scene_embeddings";
+const ANALYSIS_EVIDENCE_FRAGMENT_STAGE = "evidence_fragments";
 
 let artifactBlobStore: BlobStore | null = null;
+
+function readBoolEnv(name: string, fallback: boolean) {
+  const normalized = String(process.env[name] || "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
+}
+
+const BOOK_EVIDENCE_FRAGMENTS_ENABLED = readBoolEnv("BOOK_EVIDENCE_FRAGMENTS_ENABLED", false);
 
 function getArtifactBlobStore() {
   if (!artifactBlobStore) {
@@ -57,6 +68,8 @@ function serializePgVectorLiteral(vector: number[]): string {
 export interface ParagraphBlock {
   index: number;
   text: string;
+  startChar?: number;
+  endChar?: number;
 }
 
 const SCENE_BOUNDARY_REASON_VALUES = [
@@ -101,6 +114,7 @@ export interface SceneCandidate {
   unresolvedForms: string[];
   facts: string[];
   evidenceSpans: SceneEvidenceSpan[];
+  confidence?: number;
 }
 
 export interface EmbeddingBoundaryHint {
@@ -108,6 +122,35 @@ export interface EmbeddingBoundaryHint {
   distance: number;
   confidence: number;
 }
+
+type AdaptiveBoundaryScore = {
+  betweenParagraphs: [number, number];
+  distance: number;
+  smoothedDistance: number;
+  confidence: number;
+};
+
+type ParagraphZone = {
+  paragraphStart: number;
+  paragraphEnd: number;
+};
+
+type AdaptiveSceneAnalysisPlan = {
+  scores: AdaptiveBoundaryScore[];
+  peaks: EmbeddingBoundaryHint[];
+  threshold: number;
+  zones: ParagraphZone[];
+  chunks: ParagraphChunk[];
+  coverageZoneCount: number;
+};
+
+type BoundarySnapResult = {
+  boundaries: SceneBoundaryCandidate[];
+  movedCount: number;
+  softenedCount: number;
+};
+
+type SceneSegmentationStrategy = "chapter_first" | "sliding";
 
 export interface AnalysisLogger {
   info(message: string, data?: Record<string, unknown>): void;
@@ -237,6 +280,136 @@ type ChunkBoundaryRaw = z.infer<typeof ChunkBoundaryRawSchema>;
 type ChunkEvidenceSpanRaw = z.infer<typeof ChunkEvidenceSpanRawSchema>;
 type ChunkSceneRaw = z.infer<typeof ChunkSceneRawSchema>;
 
+const SCENE_SEGMENTATION_V2_SCHEMA_VERSION = "scene-segmentation-v2";
+const SEARCH_UNIT_SEGMENTATION_SCHEMA_VERSION = "search-unit-segmentation-tsv-v1";
+
+const SceneSegmentationV2SegmentRawSchema = z
+  .object({
+    chapterId: z.string().trim().min(1),
+    chapterOrderIndex: z.number().int().positive(),
+    paragraphStart: z.number().int().positive(),
+    paragraphEnd: z.number().int().positive(),
+  })
+  .strict();
+
+const SceneSegmentationV2EvidenceSpanRawSchema = z
+  .object({
+    label: z.string(),
+    paragraphStart: z.number().int().positive(),
+    paragraphEnd: z.number().int().positive(),
+  })
+  .strict();
+
+const SceneSegmentationV2SceneRawSchema = z
+  .object({
+    paragraphStart: z.number().int().positive(),
+    paragraphEnd: z.number().int().positive(),
+    sceneCard: z.string().optional().default(""),
+    participants: z.array(z.string()),
+    mentionedEntities: z.array(z.string()),
+    locationHints: z.array(z.string()),
+    timeHints: z.array(z.string()),
+    eventLabels: z.array(z.string()),
+    facts: z.array(z.string()),
+    evidenceSpans: z.array(SceneSegmentationV2EvidenceSpanRawSchema),
+    confidence: z.number().min(0).max(1),
+  })
+  .strict();
+
+const SceneSegmentationV2ResponseRawSchema = z
+  .object({
+    schemaVersion: z.literal(SCENE_SEGMENTATION_V2_SCHEMA_VERSION),
+    segment: SceneSegmentationV2SegmentRawSchema,
+    scenes: z.array(SceneSegmentationV2SceneRawSchema),
+  })
+  .strict();
+
+type SceneSegmentationV2SceneRaw = z.infer<typeof SceneSegmentationV2SceneRawSchema>;
+
+export const SCENE_SEGMENTATION_V2_RESPONSE_JSON_SCHEMA = {
+  type: "object",
+  propertyOrdering: ["schemaVersion", "segment", "scenes"],
+  properties: {
+    schemaVersion: {
+      type: "string",
+      enum: [SCENE_SEGMENTATION_V2_SCHEMA_VERSION],
+    },
+    segment: {
+      type: "object",
+      propertyOrdering: ["chapterId", "chapterOrderIndex", "paragraphStart", "paragraphEnd"],
+      properties: {
+        chapterId: { type: "string" },
+        chapterOrderIndex: { type: "integer" },
+        paragraphStart: { type: "integer" },
+        paragraphEnd: { type: "integer" },
+      },
+      required: ["chapterId", "chapterOrderIndex", "paragraphStart", "paragraphEnd"],
+      additionalProperties: false,
+    },
+    scenes: {
+      type: "array",
+      items: {
+        type: "object",
+        propertyOrdering: [
+          "paragraphStart",
+          "paragraphEnd",
+          "sceneCard",
+          "participants",
+          "mentionedEntities",
+          "locationHints",
+          "timeHints",
+          "eventLabels",
+          "facts",
+          "evidenceSpans",
+          "confidence",
+        ],
+        properties: {
+          paragraphStart: { type: "integer" },
+          paragraphEnd: { type: "integer" },
+          sceneCard: { type: "string" },
+          participants: { type: "array", items: { type: "string" } },
+          mentionedEntities: { type: "array", items: { type: "string" } },
+          locationHints: { type: "array", items: { type: "string" } },
+          timeHints: { type: "array", items: { type: "string" } },
+          eventLabels: { type: "array", items: { type: "string" } },
+          facts: { type: "array", items: { type: "string" } },
+          evidenceSpans: {
+            type: "array",
+            items: {
+              type: "object",
+              propertyOrdering: ["label", "paragraphStart", "paragraphEnd"],
+              properties: {
+                label: { type: "string" },
+                paragraphStart: { type: "integer" },
+                paragraphEnd: { type: "integer" },
+              },
+              required: ["label", "paragraphStart", "paragraphEnd"],
+              additionalProperties: false,
+            },
+          },
+          confidence: { type: "number", minimum: 0, maximum: 1 },
+        },
+        required: [
+          "paragraphStart",
+          "paragraphEnd",
+          "sceneCard",
+          "participants",
+          "mentionedEntities",
+          "locationHints",
+          "timeHints",
+          "eventLabels",
+          "facts",
+          "evidenceSpans",
+          "confidence",
+        ],
+        additionalProperties: false,
+      },
+    },
+  },
+  required: ["schemaVersion", "segment", "scenes"],
+  additionalProperties: false,
+} as const;
+
 export const SCENE_CHUNK_RESPONSE_JSON_SCHEMA = {
   type: "object",
   propertyOrdering: ["boundaries", "scenes"],
@@ -346,14 +519,48 @@ function getFloatEnv(name: string, fallback: number): number {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
+function getBoolEnv(name: string, fallback: boolean): boolean {
+  const value = String(process.env[name] || "")
+    .trim()
+    .toLowerCase();
+  if (!value) return fallback;
+  if (["1", "true", "yes", "on"].includes(value)) return true;
+  if (["0", "false", "no", "off"].includes(value)) return false;
+  return fallback;
+}
+
+function getSceneSegmentationStrategyEnv(): SceneSegmentationStrategy {
+  const value = String(process.env.SCENE_SEGMENTATION_STRATEGY || "")
+    .trim()
+    .toLowerCase();
+  if (value === "sliding") return "sliding";
+  return "chapter_first";
+}
+
 const EMBEDDING_BATCH_SIZE = Math.min(250, Math.max(1, getIntEnv("VERTEX_EMBEDDING_BATCH_SIZE", 250)));
 const EMBEDDING_BOUNDARY_PERCENTILE = Math.min(0.99, Math.max(0.5, getFloatEnv("ANALYSIS_EMBEDDING_HINT_PERCENTILE", 0.82)));
 const EMBEDDING_BOUNDARY_MAX_HINTS = Math.max(1, getIntEnv("ANALYSIS_EMBEDDING_HINT_MAX", 96));
 const PARAGRAPH_EMBEDDING_VERSION = Math.max(1, getIntEnv("PARAGRAPH_EMBEDDING_VERSION", 1));
+const EVIDENCE_FRAGMENT_EMBEDDING_VERSION = Math.max(1, getIntEnv("EVIDENCE_FRAGMENT_EMBEDDING_VERSION", 1));
+const EVIDENCE_FRAGMENT_SMALL_WINDOW = Math.max(1, getIntEnv("EVIDENCE_FRAGMENT_SMALL_WINDOW", 5));
+const EVIDENCE_FRAGMENT_SMALL_OVERLAP = Math.max(0, getIntEnv("EVIDENCE_FRAGMENT_SMALL_OVERLAP", 2));
+const EVIDENCE_FRAGMENT_MEDIUM_WINDOW = Math.max(1, getIntEnv("EVIDENCE_FRAGMENT_MEDIUM_WINDOW", 10));
+const EVIDENCE_FRAGMENT_MEDIUM_OVERLAP = Math.max(0, getIntEnv("EVIDENCE_FRAGMENT_MEDIUM_OVERLAP", 4));
+const EVIDENCE_FRAGMENT_EMBEDDING_BATCH_SIZE = Math.min(
+  250,
+  Math.max(1, getIntEnv("EVIDENCE_FRAGMENT_EMBEDDING_BATCH_SIZE", 64))
+);
+const EVIDENCE_FRAGMENT_EMBEDDING_MAX_CHARS = Math.max(
+  2000,
+  getIntEnv("EVIDENCE_FRAGMENT_EMBEDDING_MAX_CHARS", 7000)
+);
 const SCENE_EMBEDDING_BATCH_SIZE = Math.min(250, Math.max(1, getIntEnv("SCENE_EMBEDDING_BATCH_SIZE", 200)));
 const SCENE_EMBEDDING_VERSION = Math.max(1, getIntEnv("SCENE_EMBEDDING_VERSION", 1));
 const SCENE_EMBEDDING_EXCERPT_MAX_CHARS = Math.max(200, getIntEnv("SCENE_EMBEDDING_EXCERPT_MAX_CHARS", 1200));
 const SCENE_EMBEDDING_TEXT_MAX_CHARS = Math.max(400, getIntEnv("SCENE_EMBEDDING_TEXT_MAX_CHARS", 2400));
+const SCENE_EVENT_LABELS_MAX = Math.max(1, getIntEnv("SCENE_EVENT_LABELS_MAX", 8));
+const SCENE_FACTS_MAX = Math.max(1, getIntEnv("SCENE_FACTS_MAX", 12));
+const SCENE_EVIDENCE_SPANS_MAX = Math.max(1, getIntEnv("SCENE_EVIDENCE_SPANS_MAX", 8));
 const ANALYSIS_CHUNK_CONCURRENCY = Math.max(1, getIntEnv("ANALYSIS_CHUNK_CONCURRENCY", 4));
 const ANALYSIS_CHAPTER_CONCURRENCY = Math.max(1, getIntEnv("ANALYSIS_CHAPTER_CONCURRENCY", 4));
 const ANALYSIS_CHUNK_RETRY_MAX_ATTEMPTS = Math.max(1, getIntEnv("ANALYSIS_CHUNK_RETRY_MAX_ATTEMPTS", 5));
@@ -363,6 +570,37 @@ const ANALYSIS_ARTIFACT_RESPONSE_MAX_CHARS = Math.max(1000, getIntEnv("ANALYSIS_
 const ANALYSIS_ARTIFACT_ERROR_MAX_CHARS = Math.max(200, getIntEnv("ANALYSIS_ARTIFACT_ERROR_MAX_CHARS", 4000));
 const SCENE_CHUNK_SIZE = 20;
 const SCENE_CHUNK_OVERLAP = 2;
+const SCENE_SEGMENTATION_STRATEGY = getSceneSegmentationStrategyEnv();
+const SCENE_SEGMENTATION_MAX_INPUT_TOKENS = Math.max(
+  1000,
+  getIntEnv("SCENE_SEGMENTATION_MAX_INPUT_TOKENS", 150_000)
+);
+const SCENE_SEGMENTATION_PROMPT_OVERHEAD_TOKENS = Math.max(
+  0,
+  getIntEnv("SCENE_SEGMENTATION_PROMPT_OVERHEAD_TOKENS", 3000)
+);
+const SCENE_SEGMENTATION_CHARS_PER_TOKEN = Math.max(1, getIntEnv("SCENE_SEGMENTATION_CHARS_PER_TOKEN", 4));
+const ANALYSIS_ADAPTIVE_SPLIT_ENABLED = getBoolEnv("ANALYSIS_ADAPTIVE_SPLIT_ENABLED", false);
+const ANALYSIS_ADAPTIVE_SPLIT_SHADOW_ENABLED = getBoolEnv("ANALYSIS_ADAPTIVE_SPLIT_SHADOW_ENABLED", false);
+const ANALYSIS_SNAP_BOUNDARIES_TO_PEAKS_ENABLED = getBoolEnv("ANALYSIS_SNAP_BOUNDARIES_TO_PEAKS_ENABLED", false);
+const ANALYSIS_SCENES_ENABLED = getBoolEnv("ANALYSIS_SCENES_ENABLED", true);
+const ANALYSIS_PARAGRAPH_SCENE_PARALLEL_ENABLED = getBoolEnv("ANALYSIS_PARAGRAPH_SCENE_PARALLEL_ENABLED", true);
+const ANALYSIS_ADAPTIVE_SMOOTH_WINDOW = Math.max(1, getIntEnv("ANALYSIS_ADAPTIVE_SMOOTH_WINDOW", 3));
+const ANALYSIS_ADAPTIVE_PEAK_PERCENTILE = Math.min(
+  0.99,
+  Math.max(0.5, getFloatEnv("ANALYSIS_ADAPTIVE_PEAK_PERCENTILE", EMBEDDING_BOUNDARY_PERCENTILE))
+);
+const ANALYSIS_ADAPTIVE_ZONE_RADIUS = Math.max(0, getIntEnv("ANALYSIS_ADAPTIVE_ZONE_RADIUS", 2));
+const ANALYSIS_ADAPTIVE_LONG_GAP_MIN_PARAGRAPHS = Math.max(
+  1,
+  getIntEnv("ANALYSIS_ADAPTIVE_LONG_GAP_MIN_PARAGRAPHS", SCENE_CHUNK_SIZE * 2)
+);
+const ANALYSIS_SNAP_BOUNDARY_RADIUS = Math.max(0, getIntEnv("ANALYSIS_SNAP_BOUNDARY_RADIUS", 2));
+const ANALYSIS_SNAP_LOW_CONFIDENCE_THRESHOLD = Math.min(
+  1,
+  Math.max(0, getFloatEnv("ANALYSIS_SNAP_LOW_CONFIDENCE_THRESHOLD", 0.65))
+);
+const ANALYSIS_SNAP_CONFIDENCE_PENALTY = Math.min(1, Math.max(0, getFloatEnv("ANALYSIS_SNAP_CONFIDENCE_PENALTY", 0.15)));
 const POSTGRES_MAX_BIND_VARIABLES = 32_767;
 const EMBEDDING_INSERT_BIND_VARIABLES_PER_ROW = 13;
 const EMBEDDING_INSERT_BATCH_SIZE = Math.max(
@@ -391,14 +629,24 @@ export function splitChapterIntoBlocks(rawText: string): ParagraphBlock[] {
   const normalized = normalizeWhitespace(rawText);
   if (!normalized) return [];
 
-  return normalized
-    .split(/\n{2,}/g)
-    .map((block) => block.trim())
-    .filter(Boolean)
-    .map((text, index) => ({
-      index: index + 1,
+  const blocks: ParagraphBlock[] = [];
+  const pattern = /\S[\s\S]*?(?=\n{2,}\S|$)/g;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(normalized))) {
+    const rawBlock = String(match[0] || "");
+    const leadingWhitespace = rawBlock.match(/^\s*/u)?.[0]?.length || 0;
+    const text = rawBlock.trim();
+    if (!text) continue;
+    const startChar = Math.max(0, match.index + leadingWhitespace);
+    blocks.push({
+      index: blocks.length + 1,
       text,
-    }));
+      startChar,
+      endChar: startChar + text.length,
+    });
+  }
+
+  return blocks;
 }
 
 export function createParagraphChunks(
@@ -437,12 +685,280 @@ export function createParagraphChunks(
   return chunks;
 }
 
+export function estimateSceneSegmentationInputTokens(paragraphs: ParagraphBlock[]): number {
+  const contentChars = paragraphs.reduce((sum, paragraph) => {
+    const indexChars = String(paragraph.index).length + 16;
+    return sum + indexChars + String(paragraph.text || "").length;
+  }, 0);
+  return SCENE_SEGMENTATION_PROMPT_OVERHEAD_TOKENS + Math.ceil(contentChars / SCENE_SEGMENTATION_CHARS_PER_TOKEN);
+}
+
+export function createChapterFirstSceneSegments(params: {
+  paragraphs: ParagraphBlock[];
+  maxInputTokens?: number;
+}): ParagraphChunk[] {
+  const paragraphs = params.paragraphs || [];
+  if (!paragraphs.length) return [];
+
+  const maxInputTokens = Math.max(1, Math.floor(Number(params.maxInputTokens ?? SCENE_SEGMENTATION_MAX_INPUT_TOKENS)));
+  if (estimateSceneSegmentationInputTokens(paragraphs) <= maxInputTokens) {
+    return [
+      {
+        chunkStartParagraph: paragraphs[0]!.index,
+        chunkEndParagraph: paragraphs[paragraphs.length - 1]!.index,
+        paragraphs: paragraphs.slice(),
+      },
+    ];
+  }
+
+  const segments: ParagraphChunk[] = [];
+  let active: ParagraphBlock[] = [];
+
+  const flush = () => {
+    if (!active.length) return;
+    segments.push({
+      chunkStartParagraph: active[0]!.index,
+      chunkEndParagraph: active[active.length - 1]!.index,
+      paragraphs: active,
+    });
+    active = [];
+  };
+
+  for (const paragraph of paragraphs) {
+    const candidate = [...active, paragraph];
+    if (active.length > 0 && estimateSceneSegmentationInputTokens(candidate) > maxInputTokens) {
+      flush();
+    }
+    active.push(paragraph);
+  }
+  flush();
+
+  return segments;
+}
+
 function createSceneAnalysisChunks(params: {
   paragraphs: ParagraphBlock[];
   embeddingHints: EmbeddingBoundaryHint[];
 }): ParagraphChunk[] {
   void params.embeddingHints;
   return createParagraphChunks(params.paragraphs, SCENE_CHUNK_SIZE, SCENE_CHUNK_OVERLAP);
+}
+
+function normalizeSmoothingWindowSize(windowSize: number): number {
+  const safe = Math.max(1, Math.floor(windowSize));
+  if (safe % 2 === 1) return safe;
+  return Math.max(1, safe - 1);
+}
+
+function smoothNumberSeries(values: number[], windowSize: number): number[] {
+  if (!values.length) return [];
+  const normalizedWindow = normalizeSmoothingWindowSize(windowSize);
+  if (normalizedWindow <= 1) {
+    return values.slice();
+  }
+
+  const radius = Math.floor(normalizedWindow / 2);
+  return values.map((_, index) => {
+    const from = Math.max(0, index - radius);
+    const to = Math.min(values.length - 1, index + radius);
+    let sum = 0;
+    let count = 0;
+    for (let cursor = from; cursor <= to; cursor += 1) {
+      sum += Number(values[cursor] || 0);
+      count += 1;
+    }
+    return count > 0 ? sum / count : 0;
+  });
+}
+
+function mergeParagraphZones(zones: ParagraphZone[]): ParagraphZone[] {
+  if (!zones.length) return [];
+  const sorted = zones
+    .slice()
+    .filter((zone) => zone.paragraphStart > 0 && zone.paragraphEnd >= zone.paragraphStart)
+    .sort((left, right) => left.paragraphStart - right.paragraphStart || left.paragraphEnd - right.paragraphEnd);
+  if (!sorted.length) return [];
+
+  const merged: ParagraphZone[] = [];
+  let active = { ...sorted[0]! };
+  for (let index = 1; index < sorted.length; index += 1) {
+    const candidate = sorted[index]!;
+    if (candidate.paragraphStart <= active.paragraphEnd + 1) {
+      active.paragraphEnd = Math.max(active.paragraphEnd, candidate.paragraphEnd);
+      continue;
+    }
+    merged.push(active);
+    active = { ...candidate };
+  }
+  merged.push(active);
+  return merged;
+}
+
+function createCoverageZone(params: {
+  gapStart: number;
+  gapEnd: number;
+  totalParagraphs: number;
+  coverageWindowSize: number;
+}): ParagraphZone {
+  const effectiveWindow = Math.max(1, Math.floor(params.coverageWindowSize));
+  const center = Math.floor((params.gapStart + params.gapEnd) / 2);
+  const half = Math.floor((effectiveWindow - 1) / 2);
+  let start = Math.max(1, center - half);
+  let end = Math.min(params.totalParagraphs, start + effectiveWindow - 1);
+  start = Math.max(1, end - effectiveWindow + 1);
+  return {
+    paragraphStart: start,
+    paragraphEnd: end,
+  };
+}
+
+function createChunksFromParagraphZones(params: {
+  paragraphs: ParagraphBlock[];
+  zones: ParagraphZone[];
+  chunkSize: number;
+  overlap: number;
+}): ParagraphChunk[] {
+  if (!params.paragraphs.length || !params.zones.length) return [];
+  const mergedZones = mergeParagraphZones(params.zones);
+  if (!mergedZones.length) return [];
+
+  const dedup = new Map<string, ParagraphChunk>();
+  for (const zone of mergedZones) {
+    const zoneParagraphs = params.paragraphs.slice(zone.paragraphStart - 1, zone.paragraphEnd);
+    if (!zoneParagraphs.length) continue;
+    const chunks = createParagraphChunks(zoneParagraphs, params.chunkSize, params.overlap);
+    for (const chunk of chunks) {
+      const key = `${chunk.chunkStartParagraph}-${chunk.chunkEndParagraph}`;
+      if (!dedup.has(key)) {
+        dedup.set(key, chunk);
+      }
+    }
+  }
+
+  return Array.from(dedup.values()).sort(
+    (left, right) => left.chunkStartParagraph - right.chunkStartParagraph || left.chunkEndParagraph - right.chunkEndParagraph
+  );
+}
+
+function buildAdaptiveSceneAnalysisPlan(params: {
+  paragraphs: ParagraphBlock[];
+  paragraphVectors: number[][];
+}): AdaptiveSceneAnalysisPlan {
+  const paragraphCount = params.paragraphs.length;
+  if (paragraphCount <= 1 || params.paragraphVectors.length <= 1) {
+    return {
+      scores: [],
+      peaks: [],
+      threshold: 0,
+      zones: [],
+      chunks: createParagraphChunks(params.paragraphs, SCENE_CHUNK_SIZE, SCENE_CHUNK_OVERLAP),
+      coverageZoneCount: 0,
+    };
+  }
+
+  const distances = Array.from({ length: params.paragraphVectors.length - 1 }, (_, index) => {
+    const similarity = cosineSimilarity(params.paragraphVectors[index] || [], params.paragraphVectors[index + 1] || []);
+    return Math.max(0, 1 - similarity);
+  });
+  const smoothedDistances = smoothNumberSeries(distances, ANALYSIS_ADAPTIVE_SMOOTH_WINDOW);
+  const threshold = percentile(smoothedDistances, ANALYSIS_ADAPTIVE_PEAK_PERCENTILE);
+  const minDistance = Math.min(...smoothedDistances);
+  const maxDistance = Math.max(...smoothedDistances);
+
+  const scores: AdaptiveBoundaryScore[] = distances.map((distance, index) => {
+    const smoothedDistance = Number(smoothedDistances[index] || 0);
+    return {
+      betweenParagraphs: [index + 1, index + 2],
+      distance,
+      smoothedDistance,
+      confidence:
+        maxDistance > minDistance ? (smoothedDistance - minDistance) / (maxDistance - minDistance) : distance > 0 ? 0.5 : 0,
+    };
+  });
+
+  let peakCandidates = scores.filter((score, index, list) => {
+    if (!(score.smoothedDistance > 0) || score.smoothedDistance < threshold) {
+      return false;
+    }
+    const left = index > 0 ? Number(list[index - 1]?.smoothedDistance || 0) : Number.NEGATIVE_INFINITY;
+    const right = index + 1 < list.length ? Number(list[index + 1]?.smoothedDistance || 0) : Number.NEGATIVE_INFINITY;
+    return score.smoothedDistance >= left && score.smoothedDistance > right;
+  });
+  if (!peakCandidates.length) {
+    peakCandidates = scores
+      .slice()
+      .sort((left, right) => right.smoothedDistance - left.smoothedDistance)
+      .filter((score) => score.smoothedDistance > 0)
+      .slice(0, 1);
+  }
+
+  const peaks = peakCandidates
+    .slice()
+    .sort((left, right) => right.smoothedDistance - left.smoothedDistance)
+    .slice(0, EMBEDDING_BOUNDARY_MAX_HINTS)
+    .map((peak) => ({
+      betweenParagraphs: peak.betweenParagraphs,
+      distance: peak.distance,
+      confidence: peak.confidence,
+    }))
+    .sort((left, right) => left.betweenParagraphs[0] - right.betweenParagraphs[0]);
+
+  const peakZones = peaks.map((peak) => ({
+    paragraphStart: Math.max(1, peak.betweenParagraphs[0] - ANALYSIS_ADAPTIVE_ZONE_RADIUS),
+    paragraphEnd: Math.min(paragraphCount, peak.betweenParagraphs[1] + ANALYSIS_ADAPTIVE_ZONE_RADIUS),
+  }));
+  const mergedPeakZones = mergeParagraphZones(peakZones);
+
+  const coverageZones: ParagraphZone[] = [];
+  let cursor = 1;
+  for (const zone of mergedPeakZones) {
+    if (cursor < zone.paragraphStart) {
+      const gapStart = cursor;
+      const gapEnd = zone.paragraphStart - 1;
+      const gapLength = gapEnd - gapStart + 1;
+      if (gapLength >= ANALYSIS_ADAPTIVE_LONG_GAP_MIN_PARAGRAPHS) {
+        coverageZones.push(
+          createCoverageZone({
+            gapStart,
+            gapEnd,
+            totalParagraphs: paragraphCount,
+            coverageWindowSize: SCENE_CHUNK_SIZE,
+          })
+        );
+      }
+    }
+    cursor = Math.max(cursor, zone.paragraphEnd + 1);
+  }
+  if (cursor <= paragraphCount) {
+    const gapLength = paragraphCount - cursor + 1;
+    if (gapLength >= ANALYSIS_ADAPTIVE_LONG_GAP_MIN_PARAGRAPHS) {
+      coverageZones.push(
+        createCoverageZone({
+          gapStart: cursor,
+          gapEnd: paragraphCount,
+          totalParagraphs: paragraphCount,
+          coverageWindowSize: SCENE_CHUNK_SIZE,
+        })
+      );
+    }
+  }
+
+  const zones = mergeParagraphZones([...mergedPeakZones, ...coverageZones]);
+  const chunks = createChunksFromParagraphZones({
+    paragraphs: params.paragraphs,
+    zones,
+    chunkSize: SCENE_CHUNK_SIZE,
+    overlap: SCENE_CHUNK_OVERLAP,
+  });
+
+  return {
+    scores,
+    peaks,
+    threshold,
+    zones,
+    chunks: chunks.length ? chunks : createParagraphChunks(params.paragraphs, SCENE_CHUNK_SIZE, SCENE_CHUNK_OVERLAP),
+    coverageZoneCount: coverageZones.length,
+  };
 }
 
 function cosineSimilarity(left: number[], right: number[]): number {
@@ -542,6 +1058,95 @@ function pickEmbeddingHintsForChunk(
   );
 }
 
+function snapBoundariesToEmbeddingPeaks(params: {
+  candidates: SceneBoundaryCandidate[];
+  peaks: EmbeddingBoundaryHint[];
+  radius: number;
+  lowConfidenceThreshold: number;
+  confidencePenalty: number;
+}): BoundarySnapResult {
+  if (!params.candidates.length) {
+    return {
+      boundaries: [],
+      movedCount: 0,
+      softenedCount: 0,
+    };
+  }
+  if (!params.peaks.length || params.radius < 0) {
+    const softenedBoundaries = params.candidates.map((candidate) => {
+      if (candidate.confidence > params.lowConfidenceThreshold) {
+        return candidate;
+      }
+      return {
+        ...candidate,
+        confidence: Math.max(0, Number((candidate.confidence - params.confidencePenalty).toFixed(4))),
+      };
+    });
+    return {
+      boundaries: softenedBoundaries,
+      movedCount: 0,
+      softenedCount: softenedBoundaries.reduce(
+        (sum, candidate, index) =>
+          sum + (candidate.confidence < (params.candidates[index]?.confidence ?? candidate.confidence) ? 1 : 0),
+        0
+      ),
+    };
+  }
+
+  let movedCount = 0;
+  let softenedCount = 0;
+  const snapped = params.candidates.map((candidate) => {
+    const leftParagraph = candidate.betweenParagraphs[0];
+    let nearestPeak: EmbeddingBoundaryHint | null = null;
+    let nearestDistance = Number.POSITIVE_INFINITY;
+
+    for (const peak of params.peaks) {
+      const distance = Math.abs(Number(peak.betweenParagraphs[0] || 0) - leftParagraph);
+      if (distance < nearestDistance) {
+        nearestPeak = peak;
+        nearestDistance = distance;
+        continue;
+      }
+      if (
+        distance === nearestDistance &&
+        nearestPeak &&
+        Number(peak.confidence || 0) > Number(nearestPeak.confidence || 0)
+      ) {
+        nearestPeak = peak;
+      }
+    }
+
+    if (nearestPeak && nearestDistance <= params.radius) {
+      const peakLeft = Number(nearestPeak.betweenParagraphs[0] || leftParagraph);
+      const nextBoundary: SceneBoundaryCandidate = {
+        ...candidate,
+        betweenParagraphs: [peakLeft, peakLeft + 1],
+        confidence: Math.max(candidate.confidence, Number(nearestPeak.confidence || 0)),
+      };
+      if (nextBoundary.betweenParagraphs[0] !== candidate.betweenParagraphs[0]) {
+        movedCount += 1;
+      }
+      return nextBoundary;
+    }
+
+    if (candidate.confidence <= params.lowConfidenceThreshold) {
+      softenedCount += 1;
+      return {
+        ...candidate,
+        confidence: Math.max(0, Number((candidate.confidence - params.confidencePenalty).toFixed(4))),
+      };
+    }
+
+    return candidate;
+  });
+
+  return {
+    boundaries: snapped,
+    movedCount,
+    softenedCount,
+  };
+}
+
 function parsePositiveInt(value: unknown, fieldName: string): number {
   const parsed = Number.parseInt(String(value ?? "").trim(), 10);
   if (!Number.isFinite(parsed) || parsed <= 0) {
@@ -593,7 +1198,7 @@ function parseOptionalStringArray(value: unknown, maxLength?: number): string[] 
 }
 
 function normalizeEvidenceSpans(
-  rawEvidenceSpans: ChunkEvidenceSpanRaw[],
+  rawEvidenceSpans: Array<{ label: string; paragraphStart: number; paragraphEnd: number }>,
   sceneStart: number,
   sceneEnd: number
 ): SceneEvidenceSpan[] {
@@ -637,21 +1242,27 @@ function normalizeEvidenceSpans(
 }
 
 function normalizeChunkBoundaries(rawBoundaries: ChunkBoundaryRaw[], chunkStart: number, chunkEnd: number): SceneBoundaryCandidate[] {
-  return rawBoundaries.map((row) => {
-    const left = parsePositiveInt(row.betweenParagraphs[0], "betweenParagraphs[0]");
-    const right = parsePositiveInt(row.betweenParagraphs[1], "betweenParagraphs[1]");
-    if (right !== left + 1) {
-      throw new Error("betweenParagraphs must contain adjacent indexes");
-    }
-    if (left < chunkStart || right > chunkEnd) {
-      throw new Error("Boundary is outside chunk range");
-    }
+  return rawBoundaries.flatMap((row) => {
+    try {
+      const left = parsePositiveInt(row.betweenParagraphs[0], "betweenParagraphs[0]");
+      const right = parsePositiveInt(row.betweenParagraphs[1], "betweenParagraphs[1]");
+      if (right !== left + 1) {
+        return [];
+      }
+      if (left < chunkStart || right > chunkEnd) {
+        return [];
+      }
 
-    return {
-      betweenParagraphs: [left, right],
-      reason: row.reason,
-      confidence: parseConfidence(row.confidence),
-    } satisfies SceneBoundaryCandidate;
+      return [
+        {
+          betweenParagraphs: [left, right],
+          reason: row.reason,
+          confidence: parseConfidence(row.confidence),
+        } satisfies SceneBoundaryCandidate,
+      ];
+    } catch {
+      return [];
+    }
   });
 }
 
@@ -770,6 +1381,226 @@ function normalizeChunkScenes(rawScenes: ChunkSceneRaw[], chunkStart: number, ch
   return sorted;
 }
 
+function normalizeSceneSegmentationV2Scenes(
+  rawScenes: SceneSegmentationV2SceneRaw[],
+  segmentStart: number,
+  segmentEnd: number
+): SceneCandidate[] {
+  const scenes = rawScenes.map((row) => {
+    const paragraphStart = parsePositiveInt(row.paragraphStart, "paragraphStart");
+    const paragraphEnd = parsePositiveInt(row.paragraphEnd, "paragraphEnd");
+    if (paragraphStart < segmentStart || paragraphEnd > segmentEnd || paragraphStart > paragraphEnd) {
+      throw new Error("Scene is outside segment range");
+    }
+
+    return {
+      paragraphStart,
+      paragraphEnd,
+      sceneCard: String(row.sceneCard || "").trim(),
+      participants: parseStringArray(row.participants, "participants"),
+      mentionedEntities: parseStringArray(row.mentionedEntities, "mentionedEntities"),
+      locationHints: parseStringArray(row.locationHints, "locationHints"),
+      timeHints: parseStringArray(row.timeHints, "timeHints"),
+      eventLabels: parseStringArray(row.eventLabels, "eventLabels", 4),
+      unresolvedForms: [],
+      facts: parseStringArray(row.facts, "facts", 5),
+      evidenceSpans: normalizeEvidenceSpans(row.evidenceSpans, paragraphStart, paragraphEnd),
+      confidence: parseConfidence(row.confidence),
+    } satisfies SceneCandidate;
+  });
+
+  const sorted = scenes
+    .slice()
+    .sort((left, right) => left.paragraphStart - right.paragraphStart || left.paragraphEnd - right.paragraphEnd);
+
+  if (!sorted.length) {
+    throw new Error("scenes must cover segment range");
+  }
+  if (sorted[0]!.paragraphStart !== segmentStart) {
+    throw new Error("scenes must start from segment paragraphStart");
+  }
+
+  for (let index = 1; index < sorted.length; index += 1) {
+    const prev = sorted[index - 1]!;
+    const current = sorted[index]!;
+    if (current.paragraphStart !== prev.paragraphEnd + 1) {
+      throw new Error("scenes must be contiguous without gaps/overlaps");
+    }
+  }
+
+  if (sorted[sorted.length - 1]!.paragraphEnd !== segmentEnd) {
+    throw new Error("scenes must end at segment paragraphEnd");
+  }
+
+  return sorted;
+}
+
+function parseDelimitedSearchUnitLine(line: string): string[] {
+  if (line.includes("\t")) {
+    return line.split("\t").map((part) => part.trim());
+  }
+
+  return line.split(/\s*\|\s*/u).map((part) => part.trim());
+}
+
+function parseSearchUnitRange(value: string): [number, number] | null {
+  const match = String(value || "").trim().match(/^(\d+)\s*[-–—]\s*(\d+)$/u);
+  if (!match) return null;
+  const start = Number.parseInt(match[1] || "", 10);
+  const end = Number.parseInt(match[2] || "", 10);
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  return [start, end];
+}
+
+function parseSearchUnitList(value: string, maxLength: number): string[] {
+  return dedupeStringList(
+    String(value || "")
+      .split(/\s*;\s*/u)
+      .map((item) => item.trim())
+      .filter(Boolean),
+    maxLength
+  );
+}
+
+export function parseSearchUnitSegmentationResponse(params: {
+  content: unknown;
+  segmentStartParagraph: number;
+  segmentEndParagraph: number;
+}): {
+  boundaries: SceneBoundaryCandidate[];
+  scenes: SceneCandidate[];
+} {
+  const text = String(params.content || "").trim();
+  if (!text) {
+    throw new Error("Model returned empty response");
+  }
+
+  const scenes: SceneCandidate[] = [];
+  for (const rawLine of text.split(/\r?\n/u)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("```")) continue;
+
+    const parts = parseDelimitedSearchUnitLine(line);
+    if (parts.length < 5) {
+      continue;
+    }
+
+    const range = parseSearchUnitRange(parts[0] || "");
+    const paragraphStart = range ? range[0] : Number.parseInt(parts[0] || "", 10);
+    const paragraphEnd = range ? range[1] : Number.parseInt(parts[1] || "", 10);
+    const summary = range ? parts[1] : parts[2];
+    const beatsRaw = range ? parts[2] : parts[3];
+    const anchorsRaw = range ? parts.slice(3).join("; ") : parts.slice(4).join("; ");
+
+    if (!Number.isFinite(paragraphStart) || !Number.isFinite(paragraphEnd)) {
+      continue;
+    }
+    if (paragraphStart < params.segmentStartParagraph || paragraphEnd > params.segmentEndParagraph || paragraphStart > paragraphEnd) {
+      throw new Error("Search unit is outside segment range");
+    }
+
+    const sceneCard = String(summary || "").trim();
+    const beats = parseSearchUnitList(String(beatsRaw || ""), SCENE_FACTS_MAX);
+    const anchors = parseSearchUnitList(String(anchorsRaw || ""), SCENE_EVENT_LABELS_MAX);
+    if (!sceneCard) {
+      throw new Error("Search unit summary is empty");
+    }
+    if (!beats.length) {
+      throw new Error("Search unit beats are empty");
+    }
+    if (!anchors.length) {
+      throw new Error("Search unit anchors are empty");
+    }
+
+    scenes.push({
+      paragraphStart,
+      paragraphEnd,
+      sceneCard,
+      participants: [],
+      mentionedEntities: anchors,
+      locationHints: [],
+      timeHints: [],
+      eventLabels: anchors,
+      unresolvedForms: [],
+      facts: beats,
+      evidenceSpans: [],
+      confidence: 0.8,
+    });
+  }
+
+  const sortedRaw = scenes
+    .slice()
+    .sort((left, right) => left.paragraphStart - right.paragraphStart || left.paragraphEnd - right.paragraphEnd);
+
+  if (!sortedRaw.length) {
+    throw new Error("search units must cover segment range");
+  }
+
+  const sorted: SceneCandidate[] = [];
+  let expectedStart = params.segmentStartParagraph;
+  for (const rawScene of sortedRaw) {
+    if (rawScene.paragraphStart > expectedStart && sorted.length > 0) {
+      sorted[sorted.length - 1] = {
+        ...sorted[sorted.length - 1]!,
+        paragraphEnd: rawScene.paragraphStart - 1,
+      };
+      expectedStart = rawScene.paragraphStart;
+    }
+
+    const paragraphStart = Math.max(rawScene.paragraphStart, expectedStart);
+    if (paragraphStart > rawScene.paragraphEnd) {
+      continue;
+    }
+
+    sorted.push({
+      ...rawScene,
+      paragraphStart,
+    });
+    expectedStart = rawScene.paragraphEnd + 1;
+  }
+
+  if (!sorted.length) {
+    throw new Error("search units must cover segment range");
+  }
+  if (sorted[0]!.paragraphStart > params.segmentStartParagraph) {
+    sorted[0] = {
+      ...sorted[0]!,
+      paragraphStart: params.segmentStartParagraph,
+    };
+  }
+  if (sorted[sorted.length - 1]!.paragraphEnd < params.segmentEndParagraph) {
+    sorted[sorted.length - 1] = {
+      ...sorted[sorted.length - 1]!,
+      paragraphEnd: params.segmentEndParagraph,
+    };
+  }
+
+  if (sorted[0]!.paragraphStart !== params.segmentStartParagraph) {
+    throw new Error("search units must start from segment paragraphStart");
+  }
+  for (let index = 1; index < sorted.length; index += 1) {
+    const prev = sorted[index - 1]!;
+    const current = sorted[index]!;
+    if (current.paragraphStart !== prev.paragraphEnd + 1) {
+      throw new Error("search units must be contiguous without gaps/overlaps");
+    }
+  }
+  if (sorted[sorted.length - 1]!.paragraphEnd !== params.segmentEndParagraph) {
+    throw new Error("search units must end at segment paragraphEnd");
+  }
+
+  const boundaries = sorted.slice(0, -1).map((scene) => ({
+    betweenParagraphs: [scene.paragraphEnd, scene.paragraphEnd + 1] as [number, number],
+    reason: "narrative_cut" as const,
+    confidence: 0.8,
+  }));
+
+  return {
+    boundaries,
+    scenes: sorted,
+  };
+}
+
 function reconcileChunkBoundariesWithScenes(
   rawBoundaries: SceneBoundaryCandidate[],
   scenes: SceneCandidate[]
@@ -819,6 +1650,48 @@ export function parseChunkSceneResponse(params: {
   );
   const scenes = normalizeChunkScenes(parsed.scenes, params.chunkStartParagraph, params.chunkEndParagraph);
   const boundaries = reconcileChunkBoundariesWithScenes(rawBoundaries, scenes);
+
+  return {
+    boundaries,
+    scenes,
+  };
+}
+
+export function parseSceneSegmentationV2Response(params: {
+  content: unknown;
+  chapterId: string;
+  chapterOrderIndex: number;
+  segmentStartParagraph: number;
+  segmentEndParagraph: number;
+}): {
+  boundaries: SceneBoundaryCandidate[];
+  scenes: SceneCandidate[];
+} {
+  const parsed = SceneSegmentationV2ResponseRawSchema.parse(parseJsonObject<unknown>(params.content));
+  const segmentStart = parsePositiveInt(parsed.segment.paragraphStart, "segment.paragraphStart");
+  const segmentEnd = parsePositiveInt(parsed.segment.paragraphEnd, "segment.paragraphEnd");
+  const chapterOrderIndex = parsePositiveInt(parsed.segment.chapterOrderIndex, "segment.chapterOrderIndex");
+
+  if (parsed.segment.chapterId !== params.chapterId) {
+    throw new Error("segment.chapterId does not match request");
+  }
+  if (chapterOrderIndex !== params.chapterOrderIndex) {
+    throw new Error("segment.chapterOrderIndex does not match request");
+  }
+  if (segmentStart !== params.segmentStartParagraph || segmentEnd !== params.segmentEndParagraph) {
+    throw new Error("segment paragraph range does not match request");
+  }
+
+  const scenes = normalizeSceneSegmentationV2Scenes(parsed.scenes, segmentStart, segmentEnd);
+  const boundaries = scenes.slice(0, -1).map((scene, index) => {
+    const next = scenes[index + 1];
+    const confidence = Math.min(1, Math.max(0, Math.min(scene.confidence ?? 0.5, next?.confidence ?? 0.5)));
+    return {
+      betweenParagraphs: [scene.paragraphEnd, scene.paragraphEnd + 1] as [number, number],
+      reason: "narrative_cut",
+      confidence,
+    } satisfies SceneBoundaryCandidate;
+  });
 
   return {
     boundaries,
@@ -989,11 +1862,30 @@ function computeRunConfigHash(params: {
     configVersion: ANALYSIS_CONFIG_VERSION,
     chatModel: params.chatModel,
     embeddingModel: params.embeddingModel,
-    sceneWindowStrategy: SCENE_WINDOW_STRATEGY,
+    sceneSegmentationStrategy: SCENE_SEGMENTATION_STRATEGY,
+    sceneWindowStrategy:
+      SCENE_SEGMENTATION_STRATEGY === "sliding"
+        ? ANALYSIS_ADAPTIVE_SPLIT_ENABLED
+          ? "adaptive"
+          : SCENE_WINDOW_STRATEGY
+        : SCENE_SEGMENTATION_STRATEGY,
+    sceneSegmentationMaxInputTokens: SCENE_SEGMENTATION_MAX_INPUT_TOKENS,
+    sceneSegmentationPromptOverheadTokens: SCENE_SEGMENTATION_PROMPT_OVERHEAD_TOKENS,
+    sceneSegmentationCharsPerToken: SCENE_SEGMENTATION_CHARS_PER_TOKEN,
     chunkSize: params.chunkSize,
     chunkOverlap: params.chunkOverlap,
     chunkConcurrency: params.chunkConcurrency,
     chapterConcurrency: params.chapterConcurrency,
+    adaptiveSplitEnabled: ANALYSIS_ADAPTIVE_SPLIT_ENABLED,
+    adaptiveSplitShadowEnabled: ANALYSIS_ADAPTIVE_SPLIT_SHADOW_ENABLED,
+    adaptiveSmoothWindow: normalizeSmoothingWindowSize(ANALYSIS_ADAPTIVE_SMOOTH_WINDOW),
+    adaptivePeakPercentile: ANALYSIS_ADAPTIVE_PEAK_PERCENTILE,
+    adaptiveZoneRadius: ANALYSIS_ADAPTIVE_ZONE_RADIUS,
+    adaptiveLongGapMinParagraphs: ANALYSIS_ADAPTIVE_LONG_GAP_MIN_PARAGRAPHS,
+    snapBoundariesEnabled: ANALYSIS_SNAP_BOUNDARIES_TO_PEAKS_ENABLED,
+    snapRadius: ANALYSIS_SNAP_BOUNDARY_RADIUS,
+    snapLowConfidenceThreshold: ANALYSIS_SNAP_LOW_CONFIDENCE_THRESHOLD,
+    snapConfidencePenalty: ANALYSIS_SNAP_CONFIDENCE_PENALTY,
     paragraphEmbeddingVersion: params.paragraphEmbeddingVersion,
     sceneEmbeddingVersion: params.sceneEmbeddingVersion,
   });
@@ -1105,9 +1997,38 @@ type SceneEmbeddingDocument = {
 };
 
 type ParagraphEmbeddingDocument = {
+  paragraphId: string;
   bookId: string;
   chapterId: string;
   paragraphIndex: number;
+  sourceText: string;
+  sourceTextHash: string;
+};
+
+type EvidenceFragmentType = "small" | "medium";
+
+type PersistedParagraphRow = {
+  id: string;
+  bookId: string;
+  chapterId: string;
+  chapterOrderIndex: number;
+  paragraphIndex: number;
+  text: string;
+  textHash: string;
+};
+
+type EvidenceFragmentDocument = {
+  id: string;
+  bookId: string;
+  chapterId: string;
+  primarySceneId: string | null;
+  sceneIds: string[];
+  fragmentType: EvidenceFragmentType;
+  paragraphStart: number;
+  paragraphEnd: number;
+  orderIndex: number;
+  text: string;
+  textHash: string;
   sourceText: string;
   sourceTextHash: string;
 };
@@ -1152,7 +2073,7 @@ function dedupeStringList(values: string[], maxLength?: number): string[] {
   return result;
 }
 
-function dedupeEvidenceSpans(spans: SceneEvidenceSpan[]): SceneEvidenceSpan[] {
+function dedupeEvidenceSpans(spans: SceneEvidenceSpan[], maxLength = SCENE_EVIDENCE_SPANS_MAX): SceneEvidenceSpan[] {
   const seen = new Set<string>();
   const result: SceneEvidenceSpan[] = [];
 
@@ -1173,7 +2094,7 @@ function dedupeEvidenceSpans(spans: SceneEvidenceSpan[]): SceneEvidenceSpan[] {
       paragraphStart,
       paragraphEnd,
     });
-    if (result.length >= 4) break;
+    if (result.length >= maxLength) break;
   }
 
   return result;
@@ -1234,9 +2155,9 @@ function enrichFinalScenesFromChunkScenes(
       mentionedEntities: dedupeStringList(source.flatMap((candidate) => candidate.mentionedEntities)),
       locationHints: dedupeStringList(source.flatMap((candidate) => candidate.locationHints)),
       timeHints: dedupeStringList(source.flatMap((candidate) => candidate.timeHints)),
-      eventLabels: dedupeStringList(source.flatMap((candidate) => candidate.eventLabels), 4),
+      eventLabels: dedupeStringList(source.flatMap((candidate) => candidate.eventLabels), SCENE_EVENT_LABELS_MAX),
       unresolvedForms: dedupeStringList(source.flatMap((candidate) => candidate.unresolvedForms)),
-      facts: dedupeStringList(source.flatMap((candidate) => candidate.facts), 5),
+      facts: dedupeStringList(source.flatMap((candidate) => candidate.facts), SCENE_FACTS_MAX),
       evidenceSpans: dedupeEvidenceSpans(rawSpans),
     };
   });
@@ -1258,8 +2179,8 @@ function buildSceneEmbeddingText(params: {
   const participants = parseOptionalStringArray(params.scene.participantsJson, 20);
   const mentionedEntities = parseOptionalStringArray(params.scene.mentionedEntitiesJson, 24);
   const unresolvedForms = parseOptionalStringArray(params.scene.unresolvedFormsJson, 12);
-  const eventLabels = parseOptionalStringArray(params.scene.eventLabelsJson, 8);
-  const facts = parseOptionalStringArray(params.scene.factsJson, 8);
+  const eventLabels = parseOptionalStringArray(params.scene.eventLabelsJson, SCENE_EVENT_LABELS_MAX);
+  const facts = parseOptionalStringArray(params.scene.factsJson, SCENE_FACTS_MAX);
 
   const locationHintsRaw = parseOptionalStringArray(params.scene.locationHintsJson, 8);
   const timeHintsRaw = parseOptionalStringArray(params.scene.timeHintsJson, 8);
@@ -1278,16 +2199,16 @@ function buildSceneEmbeddingText(params: {
   const lines = [
     `Книга: ${String(params.bookTitle || "").trim()}`,
     `Глава: ${String(params.chapterTitle || "").trim()}`,
-    `Сцена #${params.scene.sceneIndex}: ${sceneCard}`,
+    `Навигационная сцена #${params.scene.sceneIndex}: ${sceneCard}`,
     `Абзацы: ${params.scene.paragraphStart}-${params.scene.paragraphEnd}`,
+    facts.length ? `Проверяемые факты для поиска: ${facts.join("; ")}` : "",
+    eventLabels.length ? `Событийные метки: ${eventLabels.join(", ")}` : "",
     participants.length ? `Участники: ${participants.join(", ")}` : "",
     mentionedEntities.length ? `Сущности: ${mentionedEntities.join(", ")}` : "",
     unresolvedForms.length ? `Неразрешённые формы: ${unresolvedForms.join(", ")}` : "",
     locationHints.length ? `Локация: ${locationHints.join(", ")}` : "",
     timeHints.length ? `Время: ${timeHints.join(", ")}` : "",
-    eventLabels.length ? `События: ${eventLabels.join(", ")}` : "",
-    facts.length ? `Факты: ${facts.join("; ")}` : "",
-    excerpt ? `Фрагмент: ${excerpt}` : "",
+    excerpt ? `Текстовый фрагмент для привязки: ${excerpt}` : "",
   ].filter(Boolean);
 
   return clampChars(lines.join("\n"), SCENE_EMBEDDING_TEXT_MAX_CHARS);
@@ -1313,6 +2234,160 @@ function buildSceneEmbeddingDocuments(params: {
       sourceTextHash: sha256Hex(sourceText),
     };
   });
+}
+
+function normalizeEvidenceFragmentWindow(windowSize: number, overlap: number) {
+  const safeWindow = Math.max(1, Math.floor(windowSize));
+  const safeOverlap = Math.max(0, Math.min(safeWindow - 1, Math.floor(overlap)));
+  return {
+    window: safeWindow,
+    overlap: safeOverlap,
+    step: Math.max(1, safeWindow - safeOverlap),
+  };
+}
+
+function findOverlappingScenes(params: {
+  scenes: SceneEmbeddingSourceRow[];
+  paragraphStart: number;
+  paragraphEnd: number;
+}) {
+  return params.scenes
+    .map((scene) => {
+      const start = Math.max(params.paragraphStart, Number(scene.paragraphStart || 0));
+      const end = Math.min(params.paragraphEnd, Number(scene.paragraphEnd || 0));
+      return {
+        scene,
+        overlap: Math.max(0, end - start + 1),
+      };
+    })
+    .filter((item) => item.overlap > 0)
+    .sort((left, right) => {
+      if (right.overlap !== left.overlap) return right.overlap - left.overlap;
+      return left.scene.sceneIndex - right.scene.sceneIndex;
+    });
+}
+
+function buildEvidenceFragmentEmbeddingText(params: {
+  bookTitle: string;
+  chapterTitle: string;
+  sceneTitle?: string | null;
+  paragraphStart: number;
+  paragraphEnd: number;
+  text: string;
+}) {
+  return [
+    `Книга: ${String(params.bookTitle || "").trim()}`,
+    `Глава: ${String(params.chapterTitle || "").trim()}`,
+    params.sceneTitle ? `Сцена: ${String(params.sceneTitle).trim()}` : "",
+    `Параграфы: ${params.paragraphStart}-${params.paragraphEnd}`,
+    "",
+    "Текст:",
+    String(params.text || "").trim(),
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
+}
+
+function buildEvidenceFragmentDocuments(params: {
+  bookId: string;
+  bookTitle: string;
+  chapterId: string;
+  chapterTitle: string;
+  paragraphs: ParagraphBlock[];
+  scenes: SceneEmbeddingSourceRow[];
+}): EvidenceFragmentDocument[] {
+  const paragraphsByIndex = new Map(params.paragraphs.map((paragraph) => [paragraph.index, paragraph]));
+  const paragraphIndexes = params.paragraphs.map((paragraph) => paragraph.index).sort((left, right) => left - right);
+  if (!paragraphIndexes.length) return [];
+
+  const fragmentConfigs: Array<{ type: EvidenceFragmentType; window: number; overlap: number }> = [
+    { type: "small", window: EVIDENCE_FRAGMENT_SMALL_WINDOW, overlap: EVIDENCE_FRAGMENT_SMALL_OVERLAP },
+    { type: "medium", window: EVIDENCE_FRAGMENT_MEDIUM_WINDOW, overlap: EVIDENCE_FRAGMENT_MEDIUM_OVERLAP },
+  ];
+
+  const rows: EvidenceFragmentDocument[] = [];
+  let orderIndex = 0;
+  for (const config of fragmentConfigs) {
+    const normalized = normalizeEvidenceFragmentWindow(config.window, config.overlap);
+    const firstParagraph = paragraphIndexes[0] || 1;
+    const lastParagraph = paragraphIndexes[paragraphIndexes.length - 1] || firstParagraph;
+    const starts: number[] = [];
+    for (let start = firstParagraph; start <= lastParagraph; start += normalized.step) {
+      starts.push(start);
+    }
+    const lastStart = Math.max(firstParagraph, lastParagraph - normalized.window + 1);
+    if (!starts.includes(lastStart)) starts.push(lastStart);
+
+    for (const start of starts.sort((left, right) => left - right)) {
+      let end = Math.min(lastParagraph, start + normalized.window - 1);
+      let paragraphRows = paragraphIndexes
+        .filter((paragraphIndex) => paragraphIndex >= start && paragraphIndex <= end)
+        .map((paragraphIndex) => paragraphsByIndex.get(paragraphIndex))
+        .filter((paragraph): paragraph is ParagraphBlock => Boolean(paragraph));
+      if (!paragraphRows.length) continue;
+
+      let text = paragraphRows.map((paragraph) => normalizeWhitespace(paragraph.text)).filter(Boolean).join("\n\n");
+      let overlaps = findOverlappingScenes({
+        scenes: params.scenes,
+        paragraphStart: start,
+        paragraphEnd: end,
+      });
+      let primaryScene = overlaps[0]?.scene || null;
+      let sceneTitle = primaryScene ? String(primaryScene.sceneCard || primaryScene.sceneSummary || "").trim() : null;
+      let sourceText = buildEvidenceFragmentEmbeddingText({
+        bookTitle: params.bookTitle,
+        chapterTitle: params.chapterTitle,
+        sceneTitle,
+        paragraphStart: start,
+        paragraphEnd: end,
+        text,
+      });
+
+      while (
+        config.type === "medium" &&
+        paragraphRows.length > 1 &&
+        Buffer.byteLength(sourceText, "utf-8") > EVIDENCE_FRAGMENT_EMBEDDING_MAX_CHARS
+      ) {
+        end -= 1;
+        paragraphRows = paragraphRows.filter((paragraph) => paragraph.index <= end);
+        text = paragraphRows.map((paragraph) => normalizeWhitespace(paragraph.text)).filter(Boolean).join("\n\n");
+        overlaps = findOverlappingScenes({
+          scenes: params.scenes,
+          paragraphStart: start,
+          paragraphEnd: end,
+        });
+        primaryScene = overlaps[0]?.scene || null;
+        sceneTitle = primaryScene ? String(primaryScene.sceneCard || primaryScene.sceneSummary || "").trim() : null;
+        sourceText = buildEvidenceFragmentEmbeddingText({
+          bookTitle: params.bookTitle,
+          chapterTitle: params.chapterTitle,
+          sceneTitle,
+          paragraphStart: start,
+          paragraphEnd: end,
+          text,
+        });
+      }
+
+      if (!text.trim()) continue;
+      rows.push({
+        id: randomUUID(),
+        bookId: params.bookId,
+        chapterId: params.chapterId,
+        primarySceneId: primaryScene?.id || null,
+        sceneIds: overlaps.map((item) => item.scene.id),
+        fragmentType: config.type,
+        paragraphStart: start,
+        paragraphEnd: end,
+        orderIndex: orderIndex++,
+        text,
+        textHash: sha256Hex(text),
+        sourceText,
+        sourceTextHash: sha256Hex(sourceText),
+      });
+    }
+  }
+
+  return rows;
 }
 
 type ChunkAnalysisSuccess = {
@@ -1522,6 +2597,7 @@ const RUN_STAGE_KEYS = [
   ANALYSIS_PARAGRAPH_STAGE,
   ANALYSIS_SCENE_CHUNK_STAGE,
   ANALYSIS_SCENE_EMBEDDING_STAGE,
+  ANALYSIS_EVIDENCE_FRAGMENT_STAGE,
   ANALYSIS_FINALIZE_STAGE,
 ] as const;
 
@@ -1781,10 +2857,12 @@ function buildParagraphEmbeddingDocuments(params: {
   bookId: string;
   chapterId: string;
   paragraphs: ParagraphBlock[];
+  paragraphIdsByIndex: Map<number, string>;
 }): ParagraphEmbeddingDocument[] {
   return params.paragraphs.map((paragraph) => {
     const sourceText = normalizeWhitespace(paragraph.text);
     return {
+      paragraphId: params.paragraphIdsByIndex.get(paragraph.index) || randomUUID(),
       bookId: params.bookId,
       chapterId: params.chapterId,
       paragraphIndex: paragraph.index,
@@ -1794,10 +2872,80 @@ function buildParagraphEmbeddingDocuments(params: {
   });
 }
 
+async function persistBookParagraphs(params: {
+  bookId: string;
+  chapterId: string;
+  chapterOrderIndex: number;
+  paragraphs: ParagraphBlock[];
+}): Promise<Map<number, string>> {
+  const paragraphIdsByIndex = new Map<number, string>();
+  if (!params.paragraphs.length) return paragraphIdsByIndex;
+
+  const now = new Date();
+  const rows = params.paragraphs.map((paragraph) => {
+    const paragraphId = randomUUID();
+    paragraphIdsByIndex.set(paragraph.index, paragraphId);
+    const text = normalizeWhitespace(paragraph.text);
+
+    return Prisma.sql`(
+      ${paragraphId},
+      ${params.bookId},
+      ${params.chapterId},
+      ${params.chapterOrderIndex},
+      ${paragraph.index},
+      ${null},
+      ${(params.chapterOrderIndex - 1) * 100000 + paragraph.index},
+      ${paragraph.index},
+      ${Math.max(0, Number(paragraph.startChar || 0))},
+      ${Math.max(0, Number(paragraph.endChar ?? Math.max(0, Number(paragraph.startChar || 0)) + text.length))},
+      ${text},
+      ${sha256Hex(text)},
+      ${now},
+      ${now}
+    )`;
+  });
+
+  for (const rowBatch of chunkArray(rows, EMBEDDING_INSERT_BATCH_SIZE)) {
+    await prisma.$executeRaw(
+      Prisma.sql`
+        INSERT INTO "BookParagraph" (
+          "id",
+          "bookId",
+          "chapterId",
+          "chapterOrderIndex",
+          "paragraphIndex",
+          "sceneId",
+          "orderIndex",
+          "orderInChapter",
+          "startChar",
+          "endChar",
+          "text",
+          "textHash",
+          "createdAt",
+          "updatedAt"
+        )
+        VALUES ${Prisma.join(rowBatch)}
+        ON CONFLICT ("bookId", "chapterId", "paragraphIndex") DO UPDATE SET
+          "chapterOrderIndex" = EXCLUDED."chapterOrderIndex",
+          "orderIndex" = EXCLUDED."orderIndex",
+          "orderInChapter" = EXCLUDED."orderInChapter",
+          "startChar" = EXCLUDED."startChar",
+          "endChar" = EXCLUDED."endChar",
+          "text" = EXCLUDED."text",
+          "textHash" = EXCLUDED."textHash",
+          "updatedAt" = EXCLUDED."updatedAt"
+      `
+    );
+  }
+
+  return paragraphIdsByIndex;
+}
+
 async function persistParagraphEmbeddings(params: {
   bookId: string;
   chapterId: string;
   paragraphs: ParagraphBlock[];
+  paragraphIdsByIndex: Map<number, string>;
   vectors: number[][];
   embeddingModel: string;
 }) {
@@ -1812,6 +2960,7 @@ async function persistParagraphEmbeddings(params: {
     bookId: params.bookId,
     chapterId: params.chapterId,
     paragraphs: params.paragraphs,
+    paragraphIdsByIndex: params.paragraphIdsByIndex,
   });
   const now = new Date();
 
@@ -1823,6 +2972,7 @@ async function persistParagraphEmbeddings(params: {
       ${randomUUID()},
       ${item.bookId},
       ${item.chapterId},
+      ${item.paragraphId},
       ${item.paragraphIndex},
       ${params.embeddingModel},
       ${PARAGRAPH_EMBEDDING_VERSION},
@@ -1843,6 +2993,7 @@ async function persistParagraphEmbeddings(params: {
           "id",
           "bookId",
           "chapterId",
+          "paragraphId",
           "paragraphIndex",
           "embeddingModel",
           "embeddingVersion",
@@ -1906,6 +3057,168 @@ async function requestSceneEmbeddings(params: {
   };
 }
 
+async function persistEvidenceFragmentsAndEmbeddings(params: {
+  client: ReturnType<typeof createVertexClient>;
+  bookId: string;
+  bookTitle: string;
+  chapterId: string;
+  chapterTitle: string;
+  paragraphs: ParagraphBlock[];
+  scenes: SceneEmbeddingSourceRow[];
+}): Promise<{
+  fragmentCount: number;
+  embeddingCount: number;
+  usage: EmbeddingUsage;
+  elapsedMs: number;
+}> {
+  const startedAt = Date.now();
+  const fragmentsRaw = buildEvidenceFragmentDocuments({
+    bookId: params.bookId,
+    bookTitle: params.bookTitle,
+    chapterId: params.chapterId,
+    chapterTitle: params.chapterTitle,
+    paragraphs: params.paragraphs,
+    scenes: params.scenes,
+  });
+  const seen = new Set<string>();
+  const fragments = fragmentsRaw.filter((fragment) => {
+    const key = `${fragment.fragmentType}:${fragment.paragraphStart}:${fragment.paragraphEnd}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  if (!fragments.length) {
+    return {
+      fragmentCount: 0,
+      embeddingCount: 0,
+      usage: { input_tokens: 0, total_tokens: 0 },
+      elapsedMs: Date.now() - startedAt,
+    };
+  }
+
+  const now = new Date();
+  const fragmentRows = fragments.map((fragment) => Prisma.sql`(
+    ${fragment.id},
+    ${fragment.bookId},
+    ${fragment.chapterId},
+    ${fragment.primarySceneId},
+    ${JSON.stringify(fragment.sceneIds)}::jsonb,
+    ${fragment.fragmentType},
+    ${fragment.paragraphStart},
+    ${fragment.paragraphEnd},
+    ${fragment.orderIndex},
+    ${fragment.text},
+    ${fragment.textHash},
+    ${EVIDENCE_FRAGMENT_EMBEDDING_VERSION},
+    ${now},
+    ${now}
+  )`);
+
+  for (const rowBatch of chunkArray(fragmentRows, EMBEDDING_INSERT_BATCH_SIZE)) {
+    await prisma.$executeRaw(
+      Prisma.sql`
+        INSERT INTO "BookEvidenceFragment" (
+          "id",
+          "bookId",
+          "chapterId",
+          "primarySceneId",
+          "sceneIdsJson",
+          "fragmentType",
+          "paragraphStart",
+          "paragraphEnd",
+          "orderIndex",
+          "text",
+          "textHash",
+          "embeddingVersion",
+          "createdAt",
+          "updatedAt"
+        )
+        VALUES ${Prisma.join(rowBatch)}
+        ON CONFLICT ("bookId", "chapterId", "fragmentType", "paragraphStart", "paragraphEnd", "embeddingVersion")
+        DO UPDATE SET
+          "primarySceneId" = EXCLUDED."primarySceneId",
+          "sceneIdsJson" = EXCLUDED."sceneIdsJson",
+          "orderIndex" = EXCLUDED."orderIndex",
+          "text" = EXCLUDED."text",
+          "textHash" = EXCLUDED."textHash",
+          "updatedAt" = EXCLUDED."updatedAt"
+      `
+    );
+  }
+
+  const response = await params.client.embeddings.createBatch({
+    texts: fragments.map((fragment) => fragment.sourceText),
+    taskType: "RETRIEVAL_DOCUMENT",
+    autoTruncate: true,
+    batchSize: EVIDENCE_FRAGMENT_EMBEDDING_BATCH_SIZE,
+  });
+  if (response.vectors.length !== fragments.length) {
+    throw new Error(`Evidence fragment embeddings count mismatch: got ${response.vectors.length}, expected ${fragments.length}`);
+  }
+
+  const embeddingRows = fragments.map((fragment, index) => {
+    const vector = response.vectors[index] || [];
+    const vectorLiteral = serializePgVectorLiteral(vector);
+    return Prisma.sql`(
+      ${randomUUID()},
+      ${fragment.id},
+      ${fragment.bookId},
+      ${fragment.chapterId},
+      ${fragment.fragmentType},
+      ${params.client.config.embeddingModel},
+      ${EVIDENCE_FRAGMENT_EMBEDDING_VERSION},
+      ${"RETRIEVAL_DOCUMENT"},
+      ${vector.length},
+      ${fragment.sourceText},
+      ${fragment.sourceTextHash},
+      ${now},
+      ${now},
+      CAST(${vectorLiteral} AS vector(768))
+    )`;
+  });
+
+  for (const rowBatch of chunkArray(embeddingRows, EMBEDDING_INSERT_BATCH_SIZE)) {
+    await prisma.$executeRaw(
+      Prisma.sql`
+        INSERT INTO "BookEvidenceFragmentEmbedding" (
+          "id",
+          "fragmentId",
+          "bookId",
+          "chapterId",
+          "fragmentType",
+          "embeddingModel",
+          "embeddingVersion",
+          "taskType",
+          "dimensions",
+          "sourceText",
+          "sourceTextHash",
+          "createdAt",
+          "updatedAt",
+          "vector"
+        )
+        VALUES ${Prisma.join(rowBatch)}
+        ON CONFLICT ("fragmentId") DO UPDATE SET
+          "embeddingModel" = EXCLUDED."embeddingModel",
+          "embeddingVersion" = EXCLUDED."embeddingVersion",
+          "taskType" = EXCLUDED."taskType",
+          "dimensions" = EXCLUDED."dimensions",
+          "sourceText" = EXCLUDED."sourceText",
+          "sourceTextHash" = EXCLUDED."sourceTextHash",
+          "vector" = EXCLUDED."vector",
+          "updatedAt" = EXCLUDED."updatedAt"
+      `
+    );
+  }
+
+  return {
+    fragmentCount: fragments.length,
+    embeddingCount: fragments.length,
+    usage: response.usage,
+    elapsedMs: Date.now() - startedAt,
+  };
+}
+
 function normalizeModelMessageContent(content: unknown): string {
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -1935,30 +3248,30 @@ async function requestChunkSceneBoundaries(params: {
   paragraphs: ParagraphBlock[];
   embeddingHints: EmbeddingBoundaryHint[];
 }) {
-  const prompt = `Проанализируй фрагмент художественного произведения и найди только убедительные границы сцен внутри данного диапазона абзацев.
+  const prompt = `Проанализируй фрагмент художественного произведения и разбей его на retrieval-сцены: минимальные законченные смысловые эпизоды, которые пользователь мог бы искать отдельным вопросом.
 
 Твоя задача:
-1. определить, где внутри фрагмента начинаются новые сцены;
-2. вернуть список границ сцен;
+1. определить, где внутри фрагмента начинается новый поисковый эпизод;
+2. вернуть список границ между такими эпизодами;
 3. вернуть итоговые сцены как непрерывные диапазоны абзацев;
-4. для каждой сцены вернуть компактные структурированные данные, полезные для поиска и последующей проверки ответа.
+4. для каждой сцены вернуть компактную навигационную карточку и проверяемые факты для поиска.
 
 Что считать новой сценой:
-- явная смена места действия;
-- явная смена времени;
-- переход к другому локальному эпизоду или новому очагу действия;
-- заметное переключение активного состава участников;
+- новый законченный шаг повествования: действие, решение, последствие, улика, раскрытие, объяснение, обвинение, проверка гипотезы;
+- смена основного объекта внимания: другой предмет, персонаж, подозрение, причина, следствие или доказательство;
+- новый этап внутри диалога, если в нём раскрывается отдельный факт или меняется понимание происходящего;
+- явная смена места, времени, активного состава участников или очага действия;
 - явный повествовательный разрыв.
 
 Что НЕ считать новой сценой само по себе:
 - просто новый абзац;
-- продолжение того же разговора;
-- небольшое смещение внимания внутри того же эпизода;
+- реплика в том же смысловом шаге;
+- небольшое смещение внимания без нового действия, улики, объяснения или последствия;
 - появление или исчезновение второстепенного участника без явного разрыва;
 - неуверенные догадки о смене места или времени.
 
 Главный принцип:
-лучше пропустить слабую границу, чем придумать лишнюю.
+лучше несколько конкретных поисковых эпизодов, чем одна широкая сцена с общей карточкой. Но не придумывай границу, если текст не даёт нового смыслового шага.
 
 Правила:
 - смотри только на данный фрагмент;
@@ -1969,23 +3282,27 @@ async function requestChunkSceneBoundaries(params: {
 - participants указывай только для реально активных участников сцены;
 - mentionedEntities включай только если они реально значимы для сцены;
 - unresolvedForms используй для важных, но неразрешённых форм появления: например, "кто-то в темноте", "неизвестный человек", "черная собака";
+- sceneCard должен быть поисковой карточкой: кто что сделал, понял, раскрыл или доказал, и какой предмет/улика/причина важны;
 - facts должны быть короткими, атомарными и проверяемыми по самому фрагменту;
+- не схлопывай цепочку действий в общий факт, если в тексте есть отдельные шаги причины и следствия;
+- для диалога фиксируй конкретные раскрытия, признания, ошибки, контраргументы и смены гипотез;
 - evidenceSpans должны ссылаться только на абзацы внутри соответствующей сцены;
-- если во фрагменте нет убедительных новых сцен, верни пустой массив boundaries и одну сцену на весь диапазон.
+- не используй локальные индексы внутри чанка (1..N), все индексы абзацев должны быть глобальными;
+- если во фрагменте нет нового поискового эпизода, верни пустой массив boundaries и одну сцену на весь диапазон.
 
 Формат ответа:
 {
   "boundaries": [
     {
-      "betweenParagraphs": [12, 13],
+      "betweenParagraphs": [1012, 1013],
       "reason": "location_shift | time_shift | action_shift | participant_shift | narrative_cut",
       "confidence": 0.0
     }
   ],
   "scenes": [
     {
-      "paragraphStart": 8,
-      "paragraphEnd": 12,
+      "paragraphStart": 1008,
+      "paragraphEnd": 1012,
       "sceneCard": "",
       "participants": ["..."],
       "mentionedEntities": ["..."],
@@ -1997,8 +3314,8 @@ async function requestChunkSceneBoundaries(params: {
       "evidenceSpans": [
         {
           "label": "",
-          "paragraphStart": 8,
-          "paragraphEnd": 9
+          "paragraphStart": 1008,
+          "paragraphEnd": 1009
         }
       ]
     }
@@ -2015,10 +3332,10 @@ async function requestChunkSceneBoundaries(params: {
 - confidence — число от 0 до 1;
 - scenes должны полностью покрывать диапазон от chunkStartParagraph до chunkEndParagraph без дыр и без пересечений;
 - reason только из enum: location_shift, time_shift, action_shift, participant_shift, narrative_cut;
-- sceneCard — 1-2 коротких предложения;
-- eventLabels — не более 4 коротких меток;
-- facts — не более 5 коротких фактов;
-- evidenceSpans — не более 4 span-ов на сцену.`;
+- sceneCard — 1-2 коротких предложения в формате поисковой карточки, не общее название места;
+- eventLabels — короткие метки ключевых действий/раскрытий;
+- facts — атомарные проверяемые факты, достаточные для навигации по этому эпизоду;
+- evidenceSpans — короткие span-ы для самых важных фактов сцены.`;
 
   const paragraphsJson = params.paragraphs.map((paragraph) => ({
     paragraphIndex: paragraph.index,
@@ -2044,9 +3361,9 @@ async function requestChunkSceneBoundaries(params: {
 Абзацы фрагмента:
 ${JSON.stringify(paragraphsJson)}
 
-Найди только убедительные границы сцен и верни итоговые сцены в строгом JSON-формате.
+Найди границы retrieval-сцен и верни итоговые сцены в строгом JSON-формате.
 Сцены должны полностью покрывать диапазон чанка без дыр и без пересечений.
-Если убедительных границ нет, верни одну сцену на весь диапазон.`;
+Если внутри чанка нет нового поискового эпизода, верни одну сцену на весь диапазон.`;
 
   const inputJson = {
     chapterId: params.chapterId,
@@ -2095,6 +3412,160 @@ ${JSON.stringify(paragraphsJson)}
           responseText,
           parsedJson: {
             boundaries: parsed.boundaries,
+            scenes: parsed.scenes,
+          },
+          usage,
+          elapsedMs: Date.now() - startedAtMs,
+        } satisfies ChunkAttemptArtifactPayload,
+      };
+    } catch (error) {
+      throw new ChunkAttemptError(
+        error instanceof Error ? error.message : String(error),
+        {
+          promptText: `${prompt}\n\n${userInputText}`,
+          inputJson,
+          responseText,
+          parsedJson: null,
+          usage,
+          elapsedMs: Date.now() - startedAtMs,
+        } satisfies ChunkAttemptArtifactPayload
+      );
+    }
+  } catch (error) {
+    if (error instanceof ChunkAttemptError) {
+      throw error;
+    }
+
+    throw new ChunkAttemptError(
+      error instanceof Error ? error.message : String(error),
+      {
+        promptText: `${prompt}\n\n${userInputText}`,
+        inputJson,
+        responseText: null,
+        parsedJson: null,
+        usage: {},
+        elapsedMs: Date.now() - startedAtMs,
+      } satisfies ChunkAttemptArtifactPayload
+    );
+  }
+}
+
+async function requestSceneSegmentationV2(params: {
+  client: ReturnType<typeof createVertexClient>;
+  chapterId: string;
+  chapterOrderIndex: number;
+  chapterTitle: string;
+  segmentStartParagraph: number;
+  segmentEndParagraph: number;
+  paragraphs: ParagraphBlock[];
+  segmentationStrategy: SceneSegmentationStrategy;
+  phase: "chapter_scene_llm" | "segment_scene_llm";
+  inputTokenEstimate: number;
+}) {
+  const prompt = `Разбей художественный текст на ПОИСКОВЫЕ ЕДИНИЦЫ для retrieval.
+
+Не используй театральное или кинематографическое понятие сцены. Одна комната, один диалог или один непрерывный эпизод может содержать много поисковых единиц.
+
+ПОИСКОВАЯ ЕДИНИЦА — минимальный фрагмент текста, который можно найти и использовать для ответа на отдельный вопрос пользователя.
+
+Начинай новую единицу, когда меняется раскрываемый факт, улика, причина, следствие, гипотеза, действие, решение, признание или объект внимания.
+
+Твоя задача:
+1. определить поисковые единицы внутри переданного segment;
+2. вернуть непрерывные диапазоны глобальных номеров абзацев;
+3. для каждой единицы вернуть summary, beats и anchors.
+
+Правила:
+- смотри только на переданный segment;
+- не используй знания о книге вне segment;
+- не додумывай скрытые переходы, если они не подтверждены текстом;
+- не нормализуй имена через догадки;
+- не объединяй разные раскрытия, улики, причины и следствия только потому, что место и участники не меняются;
+- summary — одно ёмкое предложение: кто что сделал, понял, раскрыл или доказал, и какой предмет/улика/причина важны;
+- beats — атомарные шаги внутри единицы, проверяемые по тексту;
+- anchors — имена, предметы, улики, действия и фразы, по которым это место можно найти;
+- если внутри длинного диалога последовательно раскрываются разные факты, раздели их на разные поисковые единицы;
+- если в segment нет нового поискового эпизода, верни одну единицу на весь диапазон segment.
+
+Формат ответа строго TSV, без markdown, без JSON и без пояснений.
+Каждая строка = одна поисковая единица:
+start<TAB>end<TAB>summary<TAB>beats<TAB>anchors
+
+Жесткие требования к формату:
+- start/end — глобальные номера абзацев из входа;
+- строки должны полностью покрыть segment без дыр и overlap;
+- порядок строк строго по тексту;
+- summary не должен быть общим названием места;
+- beats перечисляй через "; ";
+- anchors перечисляй через "; ";
+- не используй символ TAB внутри summary/beats/anchors.`;
+
+  const paragraphsJson = params.paragraphs.map((paragraph) => ({
+    paragraphIndex: paragraph.index,
+    text: paragraph.text,
+  }));
+
+  const inputJson = {
+    schemaVersion: SEARCH_UNIT_SEGMENTATION_SCHEMA_VERSION,
+    strategy: params.segmentationStrategy,
+    phase: params.phase,
+    inputTokenEstimate: params.inputTokenEstimate,
+    chapterId: params.chapterId,
+    chapterOrderIndex: params.chapterOrderIndex,
+    chapterTitle: params.chapterTitle,
+    segment: {
+      paragraphStart: params.segmentStartParagraph,
+      paragraphEnd: params.segmentEndParagraph,
+    },
+    paragraphs: paragraphsJson,
+  } satisfies Record<string, unknown>;
+
+  const userInputText = `Входные данные:
+${JSON.stringify(inputJson)}
+
+Верни только TSV в формате:
+start<TAB>end<TAB>summary<TAB>beats<TAB>anchors`;
+
+  const startedAtMs = Date.now();
+  try {
+    const completion = await params.client.chat.completions.create({
+      temperature: 0,
+      messages: [
+        {
+          role: "system",
+          content: prompt,
+        },
+        {
+          role: "user",
+          content: userInputText,
+        },
+      ],
+    });
+
+    const usage = usageFromResponse(completion);
+    const message = (completion.choices?.[0] as { message?: { content?: unknown } } | undefined)?.message?.content;
+    const responseText = normalizeModelMessageContent(message);
+    try {
+      const parsed = parseSearchUnitSegmentationResponse({
+        content: responseText,
+        segmentStartParagraph: params.segmentStartParagraph,
+        segmentEndParagraph: params.segmentEndParagraph,
+      });
+
+      return {
+        parsed,
+        artifact: {
+          promptText: `${prompt}\n\n${userInputText}`,
+          inputJson,
+          responseText,
+          parsedJson: {
+            schemaVersion: SEARCH_UNIT_SEGMENTATION_SCHEMA_VERSION,
+            segment: {
+              chapterId: params.chapterId,
+              chapterOrderIndex: params.chapterOrderIndex,
+              paragraphStart: params.segmentStartParagraph,
+              paragraphEnd: params.segmentEndParagraph,
+            },
             scenes: parsed.scenes,
           },
           usage,
@@ -2250,6 +3721,132 @@ async function requestChunkSceneBoundariesWithRetry(params: {
   }
 }
 
+async function requestSceneSegmentationV2WithRetry(params: {
+  client: ReturnType<typeof createVertexClient>;
+  logger: AnalysisLogger;
+  runId: string;
+  bookId: string;
+  chapterId: string;
+  chapterOrderIndex: number;
+  chapterTitle: string;
+  segmentStartParagraph: number;
+  segmentEndParagraph: number;
+  paragraphs: ParagraphBlock[];
+  segmentationStrategy: SceneSegmentationStrategy;
+  phase: "chapter_scene_llm" | "segment_scene_llm";
+  inputTokenEstimate: number;
+}) {
+  let attempt = 1;
+  let retryDelayMs = ANALYSIS_CHUNK_RETRY_BASE_MS;
+  let totalElapsedMs = 0;
+  let totalArtifactPayloadBytes = 0;
+  let usageTotal: Usage = {};
+  const phase = params.phase;
+
+  while (true) {
+    try {
+      const segmentResult = await requestSceneSegmentationV2({
+        client: params.client,
+        chapterId: params.chapterId,
+        chapterOrderIndex: params.chapterOrderIndex,
+        chapterTitle: params.chapterTitle,
+        segmentStartParagraph: params.segmentStartParagraph,
+        segmentEndParagraph: params.segmentEndParagraph,
+        paragraphs: params.paragraphs,
+        segmentationStrategy: params.segmentationStrategy,
+        phase,
+        inputTokenEstimate: params.inputTokenEstimate,
+      });
+      usageTotal = sumUsage(usageTotal, segmentResult.artifact.usage);
+      totalElapsedMs += Math.max(0, Number(segmentResult.artifact.elapsedMs || 0));
+
+      const persistedArtifact = await persistChunkArtifact({
+        runId: params.runId,
+        bookId: params.bookId,
+        chapterId: params.chapterId,
+        chapterOrderIndex: params.chapterOrderIndex,
+        chapterTitle: params.chapterTitle,
+        chunkStartParagraph: params.segmentStartParagraph,
+        chunkEndParagraph: params.segmentEndParagraph,
+        attempt,
+        llmModel: params.client.config.chatModel,
+        status: "ok",
+        phase,
+        artifact: segmentResult.artifact,
+      });
+
+      return {
+        parsed: segmentResult.parsed,
+        usage: usageTotal,
+        attemptCount: attempt,
+        elapsedMs: totalElapsedMs,
+        artifactPayloadBytes: totalArtifactPayloadBytes + persistedArtifact.payloadSizeBytes,
+      };
+    } catch (error) {
+      const normalizedError = error instanceof Error ? error : new Error(String(error));
+      const artifact =
+        error instanceof ChunkAttemptError
+          ? error.artifact
+          : ({
+              promptText: "",
+              inputJson: {},
+              responseText: null,
+              parsedJson: null,
+              usage: {},
+              elapsedMs: 0,
+            } satisfies ChunkAttemptArtifactPayload);
+      usageTotal = sumUsage(usageTotal, artifact.usage);
+      totalElapsedMs += Math.max(0, Number(artifact.elapsedMs || 0));
+
+      const persistedArtifact = await persistChunkArtifact({
+        runId: params.runId,
+        bookId: params.bookId,
+        chapterId: params.chapterId,
+        chapterOrderIndex: params.chapterOrderIndex,
+        chapterTitle: params.chapterTitle,
+        chunkStartParagraph: params.segmentStartParagraph,
+        chunkEndParagraph: params.segmentEndParagraph,
+        attempt,
+        llmModel: params.client.config.chatModel,
+        status: "error",
+        phase,
+        artifact,
+        errorMessage: normalizedError.message,
+      });
+
+      const shouldRetry =
+        attempt < ANALYSIS_CHUNK_RETRY_MAX_ATTEMPTS &&
+        (error instanceof ChunkAttemptError || isRetriableChunkError(normalizedError));
+      if (!shouldRetry) {
+        throw new ChunkCallError(normalizedError.message, {
+          usage: usageTotal,
+          attemptCount: attempt,
+          elapsedMs: totalElapsedMs,
+          artifactPayloadBytes: totalArtifactPayloadBytes + persistedArtifact.payloadSizeBytes,
+        });
+      }
+      totalArtifactPayloadBytes += persistedArtifact.payloadSizeBytes;
+
+      params.logger.warn("Scene segmentation request failed; retrying", {
+        bookId: params.bookId,
+        chapterId: params.chapterId,
+        chapterOrderIndex: params.chapterOrderIndex,
+        segmentStartParagraph: params.segmentStartParagraph,
+        segmentEndParagraph: params.segmentEndParagraph,
+        phase,
+        attempt,
+        retryDelayMs,
+        maxAttempts: ANALYSIS_CHUNK_RETRY_MAX_ATTEMPTS,
+        error: normalizedError.message,
+      });
+
+      await delay(retryDelayMs);
+      attempt += 1;
+      retryDelayMs = Math.min(20_000, Math.round(retryDelayMs * 1.8));
+    }
+  }
+}
+
 export async function runBookAnalysis(params: { bookId: string; logger: AnalysisLogger }) {
   const client = createVertexClient();
   if (!client.config.apiKey) {
@@ -2368,14 +3965,34 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
   params.logger.info("Book analysis started", {
     bookId: book.id,
     title: book.title,
-    sceneWindowStrategy: SCENE_WINDOW_STRATEGY,
+    sceneWindowStrategy: ANALYSIS_ADAPTIVE_SPLIT_ENABLED ? "adaptive" : SCENE_WINDOW_STRATEGY,
     sceneWindowSize: SCENE_CHUNK_SIZE,
     sceneWindowOverlap: SCENE_CHUNK_OVERLAP,
+    adaptiveSplitShadowEnabled: ANALYSIS_ADAPTIVE_SPLIT_SHADOW_ENABLED,
+    snapBoundariesToPeaksEnabled: ANALYSIS_SNAP_BOUNDARIES_TO_PEAKS_ENABLED,
     chapters: chapters.length,
   });
 
   await prisma.$transaction(async (tx: any) => {
+    await tx.bookEvidenceFragmentEmbedding?.deleteMany?.({
+      where: {
+        bookId: book.id,
+      },
+    });
+
+    await tx.bookEvidenceFragment?.deleteMany?.({
+      where: {
+        bookId: book.id,
+      },
+    });
+
     await tx.bookParagraphEmbedding.deleteMany({
+      where: {
+        bookId: book.id,
+      },
+    });
+
+    await tx.bookParagraph.deleteMany({
       where: {
         bookId: book.id,
       },
@@ -2451,6 +4068,7 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
       [ANALYSIS_PARAGRAPH_STAGE]: createEmptyStageMetric(),
       [ANALYSIS_SCENE_CHUNK_STAGE]: createEmptyStageMetric(),
       [ANALYSIS_SCENE_EMBEDDING_STAGE]: createEmptyStageMetric(),
+      [ANALYSIS_EVIDENCE_FRAGMENT_STAGE]: createEmptyStageMetric(),
       [ANALYSIS_FINALIZE_STAGE]: createEmptyStageMetric(),
     };
     runContext.chapterStageMetrics.set(chapter.id, chapterStageMetrics);
@@ -2481,6 +4099,9 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
           chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].state = "completed";
           chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].startedAt = chapterStartedIso;
           chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt = finishedAt.toISOString();
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].startedAt = chapterStartedIso;
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].completedAt = finishedAt.toISOString();
           chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].state = "completed";
           chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].startedAt = chapterStartedIso;
           chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].completedAt = finishedAt.toISOString();
@@ -2491,148 +4112,14 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         };
       }
 
-      const boundaryEmbeddingStartedAt = Date.now();
-      const { hints: embeddingHints, vectors: paragraphVectors, usage: embeddingUsage } = await requestEmbeddingBoundaryHints({
-        client,
-        paragraphs: blocks,
-      });
-      const boundaryEmbeddingElapsedMs = Date.now() - boundaryEmbeddingStartedAt;
-      await enqueueProgressUpdate(() => {
-        addEmbeddingUsage(chapterStat, embeddingUsage);
-        chapterStat.embeddingCalls += 1;
-        chapterStat.embeddingLatencyMs += Math.max(0, boundaryEmbeddingElapsedMs);
-      });
-
-      await persistParagraphEmbeddings({
-        bookId: book.id,
-        chapterId: chapter.id,
-        paragraphs: blocks,
-        vectors: paragraphVectors,
-        embeddingModel: client.config.embeddingModel,
-      });
-      const paragraphEmbeddingBytes = estimateParagraphEmbeddingBytes({
-        paragraphs: blocks,
-        vectorDimensions: PGVECTOR_EMBEDDING_DIMENSIONS,
-      });
-      await enqueueProgressUpdate(() => {
-        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].state = "completed";
-        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].embeddingInputTokens = Math.max(
-          0,
-          Number(embeddingUsage.input_tokens || 0)
-        );
-        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].embeddingTotalTokens = Math.max(
-          0,
-          Number(embeddingUsage.total_tokens || embeddingUsage.input_tokens || 0)
-        );
-        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].elapsedMs = Math.max(0, boundaryEmbeddingElapsedMs);
-        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].embeddingCalls = 1;
-        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].outputRowCount = paragraphVectors.length;
-        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].storageBytes = {
-          paragraphEmbeddings: paragraphEmbeddingBytes,
-        };
-        chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].completedAt = new Date().toISOString();
-        chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].state = "running";
-        chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].startedAt ||= new Date().toISOString();
-      });
-
-      params.logger.info("Chapter embedding hints prepared", {
-        bookId: book.id,
-        chapterId: chapter.id,
-        chapterOrderIndex: chapter.orderIndex,
-        paragraphCount: blocks.length,
-        hintCount: embeddingHints.length,
-        embeddingInputTokens: Number(embeddingUsage.input_tokens || 0),
-        paragraphEmbeddingsPersisted: paragraphVectors.length,
-        paragraphEmbeddingVersion: PARAGRAPH_EMBEDDING_VERSION,
-      });
-
-      const chunks = createSceneAnalysisChunks({
-        paragraphs: blocks,
-        embeddingHints,
-      });
-      params.logger.info("Chapter analysis windows prepared", {
-        bookId: book.id,
-        chapterId: chapter.id,
-        chapterOrderIndex: chapter.orderIndex,
-        sceneWindowStrategy: SCENE_WINDOW_STRATEGY,
-        paragraphCount: blocks.length,
-        hintCount: embeddingHints.length,
-        windowCount: chunks.length,
-        windowSize: SCENE_CHUNK_SIZE,
-        windowOverlap: SCENE_CHUNK_OVERLAP,
-        chunkConcurrency: ANALYSIS_CHUNK_CONCURRENCY,
-      });
-
       const boundaryCandidates: SceneBoundaryCandidate[] = [];
       const chunkScenes: SceneCandidate[] = [];
       const coveredParagraphIndexes = new Set<number>();
-      const inFlight = new Map<number, Promise<{ taskId: number; result: ChunkAnalysisResult }>>();
-      const chunkQueue = chunks.slice();
-      const effectiveChunkConcurrency = Math.min(Math.max(1, ANALYSIS_CHUNK_CONCURRENCY), chunkQueue.length || 1);
-      let nextTaskId = 1;
+      let adaptivePeaksForSnapping: EmbeddingBoundaryHint[] = [];
+      let embeddingHints: EmbeddingBoundaryHint[] = [];
+      let paragraphVectors: number[][] = [];
 
-      const buildChunkTask = (chunk: ParagraphChunk): Promise<ChunkAnalysisResult> =>
-        requestChunkSceneBoundariesWithRetry({
-          client,
-          logger: params.logger,
-          runId: runContext.runId,
-          bookId: book.id,
-          chapterId: chapter.id,
-          chapterOrderIndex: chapter.orderIndex,
-          chapterTitle: chapter.title,
-          chunkStartParagraph: chunk.chunkStartParagraph,
-          chunkEndParagraph: chunk.chunkEndParagraph,
-          paragraphs: chunk.paragraphs,
-          embeddingHints,
-        })
-          .then(({ parsed, usage, attemptCount, elapsedMs, artifactPayloadBytes }): ChunkAnalysisSuccess => ({
-            ok: true,
-            chunk,
-            parsed,
-            usage,
-            attemptCount,
-            elapsedMs,
-            artifactPayloadBytes,
-          }))
-          .catch((error): ChunkAnalysisFailure => {
-            const normalizedError = error instanceof Error ? error : new Error(String(error));
-            const usage = error instanceof ChunkCallError ? error.usage : {};
-            const attemptCount = error instanceof ChunkCallError ? error.attemptCount : 1;
-            const elapsedMs = error instanceof ChunkCallError ? error.elapsedMs : 0;
-            const artifactPayloadBytes = error instanceof ChunkCallError ? error.artifactPayloadBytes : 0;
-            return {
-              ok: false,
-              chunk,
-              error: normalizedError,
-              usage,
-              attemptCount,
-              elapsedMs,
-              artifactPayloadBytes,
-            };
-          });
-
-      const launchNext = () => {
-        while (inFlight.size < effectiveChunkConcurrency && chunkQueue.length > 0) {
-          const nextChunk = chunkQueue.shift();
-          if (!nextChunk) break;
-          const taskId = nextTaskId;
-          nextTaskId += 1;
-          inFlight.set(
-            taskId,
-            buildChunkTask(nextChunk).then((result) => ({
-              taskId,
-              result,
-            }))
-          );
-        }
-      };
-
-      launchNext();
-      while (inFlight.size > 0) {
-        const settled = await Promise.race(inFlight.values());
-        inFlight.delete(settled.taskId);
-
-        const chunkResult = settled.result;
+      const recordChunkResult = async (chunkResult: ChunkAnalysisResult) => {
         await enqueueProgressUpdate(() => {
           addUsage(chapterStat, chunkResult.usage);
           chapterStat.llmCalls += Math.max(1, chunkResult.attemptCount);
@@ -2656,7 +4143,6 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
           chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].retryCount += Math.max(0, chunkResult.attemptCount - 1);
           chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].llmCalls += Math.max(1, chunkResult.attemptCount);
           chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].chunkCount += 1;
-          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].outputRowCount += Math.max(1, chunkResult.attemptCount);
           chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].storageBytes.artifactPayloads = Math.max(
             0,
             Number(chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].storageBytes.artifactPayloads || 0) +
@@ -2686,9 +4172,341 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
 
         boundaryCandidates.push(...chunkResult.parsed.boundaries);
         chunkScenes.push(...chunkResult.parsed.scenes);
+      };
+
+      const runParagraphEmbeddingStage = async () => {
+        const boundaryEmbeddingStartedAt = Date.now();
+        const embeddingResult = await requestEmbeddingBoundaryHints({
+          client,
+          paragraphs: blocks,
+        });
+        embeddingHints = embeddingResult.hints;
+        paragraphVectors = embeddingResult.vectors;
+        const embeddingUsage = embeddingResult.usage;
+        const boundaryEmbeddingElapsedMs = Date.now() - boundaryEmbeddingStartedAt;
+
+        await enqueueProgressUpdate(() => {
+          addEmbeddingUsage(chapterStat, embeddingUsage);
+          chapterStat.embeddingCalls += 1;
+          chapterStat.embeddingLatencyMs += Math.max(0, boundaryEmbeddingElapsedMs);
+        });
+
+        const paragraphIdsByIndex = await persistBookParagraphs({
+          bookId: book.id,
+          chapterId: chapter.id,
+          chapterOrderIndex: chapter.orderIndex,
+          paragraphs: blocks,
+        });
+
+        await persistParagraphEmbeddings({
+          bookId: book.id,
+          chapterId: chapter.id,
+          paragraphs: blocks,
+          paragraphIdsByIndex,
+          vectors: paragraphVectors,
+          embeddingModel: client.config.embeddingModel,
+        });
+        const paragraphEmbeddingBytes = estimateParagraphEmbeddingBytes({
+          paragraphs: blocks,
+          vectorDimensions: PGVECTOR_EMBEDDING_DIMENSIONS,
+        });
+
+        await enqueueProgressUpdate(() => {
+          chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].embeddingInputTokens = Math.max(
+            0,
+            Number(embeddingUsage.input_tokens || 0)
+          );
+          chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].embeddingTotalTokens = Math.max(
+            0,
+            Number(embeddingUsage.total_tokens || embeddingUsage.input_tokens || 0)
+          );
+          chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].elapsedMs = Math.max(0, boundaryEmbeddingElapsedMs);
+          chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].embeddingCalls = 1;
+          chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].outputRowCount = paragraphVectors.length;
+          chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].storageBytes = {
+            paragraphEmbeddings: paragraphEmbeddingBytes,
+          };
+          chapterStageMetrics[ANALYSIS_PARAGRAPH_STAGE].completedAt = new Date().toISOString();
+        });
+
+        params.logger.info("Chapter paragraph embeddings prepared", {
+          bookId: book.id,
+          chapterId: chapter.id,
+          chapterOrderIndex: chapter.orderIndex,
+          paragraphCount: blocks.length,
+          hintCount: embeddingHints.length,
+          embeddingInputTokens: Number(embeddingUsage.input_tokens || 0),
+          paragraphEmbeddingsPersisted: paragraphVectors.length,
+          paragraphEmbeddingVersion: PARAGRAPH_EMBEDDING_VERSION,
+        });
+      };
+
+      const runSceneChunkStage = async (parallelParagraphEmbeddings: boolean) => {
+        await enqueueProgressUpdate(() => {
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].state = "running";
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].startedAt ||= new Date().toISOString();
+        });
+
+        if (SCENE_SEGMENTATION_STRATEGY === "chapter_first") {
+          const chapterInputTokenEstimate = estimateSceneSegmentationInputTokens(blocks);
+          const segments = createChapterFirstSceneSegments({
+            paragraphs: blocks,
+            maxInputTokens: SCENE_SEGMENTATION_MAX_INPUT_TOKENS,
+          });
+
+          params.logger.info("Chapter-first scene segmentation prepared", {
+            bookId: book.id,
+            chapterId: chapter.id,
+            chapterOrderIndex: chapter.orderIndex,
+            segmentationStrategy: SCENE_SEGMENTATION_STRATEGY,
+            schemaVersion: SEARCH_UNIT_SEGMENTATION_SCHEMA_VERSION,
+            paragraphSceneParallel: parallelParagraphEmbeddings,
+            paragraphCount: blocks.length,
+            inputTokenEstimate: chapterInputTokenEstimate,
+            maxInputTokens: SCENE_SEGMENTATION_MAX_INPUT_TOKENS,
+            segmentCount: segments.length,
+          });
+
+          for (const segment of segments) {
+            const segmentInputTokenEstimate = estimateSceneSegmentationInputTokens(segment.paragraphs);
+            const phase = segments.length === 1 ? "chapter_scene_llm" : "segment_scene_llm";
+            const segmentResult = await requestSceneSegmentationV2WithRetry({
+              client,
+              logger: params.logger,
+              runId: runContext.runId,
+              bookId: book.id,
+              chapterId: chapter.id,
+              chapterOrderIndex: chapter.orderIndex,
+              chapterTitle: chapter.title,
+              segmentStartParagraph: segment.chunkStartParagraph,
+              segmentEndParagraph: segment.chunkEndParagraph,
+              paragraphs: segment.paragraphs,
+              segmentationStrategy: SCENE_SEGMENTATION_STRATEGY,
+              phase,
+              inputTokenEstimate: segmentInputTokenEstimate,
+            })
+              .then(({ parsed, usage, attemptCount, elapsedMs, artifactPayloadBytes }): ChunkAnalysisSuccess => ({
+                ok: true,
+                chunk: segment,
+                parsed,
+                usage,
+                attemptCount,
+                elapsedMs,
+                artifactPayloadBytes,
+              }))
+              .catch((error): ChunkAnalysisFailure => {
+                const normalizedError = error instanceof Error ? error : new Error(String(error));
+                const usage = error instanceof ChunkCallError ? error.usage : {};
+                const attemptCount = error instanceof ChunkCallError ? error.attemptCount : 1;
+                const elapsedMs = error instanceof ChunkCallError ? error.elapsedMs : 0;
+                const artifactPayloadBytes = error instanceof ChunkCallError ? error.artifactPayloadBytes : 0;
+                return {
+                  ok: false,
+                  chunk: segment,
+                  error: normalizedError,
+                  usage,
+                  attemptCount,
+                  elapsedMs,
+                  artifactPayloadBytes,
+                };
+              });
+
+            await recordChunkResult(segmentResult);
+          }
+
+          return;
+        }
+
+        params.logger.info("Chapter embedding hints prepared", {
+          bookId: book.id,
+          chapterId: chapter.id,
+          chapterOrderIndex: chapter.orderIndex,
+          paragraphCount: blocks.length,
+          hintCount: embeddingHints.length,
+          paragraphEmbeddingsPersisted: paragraphVectors.length,
+          paragraphEmbeddingVersion: PARAGRAPH_EMBEDDING_VERSION,
+        });
+
+        const uniformChunks = createSceneAnalysisChunks({
+          paragraphs: blocks,
+          embeddingHints,
+        });
+        const shouldBuildAdaptivePlan =
+          ANALYSIS_ADAPTIVE_SPLIT_ENABLED ||
+          ANALYSIS_ADAPTIVE_SPLIT_SHADOW_ENABLED ||
+          ANALYSIS_SNAP_BOUNDARIES_TO_PEAKS_ENABLED;
+        const adaptivePlan = shouldBuildAdaptivePlan
+          ? buildAdaptiveSceneAnalysisPlan({
+              paragraphs: blocks,
+              paragraphVectors,
+            })
+          : null;
+        adaptivePeaksForSnapping = adaptivePlan?.peaks ?? [];
+        const chunks = ANALYSIS_ADAPTIVE_SPLIT_ENABLED && adaptivePlan ? adaptivePlan.chunks : uniformChunks;
+        const sceneWindowStrategy = ANALYSIS_ADAPTIVE_SPLIT_ENABLED ? "adaptive" : SCENE_WINDOW_STRATEGY;
+
+        if (adaptivePlan && ANALYSIS_ADAPTIVE_SPLIT_SHADOW_ENABLED && !ANALYSIS_ADAPTIVE_SPLIT_ENABLED) {
+          params.logger.info("Chapter adaptive split shadow plan", {
+            bookId: book.id,
+            chapterId: chapter.id,
+            chapterOrderIndex: chapter.orderIndex,
+            paragraphCount: blocks.length,
+            scoreCount: adaptivePlan.scores.length,
+            peakCount: adaptivePlan.peaks.length,
+            zoneCount: adaptivePlan.zones.length,
+            coverageZoneCount: adaptivePlan.coverageZoneCount,
+            threshold: Number(adaptivePlan.threshold.toFixed(6)),
+            adaptiveWindowCount: adaptivePlan.chunks.length,
+            uniformWindowCount: uniformChunks.length,
+          });
+        }
+        params.logger.info("Chapter analysis windows prepared", {
+          bookId: book.id,
+          chapterId: chapter.id,
+          chapterOrderIndex: chapter.orderIndex,
+          segmentationStrategy: SCENE_SEGMENTATION_STRATEGY,
+          sceneWindowStrategy,
+          paragraphCount: blocks.length,
+          hintCount: embeddingHints.length,
+          windowCount: chunks.length,
+          adaptiveWindowCount: adaptivePlan?.chunks.length ?? null,
+          uniformWindowCount: uniformChunks.length,
+          adaptivePeakCount: adaptivePlan?.peaks.length ?? null,
+          adaptiveZoneCount: adaptivePlan?.zones.length ?? null,
+          adaptiveCoverageZoneCount: adaptivePlan?.coverageZoneCount ?? null,
+          adaptiveThreshold: adaptivePlan ? Number(adaptivePlan.threshold.toFixed(6)) : null,
+          windowSize: SCENE_CHUNK_SIZE,
+          windowOverlap: SCENE_CHUNK_OVERLAP,
+          chunkConcurrency: ANALYSIS_CHUNK_CONCURRENCY,
+        });
+
+        const inFlight = new Map<number, Promise<{ taskId: number; result: ChunkAnalysisResult }>>();
+        const chunkQueue = chunks.slice();
+        const effectiveChunkConcurrency = Math.min(Math.max(1, ANALYSIS_CHUNK_CONCURRENCY), chunkQueue.length || 1);
+        let nextTaskId = 1;
+
+        const buildChunkTask = (chunk: ParagraphChunk): Promise<ChunkAnalysisResult> =>
+          requestChunkSceneBoundariesWithRetry({
+            client,
+            logger: params.logger,
+            runId: runContext.runId,
+            bookId: book.id,
+            chapterId: chapter.id,
+            chapterOrderIndex: chapter.orderIndex,
+            chapterTitle: chapter.title,
+            chunkStartParagraph: chunk.chunkStartParagraph,
+            chunkEndParagraph: chunk.chunkEndParagraph,
+            paragraphs: chunk.paragraphs,
+            embeddingHints,
+          })
+            .then(({ parsed, usage, attemptCount, elapsedMs, artifactPayloadBytes }): ChunkAnalysisSuccess => ({
+              ok: true,
+              chunk,
+              parsed,
+              usage,
+              attemptCount,
+              elapsedMs,
+              artifactPayloadBytes,
+            }))
+            .catch((error): ChunkAnalysisFailure => {
+              const normalizedError = error instanceof Error ? error : new Error(String(error));
+              const usage = error instanceof ChunkCallError ? error.usage : {};
+              const attemptCount = error instanceof ChunkCallError ? error.attemptCount : 1;
+              const elapsedMs = error instanceof ChunkCallError ? error.elapsedMs : 0;
+              const artifactPayloadBytes = error instanceof ChunkCallError ? error.artifactPayloadBytes : 0;
+              return {
+                ok: false,
+                chunk,
+                error: normalizedError,
+                usage,
+                attemptCount,
+                elapsedMs,
+                artifactPayloadBytes,
+              };
+            });
+
+        const launchNext = () => {
+          while (inFlight.size < effectiveChunkConcurrency && chunkQueue.length > 0) {
+            const nextChunk = chunkQueue.shift();
+            if (!nextChunk) break;
+            const taskId = nextTaskId;
+            nextTaskId += 1;
+            inFlight.set(
+              taskId,
+              buildChunkTask(nextChunk).then((result) => ({
+                taskId,
+                result,
+              }))
+            );
+          }
+        };
 
         launchNext();
+        while (inFlight.size > 0) {
+          const settled = await Promise.race(inFlight.values());
+          inFlight.delete(settled.taskId);
+          await recordChunkResult(settled.result);
+          launchNext();
+        }
+      };
+
+      const runSceneStagesInParallel =
+        ANALYSIS_SCENES_ENABLED &&
+        SCENE_SEGMENTATION_STRATEGY === "chapter_first" &&
+        ANALYSIS_PARAGRAPH_SCENE_PARALLEL_ENABLED;
+
+      if (runSceneStagesInParallel) {
+        const branchResults = await Promise.allSettled([
+          runParagraphEmbeddingStage(),
+          runSceneChunkStage(true),
+        ]);
+        const failedBranch = branchResults.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected"
+        );
+        if (failedBranch) {
+          throw failedBranch.reason instanceof Error ? failedBranch.reason : new Error(String(failedBranch.reason));
+        }
+      } else {
+        await runParagraphEmbeddingStage();
+
+        if (!ANALYSIS_SCENES_ENABLED) {
+          const finishedAt = new Date();
+          await enqueueProgressUpdate(() => {
+            chapterStat.checkedBlocks = chapterStat.totalBlocks;
+            chapterStat.status = "completed";
+            chapterStat.finishedAt = finishedAt.toISOString();
+            chapterStat.elapsedMs = Math.max(0, finishedAt.getTime() - chapterStartedAtMs);
+            chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].state = "completed";
+            chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].startedAt ||= finishedAt.toISOString();
+            chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].completedAt = finishedAt.toISOString();
+            chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].outputRowCount = 0;
+            chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].state = "completed";
+            chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].startedAt ||= finishedAt.toISOString();
+            chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt = finishedAt.toISOString();
+            chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].outputRowCount = 0;
+            chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].state = "completed";
+            chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].startedAt ||= finishedAt.toISOString();
+            chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].completedAt = finishedAt.toISOString();
+            chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].outputRowCount = 0;
+          });
+
+          params.logger.info("Chapter scene pipeline skipped by ANALYSIS_SCENES_ENABLED=false", {
+            bookId: book.id,
+            chapterId: chapter.id,
+            chapterOrderIndex: chapter.orderIndex,
+            paragraphCount: blocks.length,
+          });
+
+          return {
+            ok: true,
+            chapterId: chapter.id,
+          };
+        }
+
+        await runSceneChunkStage(false);
       }
+
       await enqueueProgressUpdate(() => {
         chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].state =
           chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].state === "failed" ? "failed" : "completed";
@@ -2697,20 +4515,70 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].startedAt ||= new Date().toISOString();
       });
 
-      const sceneBoundaries = mergeBoundaryCandidates(boundaryCandidates);
+      let effectiveBoundaryCandidates = boundaryCandidates;
+      if (
+        SCENE_SEGMENTATION_STRATEGY === "sliding" &&
+        ANALYSIS_SNAP_BOUNDARIES_TO_PEAKS_ENABLED &&
+        adaptivePeaksForSnapping.length > 0
+      ) {
+        const snapped = snapBoundariesToEmbeddingPeaks({
+          candidates: boundaryCandidates,
+          peaks: adaptivePeaksForSnapping,
+          radius: ANALYSIS_SNAP_BOUNDARY_RADIUS,
+          lowConfidenceThreshold: ANALYSIS_SNAP_LOW_CONFIDENCE_THRESHOLD,
+          confidencePenalty: ANALYSIS_SNAP_CONFIDENCE_PENALTY,
+        });
+        effectiveBoundaryCandidates = snapped.boundaries;
+        params.logger.info("Chapter boundaries snapped to embedding peaks", {
+          bookId: book.id,
+          chapterId: chapter.id,
+          chapterOrderIndex: chapter.orderIndex,
+          candidateCount: boundaryCandidates.length,
+          peakCount: adaptivePeaksForSnapping.length,
+          snapRadius: ANALYSIS_SNAP_BOUNDARY_RADIUS,
+          movedCount: snapped.movedCount,
+          softenedCount: snapped.softenedCount,
+        });
+      }
+
+      const sceneBoundaries = mergeBoundaryCandidates(effectiveBoundaryCandidates);
       params.logger.info("Chapter boundaries merged", {
         bookId: book.id,
         chapterId: chapter.id,
         chapterOrderIndex: chapter.orderIndex,
-        candidateCount: boundaryCandidates.length,
+        segmentationStrategy: SCENE_SEGMENTATION_STRATEGY,
+        candidateCount: effectiveBoundaryCandidates.length,
+        rawCandidateCount: boundaryCandidates.length,
         mergedCount: sceneBoundaries.length,
       });
 
-      const finalScenes = enrichFinalScenesFromChunkScenes(
-        buildFinalScenes(blocks.length, sceneBoundaries),
-        chunkScenes,
-        blocks
-      );
+      const finalScenes =
+        SCENE_SEGMENTATION_STRATEGY === "chapter_first"
+          ? chunkScenes
+              .sort((left, right) => left.paragraphStart - right.paragraphStart || left.paragraphEnd - right.paragraphEnd)
+              .map((scene, index) => ({
+                paragraphStart: scene.paragraphStart,
+                paragraphEnd: scene.paragraphEnd,
+                changeSignal: index === 0 ? "chapter_start" : "narrative_cut",
+                sceneCard: scene.sceneCard,
+                participants: scene.participants,
+                mentionedEntities: scene.mentionedEntities,
+                locationHints: scene.locationHints,
+                timeHints: scene.timeHints,
+                eventLabels: scene.eventLabels,
+                unresolvedForms: scene.unresolvedForms,
+                facts: scene.facts,
+                evidenceSpans: scene.evidenceSpans,
+              }))
+          : enrichFinalScenesFromChunkScenes(
+              buildFinalScenes(blocks.length, sceneBoundaries),
+              chunkScenes,
+              blocks
+            );
+
+      await enqueueProgressUpdate(() => {
+        chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].outputRowCount = finalScenes.length;
+      });
 
       const scenesToCreate: Prisma.BookAnalysisSceneCreateManyInput[] = [];
       for (let index = 0; index < finalScenes.length; index += 1) {
@@ -2741,6 +4609,7 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         });
       }
       const sceneDataBytes = estimateSceneDataBytes(scenesToCreate);
+      let persistedScenesForFragments: SceneEmbeddingSourceRow[] = [];
 
       if (scenesToCreate.length) {
         await prisma.bookScene.createMany({
@@ -2776,6 +4645,7 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
             excerptText: true,
           },
         });
+        persistedScenesForFragments = persistedScenes;
 
         const sceneEmbeddingStartedAt = Date.now();
         const { documents, vectors, usage: sceneEmbeddingUsage } = await requestSceneEmbeddings({
@@ -2881,12 +4751,82 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
         await enqueueProgressUpdate(() => {
           chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].state = "completed";
           chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt = new Date().toISOString();
+        });
+      }
+
+      if (BOOK_EVIDENCE_FRAGMENTS_ENABLED) {
+        const fragmentResult = await persistEvidenceFragmentsAndEmbeddings({
+          client,
+          bookId: book.id,
+          bookTitle: book.title,
+          chapterId: chapter.id,
+          chapterTitle: chapter.title,
+          paragraphs: blocks,
+          scenes: persistedScenesForFragments,
+        });
+
+        await enqueueProgressUpdate(() => {
+          addEmbeddingUsage(chapterStat, fragmentResult.usage);
+          if (fragmentResult.embeddingCount > 0) {
+            chapterStat.embeddingCalls += 1;
+            chapterStat.embeddingLatencyMs += Math.max(0, fragmentResult.elapsedMs);
+          }
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].startedAt ||= new Date().toISOString();
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].completedAt = new Date().toISOString();
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].embeddingInputTokens = Math.max(
+            0,
+            Number(fragmentResult.usage.input_tokens || 0)
+          );
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].embeddingTotalTokens = Math.max(
+            0,
+            Number(fragmentResult.usage.total_tokens || fragmentResult.usage.input_tokens || 0)
+          );
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].elapsedMs = Math.max(0, fragmentResult.elapsedMs);
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].embeddingCalls = fragmentResult.embeddingCount > 0 ? 1 : 0;
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].outputRowCount = fragmentResult.fragmentCount;
           chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].state = "completed";
-          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].startedAt ||= chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt;
-          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].completedAt = chapterStageMetrics[ANALYSIS_SCENE_EMBEDDING_STAGE].completedAt;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].startedAt ||= chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].completedAt;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].completedAt = chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].completedAt;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].outputRowCount = scenesToCreate.length;
           chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].storageBytes = {
             sceneData: sceneDataBytes,
           };
+        });
+
+        params.logger.info("Chapter evidence fragments created", {
+          bookId: book.id,
+          chapterId: chapter.id,
+          chapterOrderIndex: chapter.orderIndex,
+          fragmentCount: fragmentResult.fragmentCount,
+          embeddingCount: fragmentResult.embeddingCount,
+          embeddingModel: client.config.embeddingModel,
+          embeddingVersion: EVIDENCE_FRAGMENT_EMBEDDING_VERSION,
+          embeddingInputTokens: Number(fragmentResult.usage.input_tokens || 0),
+        });
+      } else {
+        await enqueueProgressUpdate(() => {
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].startedAt ||= new Date().toISOString();
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].completedAt = new Date().toISOString();
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].embeddingInputTokens = 0;
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].embeddingTotalTokens = 0;
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].elapsedMs = 0;
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].embeddingCalls = 0;
+          chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].outputRowCount = 0;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].state = "completed";
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].startedAt ||= chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].completedAt;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].completedAt = chapterStageMetrics[ANALYSIS_EVIDENCE_FRAGMENT_STAGE].completedAt;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].outputRowCount = scenesToCreate.length;
+          chapterStageMetrics[ANALYSIS_FINALIZE_STAGE].storageBytes = {
+            sceneData: sceneDataBytes,
+          };
+        });
+
+        params.logger.info("Chapter evidence fragments disabled", {
+          bookId: book.id,
+          chapterId: chapter.id,
+          chapterOrderIndex: chapter.orderIndex,
         });
       }
 

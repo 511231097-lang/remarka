@@ -1,0 +1,30 @@
+{
+  "version": "v1",
+  "name": "chat-regression-singlebook-smoke",
+  "runAnalysis": false,
+  "analysisTimeoutMinutes": 120,
+  "analysisPollSeconds": 15,
+  "chat": {
+    "enabledTools": [
+      "search_paragraphs_hybrid",
+      "search_scenes",
+      "get_scene_context",
+      "get_paragraph_slice"
+    ],
+    "maxQuestionsPerBook": 10
+  },
+  "regressionThresholds": {
+    "costIncreasePct": 0.25,
+    "p95LatencyIncreasePct": 0.35,
+    "groundedProxyDropPp": 0.1
+  },
+  "books": [
+    {
+      "bookId": "cf612551b844e457fb1d00948",
+      "label": "Так говорил Заратустра A [cmo7nixlc00idp809th7jtmu1]",
+      "questions": [
+        "Как связаны сцена с канатоходцем в прологе, образ «последнего человека» и идея сверхчеловека, и почему именно через эту связку задается исходное напряжение всей книги?"
+      ]
+    }
+  ]
+}

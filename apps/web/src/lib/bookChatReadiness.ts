@@ -11,7 +11,7 @@ import type {
   BookChatReadinessStageDTO,
   BookPipelineStageKeyDTO,
 } from "@/lib/books";
-import { canUseMvpBookChat } from "@/lib/bookCapabilitySnapshot";
+import { canUseMvpBookChat, canUseParagraphOnlyBookChat } from "@/lib/bookCapabilitySnapshot";
 
 export const CHAT_READINESS_STAGE_ORDER = [...BOOK_PIPELINE_STAGE_KEYS] as const;
 
@@ -36,6 +36,11 @@ const CHAT_READINESS_STAGE_LABELS: Record<ChatReadinessStageKey, string> = {
 };
 
 const PENDING_STATES = new Set<BookAnalyzerStateDTO>(["queued", "running"]);
+// TODO: temporary paragraph-only chat mode while scene extraction/tools are disabled.
+// Flip BOOK_CHAT_SCENE_TOOLS_ENABLED=true to restore scene/evidence readiness as the primary gate.
+const PARAGRAPH_ONLY_CHAT_ENABLED = String(process.env.BOOK_CHAT_SCENE_TOOLS_ENABLED || "")
+  .trim()
+  .toLowerCase() !== "true";
 const EMPTY_STATUS = Object.freeze({
   state: "not_requested",
   error: null,
@@ -190,6 +195,18 @@ export function buildBookChatReadiness(
         capabilitySnapshot.analysisState === "completed"
           ? "MVP-чат доступен: сущности, присутствие и доказательные фрагменты включены. Scene/timeline/relation слои пока выключены."
           : "MVP-чат уже доступен, но анализ еще идет. Отвечаем только через entity/presence/evidence/passages и честно показываем ограничения.",
+      stages,
+    };
+  }
+
+  if (PARAGRAPH_ONLY_CHAT_ENABLED && capabilitySnapshot && canUseParagraphOnlyBookChat(capabilitySnapshot)) {
+    return {
+      mode: capabilitySnapshot.analysisState === "completed" ? "fast" : "degraded",
+      canChat: true,
+      summary:
+        capabilitySnapshot.analysisState === "completed"
+          ? "Чат доступен во временном режиме: отвечаем через поиск по абзацам, scene/showcase слой отключен."
+          : "Чат уже доступен во временном режиме, но анализ еще идет. Отвечаем только через поиск по абзацам.",
       stages,
     };
   }

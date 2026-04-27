@@ -101,6 +101,7 @@ services:
       BOOKS_S3_SECRET_ACCESS_KEY: ${BOOKS_S3_SECRET_ACCESS_KEY:-minioadmin}
       BOOKS_S3_SESSION_TOKEN: ${BOOKS_S3_SESSION_TOKEN:-}
       INTERNAL_WORKER_TOKEN: ${INTERNAL_WORKER_TOKEN:-remarka-internal-dev-token}
+      GOOGLE_APPLICATION_CREDENTIALS: /var/secrets/google/vertex-ranking.json
     depends_on:
       db:
         condition: service_healthy
@@ -114,6 +115,7 @@ services:
       - "3000:3000"
     volumes:
       - ${IMPORTS_HOST_DIR:-/tmp/remarka-imports}:/var/remarka/imports
+      - ${VERTEX_RANKING_CREDENTIALS_HOST_PATH}:/var/secrets/google/vertex-ranking.json:ro
     restart: unless-stopped
 
   worker:

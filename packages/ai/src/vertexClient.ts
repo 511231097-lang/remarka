@@ -1,3 +1,5 @@
+import { GoogleAuth } from "google-auth-library";
+
 export type VertexOpenAIMessage = {
   role: "system" | "user" | "assistant";
   content?: unknown;
@@ -33,6 +35,24 @@ export type VertexEmbeddingBatchRequest = {
 
 export type VertexEmbeddingRequest = Omit<VertexEmbeddingBatchRequest, "texts"> & {
   text: string;
+};
+
+export type VertexRankingRecord = {
+  id: string;
+  title?: string;
+  content?: string;
+};
+
+export type VertexRankingRequest = {
+  query: string;
+  records: VertexRankingRecord[];
+  topN?: number;
+  model?: string;
+  ignoreRecordDetailsInResponse?: boolean;
+};
+
+export type VertexRankingResponseRecord = VertexRankingRecord & {
+  score: number;
 };
 
 type VertexThinkingConfig = {
@@ -81,6 +101,12 @@ export interface VertexClientOptions {
   thinkingBudget?: number;
   maxOutputTokens?: number;
   proxySource?: string;
+  rankingEnabled?: boolean;
+  rankingProjectId?: string;
+  rankingLocation?: string;
+  rankingModel?: string;
+  rankingBaseUrl?: string;
+  rankingAccessToken?: string;
 }
 
 export interface ResolvedVertexClientOptions {
@@ -94,6 +120,12 @@ export interface ResolvedVertexClientOptions {
   thinkingBudget: number;
   maxOutputTokens: number;
   proxySource: string;
+  rankingEnabled: boolean;
+  rankingProjectId: string;
+  rankingLocation: string;
+  rankingModel: string;
+  rankingBaseUrl: string;
+  rankingAccessToken: string;
 }
 
 const DEFAULT_VERTEX_CONFIG = {
@@ -106,11 +138,25 @@ const DEFAULT_VERTEX_CONFIG = {
   thinkingBudget: 0,
   maxOutputTokens: 4096,
   proxySource: "npz-vertex-client",
+  rankingEnabled: false,
+  rankingProjectId: "",
+  rankingLocation: "global",
+  rankingModel: "semantic-ranker-default@latest",
+  rankingBaseUrl: "https://discoveryengine.googleapis.com",
+  rankingAccessToken: "",
 } satisfies Omit<ResolvedVertexClientOptions, "apiKey">;
 
 function parseIntEnv(value: string | undefined, fallback: number): number {
   const parsed = Number.parseInt(String(value || "").trim(), 10);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function parseBoolEnv(value: string | undefined, fallback: boolean): boolean {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return fallback;
+  if (["1", "true", "yes", "on"].includes(normalized)) return true;
+  if (["0", "false", "no", "off"].includes(normalized)) return false;
+  return fallback;
 }
 
 function stringifyMessageContent(content: unknown): string {
@@ -171,6 +217,27 @@ export function resolveVertexClientOptions(overrides: Partial<VertexClientOption
       DEFAULT_VERTEX_CONFIG.maxOutputTokens
     ),
     proxySource: String(overrides.proxySource ?? process.env.VERTEX_PROXY_SOURCE ?? DEFAULT_VERTEX_CONFIG.proxySource).trim(),
+    rankingEnabled:
+      typeof overrides.rankingEnabled === "boolean"
+        ? overrides.rankingEnabled
+        : parseBoolEnv(process.env.VERTEX_RANKING_ENABLED, DEFAULT_VERTEX_CONFIG.rankingEnabled),
+    rankingProjectId: String(
+      overrides.rankingProjectId ??
+        process.env.VERTEX_RANKING_PROJECT_ID ??
+        process.env.GOOGLE_CLOUD_PROJECT ??
+        process.env.GCLOUD_PROJECT ??
+        ""
+    ).trim(),
+    rankingLocation: String(
+      overrides.rankingLocation ?? process.env.VERTEX_RANKING_LOCATION ?? DEFAULT_VERTEX_CONFIG.rankingLocation
+    ).trim(),
+    rankingModel: String(
+      overrides.rankingModel ?? process.env.VERTEX_RANKING_MODEL ?? DEFAULT_VERTEX_CONFIG.rankingModel
+    ).trim(),
+    rankingBaseUrl: String(
+      overrides.rankingBaseUrl ?? process.env.VERTEX_RANKING_BASE_URL ?? DEFAULT_VERTEX_CONFIG.rankingBaseUrl
+    ).replace(/\/+$/, ""),
+    rankingAccessToken: String(overrides.rankingAccessToken ?? process.env.VERTEX_RANKING_ACCESS_TOKEN ?? "").trim(),
   };
 }
 
@@ -243,6 +310,110 @@ async function requestVertexJson(params: {
   }
 
   throw lastError || new Error("Vertex request failed");
+}
+
+let rankingAuth: GoogleAuth | null = null;
+
+function headersToPlainRecord(headers: Headers | Record<string, string | string[] | undefined>) {
+  const out: Record<string, string> = {};
+  if (headers instanceof Headers) {
+    headers.forEach((value, key) => {
+      out[key] = value;
+    });
+    return out;
+  }
+
+  for (const [key, value] of Object.entries(headers || {})) {
+    if (Array.isArray(value)) {
+      out[key] = value.join(", ");
+    } else if (typeof value === "string") {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+async function resolveRankingAuthHeaders(config: ResolvedVertexClientOptions, endpoint: string) {
+  if (config.rankingAccessToken) {
+    return {
+      authorization: `Bearer ${config.rankingAccessToken}`,
+    };
+  }
+
+  if (!rankingAuth) {
+    rankingAuth = new GoogleAuth({
+      scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+    });
+  }
+
+  const authClient = await rankingAuth.getClient();
+  return headersToPlainRecord(await authClient.getRequestHeaders(endpoint));
+}
+
+async function resolveRankingProjectId(config: ResolvedVertexClientOptions) {
+  if (config.rankingProjectId) return config.rankingProjectId;
+  if (!rankingAuth) {
+    rankingAuth = new GoogleAuth({
+      scopes: ["https://www.googleapis.com/auth/cloud-platform"],
+    });
+  }
+  return String(await rankingAuth.getProjectId()).trim();
+}
+
+async function requestRankingJson(params: {
+  config: ResolvedVertexClientOptions;
+  endpoint: string;
+  body: Record<string, unknown>;
+}): Promise<unknown> {
+  let lastError: Error | null = null;
+
+  for (let attempt = 0; attempt <= params.config.maxRetries; attempt += 1) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), params.config.timeoutMs);
+
+    try {
+      const authHeaders = await resolveRankingAuthHeaders(params.config, params.endpoint);
+      const response = await fetch(params.endpoint, {
+        method: "POST",
+        headers: {
+          ...authHeaders,
+          "content-type": "application/json",
+          "x-goog-user-project": params.config.rankingProjectId,
+          "x-proxy-source": params.config.proxySource,
+        },
+        body: JSON.stringify(params.body),
+        signal: controller.signal,
+      });
+
+      const text = await response.text();
+      let parsed: unknown = null;
+      try {
+        parsed = text ? JSON.parse(text) : null;
+      } catch {
+        parsed = null;
+      }
+
+      if (!response.ok) {
+        const message =
+          (parsed &&
+            typeof parsed === "object" &&
+            (parsed as { error?: { message?: string } }).error?.message) ||
+          text ||
+          `Vertex ranking request failed with status ${response.status}`;
+        throw new Error(String(message));
+      }
+
+      return parsed;
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt >= params.config.maxRetries) break;
+      await sleep(200 * (attempt + 1));
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw lastError || new Error("Vertex ranking request failed");
 }
 
 function mapToOpenAiLikeResponse(payload: VertexGenerateContentResponse) {
@@ -680,6 +851,90 @@ export function createVertexClient(options: Partial<VertexClientOptions> = {}) {
     };
   }
 
+  async function rankRecords(request: VertexRankingRequest): Promise<{
+    records: VertexRankingResponseRecord[];
+    model: string;
+  }> {
+    if (!config.rankingEnabled) {
+      return {
+        records: [],
+        model: String(request.model || config.rankingModel),
+      };
+    }
+
+    const query = String(request.query || "").trim();
+    const records = Array.isArray(request.records)
+      ? request.records
+          .map((record) => ({
+            id: String(record.id || "").trim(),
+            title: record.title ? String(record.title).trim() : undefined,
+            content: record.content ? String(record.content).trim() : undefined,
+          }))
+          .filter((record) => record.id && (record.title || record.content))
+          .slice(0, 200)
+      : [];
+
+    if (!query || !records.length) {
+      return {
+        records: [],
+        model: String(request.model || config.rankingModel),
+      };
+    }
+
+    const projectId = await resolveRankingProjectId(config);
+    if (!projectId) {
+      throw new Error("VERTEX_RANKING_PROJECT_ID or ADC project id is required for Vertex Ranking API");
+    }
+
+    const location = String(config.rankingLocation || "global").trim() || "global";
+    const model = String(request.model || config.rankingModel || "semantic-ranker-default@latest").trim();
+    const topN =
+      Number.isInteger(request.topN) && Number(request.topN) > 0
+        ? Math.min(200, Math.max(1, Number(request.topN)))
+        : undefined;
+    const endpoint = `${config.rankingBaseUrl}/v1/projects/${encodeURIComponent(projectId)}/locations/${encodeURIComponent(
+      location
+    )}/rankingConfigs/default_ranking_config:rank`;
+
+    const parsed = (await requestRankingJson({
+      config: {
+        ...config,
+        rankingProjectId: projectId,
+      },
+      endpoint,
+      body: {
+        model,
+        query,
+        records,
+        ...(topN ? { topN } : {}),
+        ...(typeof request.ignoreRecordDetailsInResponse === "boolean"
+          ? { ignoreRecordDetailsInResponse: request.ignoreRecordDetailsInResponse }
+          : {}),
+      },
+    })) as {
+      records?: Array<{
+        id?: unknown;
+        title?: unknown;
+        content?: unknown;
+        score?: unknown;
+      }>;
+    };
+
+    return {
+      records: Array.isArray(parsed.records)
+        ? parsed.records
+            .map((record) => ({
+              id: String(record.id || "").trim(),
+              title: record.title ? String(record.title) : undefined,
+              content: record.content ? String(record.content) : undefined,
+              score: Number(record.score || 0),
+            }))
+            .filter((record) => record.id && Number.isFinite(record.score))
+        : [],
+      model,
+    };
+  }
+
   return {
     config,
     chat: {
@@ -691,6 +946,9 @@ export function createVertexClient(options: Partial<VertexClientOptions> = {}) {
     embeddings: {
       create: createEmbedding,
       createBatch: createEmbeddingsBatch,
+    },
+    ranking: {
+      rank: rankRecords,
     },
   };
 }

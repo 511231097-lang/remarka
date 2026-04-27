@@ -60,7 +60,7 @@ export function Layout({
                 className="text-base text-foreground sm:text-lg"
                 style={{ fontFamily: "var(--font-serif)" }}
               >
-                Литанализ
+                ремарка.
               </span>
             </Link>
 

@@ -1,188 +1,54 @@
 "use client";
 
+import Link from "next/link";
 import { motion } from "motion/react";
-import { BookOpen, Lightbulb, ListTree, Sparkles, Users } from "lucide-react";
-import { useParams } from "next/navigation";
+import { BookOpen, Check, MessageCircle, Plus } from "lucide-react";
+import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { BookPreviewStage } from "./BookGalleryCard";
 import { BookSettings } from "./BookSettings";
-import { ChatPreview } from "./ChatPreview";
 import { getBook, getBookShowcase } from "@/lib/booksClient";
+import { appendBookDetailSource, resolveBookDetailSource } from "@/lib/bookDetailNavigation";
 import { displayAuthor, type BookCoreDTO, type BookShowcaseDTO } from "@/lib/books";
-import { useBookChatReadiness } from "@/lib/useBookChatReadiness";
 
-const COVER_THEMES = [
-  "from-blue-700 via-cyan-600 to-teal-500",
-  "from-emerald-700 via-lime-600 to-yellow-500",
-  "from-rose-700 via-pink-600 to-orange-500",
-  "from-amber-800 via-orange-700 to-red-600",
-  "from-slate-800 via-slate-700 to-zinc-600",
+const CHARACTER_COLORS = [
+  "oklch(58% 0.11 60)",
+  "oklch(42% 0.11 25)",
+  "oklch(28% 0.04 260)",
+  "oklch(36% 0.07 150)",
+  "oklch(48% 0.09 55)",
+  "oklch(60% 0.12 200)",
 ] as const;
 
-function resolveCoverTheme(bookId: string): (typeof COVER_THEMES)[number] {
-  let hash = 0;
-  for (const char of String(bookId || "")) {
-    hash = (hash * 33 + char.charCodeAt(0)) >>> 0;
-  }
-  return COVER_THEMES[hash % COVER_THEMES.length] || COVER_THEMES[0];
-}
-
-function BookHeroCover({ book }: { book: BookCoreDTO }) {
-  const [hasImageError, setHasImageError] = useState(false);
-  const canUseImage = Boolean(book.coverUrl) && !hasImageError;
-
+function resolveBookSummary(book: BookCoreDTO, showcase: BookShowcaseDTO | null): string {
   return (
-    <div className="relative aspect-[2/3] w-full overflow-hidden rounded-[28px] bg-[#120f0d] shadow-[0_22px_70px_rgba(0,0,0,0.28)]">
-      {canUseImage ? (
-        <img
-          src={String(book.coverUrl)}
-          alt={`Обложка: ${book.title}`}
-          className="absolute inset-0 h-full w-full object-cover object-center"
-          referrerPolicy="no-referrer"
-          onError={() => setHasImageError(true)}
-        />
-      ) : (
-        <div className={`absolute inset-0 bg-gradient-to-br ${resolveCoverTheme(book.id)}`} />
-      )}
-
-      <div className="absolute inset-0 bg-gradient-to-t from-black/78 via-black/18 to-transparent" />
-      <div className="absolute left-4 top-4 inline-flex items-center gap-2 rounded-full border border-white/15 bg-black/35 px-3 py-1 text-xs text-white/85 backdrop-blur-sm">
-        <BookOpen className="h-3.5 w-3.5" />
-        <span>{book.chapterCount} глав</span>
-      </div>
-      <div className="absolute inset-x-0 bottom-0 px-5 pb-5 pt-16 text-white">
-        <p className="line-clamp-2 text-xl leading-tight">{book.title}</p>
-        <p className="mt-2 line-clamp-1 text-sm text-white/75">{displayAuthor(book.author)}</p>
-      </div>
-    </div>
+    String(showcase?.summary.shortSummary || "").trim() ||
+    String(book.summary || "").trim() ||
+    "Краткое описание книги пока не добавлено. После анализа здесь появится сжатый обзор произведения."
   );
 }
 
-function resolveBookSummary(book: BookCoreDTO): string {
-  const summary = String(book.summary || "").trim();
-  if (summary) return summary;
-  return "Краткое описание книги пока не добавлено. Для новых FB2 оно будет подхватываться из annotation, если она есть в файле.";
-}
-
-function resolveEventImportanceLabel(value: BookShowcaseDTO["keyEvents"][number]["importance"]): string {
-  if (value === "critical") return "Критический";
-  if (value === "high") return "Высокий";
-  return "Средний";
-}
-
-function ShowcaseBlock({ showcase }: { showcase: BookShowcaseDTO }) {
+function resolveMainIdea(showcase: BookShowcaseDTO | null): string {
   return (
-    <section className="mt-10 rounded-2xl border border-border bg-card p-6 lg:p-8">
-      <div className="mb-6 flex items-center gap-3">
-        <div className="inline-flex h-10 w-10 items-center justify-center rounded-full bg-primary/10 text-primary">
-          <Sparkles className="h-5 w-5" />
-        </div>
-        <div>
-          <h2 className="text-xl text-foreground lg:text-2xl">Витрина книги</h2>
-          <p className="text-xs text-muted-foreground">
-            Обновлено {new Date(showcase.updatedAt).toLocaleDateString("ru-RU")}
-          </p>
-        </div>
-      </div>
-
-      <div className="space-y-6">
-        {showcase.summary.shortSummary ? (
-          <div>
-            <h3 className="mb-2 text-sm uppercase tracking-[0.16em] text-muted-foreground">Краткая сводка</h3>
-            <p className="text-sm leading-7 text-foreground/85">{showcase.summary.shortSummary}</p>
-          </div>
-        ) : null}
-
-        {showcase.summary.mainIdea ? (
-          <div>
-            <h3 className="mb-2 text-sm uppercase tracking-[0.16em] text-muted-foreground">Основная идея</h3>
-            <p className="text-sm leading-7 text-foreground/85">{showcase.summary.mainIdea}</p>
-          </div>
-        ) : null}
-
-        {showcase.themes.length > 0 ? (
-          <div>
-            <div className="mb-3 flex items-center gap-2 text-foreground">
-              <Lightbulb className="h-4 w-4 text-primary" />
-              <h3 className="text-base">Ключевые темы</h3>
-            </div>
-            <div className="grid gap-3 md:grid-cols-2">
-              {showcase.themes.map((theme) => (
-                <article key={`${theme.name}:${theme.description}`} className="rounded-xl border border-border/80 p-4">
-                  <p className="text-sm text-foreground">{theme.name}</p>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{theme.description}</p>
-                </article>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {showcase.characters.length > 0 ? (
-          <div>
-            <div className="mb-3 flex items-center gap-2 text-foreground">
-              <Users className="h-4 w-4 text-primary" />
-              <h3 className="text-base">Персонажи</h3>
-            </div>
-            <div className="space-y-3">
-              {showcase.characters.map((character) => (
-                <article key={`${character.name}:${character.rank}`} className="rounded-xl border border-border/80 p-4">
-                  <p className="text-sm text-foreground">
-                    {character.name} <span className="text-muted-foreground">• #{character.rank}</span>
-                  </p>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{character.description}</p>
-                </article>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {showcase.keyEvents.length > 0 ? (
-          <div>
-            <div className="mb-3 flex items-center gap-2 text-foreground">
-              <ListTree className="h-4 w-4 text-primary" />
-              <h3 className="text-base">Ключевые события</h3>
-            </div>
-            <div className="space-y-3">
-              {showcase.keyEvents.map((event) => (
-                <article key={`${event.title}:${event.description}`} className="rounded-xl border border-border/80 p-4">
-                  <p className="text-sm text-foreground">
-                    {event.title}{" "}
-                    <span className="text-muted-foreground">• {resolveEventImportanceLabel(event.importance)}</span>
-                  </p>
-                  <p className="mt-2 text-sm leading-6 text-muted-foreground">{event.description}</p>
-                </article>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {showcase.quotes.length > 0 ? (
-          <div>
-            <h3 className="mb-2 text-sm uppercase tracking-[0.16em] text-muted-foreground">Популярные цитаты</h3>
-            <div className="space-y-3">
-              {showcase.quotes.map((quote, index) => (
-                <blockquote
-                  key={`${index}:${quote.text.slice(0, 48)}`}
-                  className="rounded-xl border border-border/80 bg-muted/30 px-4 py-3 text-sm leading-7 text-foreground/90"
-                >
-                  <p className="whitespace-pre-wrap">“{quote.text}”</p>
-                  {quote.chapterOrderIndex ? (
-                    <footer className="mt-2 text-xs text-muted-foreground">
-                      Глава {quote.chapterOrderIndex}
-                      {quote.chapterTitle ? ` • ${quote.chapterTitle}` : ""}
-                    </footer>
-                  ) : null}
-                </blockquote>
-              ))}
-            </div>
-          </div>
-        ) : null}
-      </div>
-    </section>
+    String(showcase?.summary.mainIdea || "").trim() ||
+    "Ключевая идея будет сформирована AI после полного анализа книги."
   );
+}
+
+function resolveEyebrow(book: BookCoreDTO): string {
+  const chapters = book.chapterCount > 0 ? `${book.chapterCount} глав` : "главы готовятся";
+  return `AI-разбор · ${chapters} · ${book.isPublic ? "Публичная" : "Только для вас"}`;
+}
+
+function resolveChips(book: BookCoreDTO, showcase: BookShowcaseDTO | null): string[] {
+  const themeNames = (showcase?.themes || []).map((theme) => theme.name).filter(Boolean).slice(0, 5);
+  if (themeNames.length > 0) return themeNames;
+  return [book.isPublic ? "Публичная книга" : "Личная книга", "AI-разбор", "Чат по тексту"];
 }
 
 export function BookOverview() {
   const params = useParams<{ bookId: string }>();
+  const searchParams = useSearchParams();
   const bookId = String(params.bookId || "");
 
   const [book, setBook] = useState<BookCoreDTO | null>(null);
@@ -190,122 +56,271 @@ export function BookOverview() {
   const [showcaseLoading, setShowcaseLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const { readiness, loading: readinessLoading, error: readinessError } = useBookChatReadiness(bookId);
 
   useEffect(() => {
     if (!bookId) return;
     let active = true;
-
     async function load() {
       setLoading(true);
       setError(null);
       setShowcaseLoading(true);
-
       const [bookResult, showcaseResult] = await Promise.allSettled([getBook(bookId), getBookShowcase(bookId)]);
-
       if (!active) return;
-
-      if (bookResult?.status === "fulfilled") {
-        setBook(bookResult.value);
-      } else {
+      if (bookResult.status === "fulfilled") setBook(bookResult.value);
+      else {
         setBook(null);
-        setError(bookResult?.reason instanceof Error ? bookResult.reason.message : "Не удалось загрузить книгу");
+        setError(bookResult.reason instanceof Error ? bookResult.reason.message : "Не удалось загрузить книгу");
       }
-
-      if (showcaseResult?.status === "fulfilled") {
-        setShowcase(showcaseResult.value);
-      } else {
-        setShowcase(null);
-      }
-
+      setShowcase(showcaseResult.status === "fulfilled" ? showcaseResult.value : null);
       setShowcaseLoading(false);
       setLoading(false);
     }
-
     void load();
     return () => {
       active = false;
     };
   }, [bookId]);
 
+  const source = resolveBookDetailSource(searchParams.get("from"));
+  const fallbackSource = book?.canManage ? "library" : "explore";
+  const resolvedSource = source || fallbackSource;
+  const chatHref = appendBookDetailSource(`/book/${bookId}/chat`, resolvedSource);
+  const backHref = resolvedSource === "library" ? "/library" : "/explore";
+
   return (
-    <div className="min-h-screen bg-background">
-      <div className="mx-auto max-w-6xl px-6 pb-12">
-        {loading ? <div className="pt-12 text-muted-foreground">Загрузка книги...</div> : null}
+    <div className="screen-fade">
+      {loading && (
+        <div className="container" style={{ paddingBottom: 96, paddingTop: 48 }}>
+          <div className="muted" style={{ padding: "24px 0" }}>Загрузка книги...</div>
+        </div>
+      )}
 
-        {error && !loading ? (
-          <div className="pt-12 p-4 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive">
-            {error}
-          </div>
-        ) : null}
+      {error && !loading && (
+        <div className="container" style={{ paddingBottom: 96, paddingTop: 48 }}>
+          <div className="card" style={{ borderColor: "var(--mark)", color: "var(--mark)", padding: 16 }}>{error}</div>
+        </div>
+      )}
 
-        {book && !loading ? (
-          <>
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              className="pt-8 lg:pt-12"
-            >
-              <div className="grid gap-8 lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-10">
-                <div className="max-w-[320px] lg:max-w-none">
-                  <BookHeroCover book={book} />
+      {book && !loading && (
+        <>
+          <div style={{ background: "var(--paper-2)", borderBottom: "1px solid var(--rule)" }}>
+            <div className="container" style={{ paddingBottom: 48, paddingTop: 48 }}>
+              <motion.div
+                initial={{ opacity: 0, y: 12 }}
+                animate={{ opacity: 1, y: 0 }}
+                className="book-hero-grid"
+                style={{ alignItems: "flex-start", display: "grid", gap: 48, gridTemplateColumns: "260px minmax(0,1fr)" }}
+              >
+                <div style={{ width: 260 }}>
+                  <BookPreviewStage book={book} size="lg" />
                 </div>
-
-                <div className="min-w-0">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="min-w-0">
-                      <p className="text-sm uppercase tracking-[0.18em] text-muted-foreground/75">Книга</p>
-                      <h1 className="mt-3 text-3xl leading-tight text-foreground lg:text-5xl">{book.title}</h1>
-                      <p className="mt-3 text-lg text-muted-foreground lg:text-xl">{displayAuthor(book.author)}</p>
-                    </div>
-
-                    <div className="flex items-center gap-2">
-                      <BookSettings book={book} />
-                    </div>
+                <div>
+                  <div className="mono" style={{ color: "var(--mark)", marginBottom: 16 }}>
+                    {resolveEyebrow(book)}
                   </div>
-
-                  <p className="mt-6 max-w-3xl text-sm leading-7 text-foreground/78 lg:text-[15px]">
-                    {resolveBookSummary(book)}
+                  <h1 style={{ fontSize: "clamp(38px, 6vw, 52px)", letterSpacing: 0, lineHeight: 1.02, textWrap: "balance" }}>
+                    {book.title}
+                  </h1>
+                  <div style={{ color: "var(--ink-soft)", fontFamily: "var(--font-serif)", fontSize: 20, fontStyle: "italic", marginTop: 12 }}>
+                    {displayAuthor(book.author)}
+                  </div>
+                  <p className="soft" style={{ fontSize: 17, lineHeight: 1.6, marginTop: 20, maxWidth: 620, textWrap: "pretty" }}>
+                    {resolveBookSummary(book, showcase)}
                   </p>
+                  <div className="book-hero-actions row" style={{ flexWrap: "wrap", marginTop: 28 }}>
+                    <Link className="btn btn-mark btn-lg" href={chatHref}>
+                      <MessageCircle size={16} /> Начать разговор
+                    </Link>
+                    {book.canManage || resolvedSource === "library" ? (
+                      <button className="btn btn-ghost btn-lg" disabled style={{ opacity: 0.7 }}>
+                        <Check size={16} /> {book.canManage ? "Ваша книга" : "В библиотеке"}
+                      </button>
+                    ) : (
+                      <button className="btn btn-ghost btn-lg" disabled title="Добавление с этой страницы будет подключено отдельно" style={{ opacity: 0.7 }}>
+                        <Plus size={16} /> Добавить к себе
+                      </button>
+                    )}
+                    <Link className="btn btn-plain btn-lg" href={backHref}>
+                      {resolvedSource === "library" ? "К библиотеке" : "К каталогу"}
+                    </Link>
+                    {book.canManage ? <BookSettings book={book} triggerClassName="btn btn-plain btn-lg" triggerLabel="Настройки" /> : null}
+                  </div>
+                  <div className="row" style={{ flexWrap: "wrap", gap: 8, marginTop: 28 }}>
+                    {resolveChips(book, showcase).map((chip) => (
+                      <div key={chip} className="badge">{chip}</div>
+                    ))}
+                  </div>
                 </div>
+              </motion.div>
+            </div>
+          </div>
+
+          <main className="container-narrow" style={{ paddingBottom: 96, paddingTop: 72 }}>
+            <div className="mono" style={{ color: "var(--mark)", marginBottom: 16, textAlign: "center" }}>
+              Анализ · AI-разбор
+            </div>
+            <h2 style={{ fontSize: 40, letterSpacing: 0, marginBottom: 48, textAlign: "center", textWrap: "balance" }}>
+              Краткий разбор книги
+            </h2>
+
+            {showcaseLoading ? (
+              <div className="card muted" style={{ marginBottom: 48, padding: 20 }}>Загружаем анализ книги...</div>
+            ) : null}
+
+            {!showcase && !showcaseLoading ? (
+              <div className="card" style={{ marginBottom: 48, padding: 24 }}>
+                <BookOpen size={22} style={{ color: "var(--mark)" }} />
+                <div style={{ fontFamily: "var(--font-serif)", fontSize: 24, marginTop: 12 }}>Витрина книги собирается</div>
+                <p className="soft" style={{ fontSize: 15, lineHeight: 1.65, marginTop: 10 }}>
+                  Ниже показана доступная информация из карточки книги. Полный AI-разбор появится после генерации витрины.
+                </p>
               </div>
-            </motion.div>
+            ) : null}
 
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.05 }}
-            >
-              {showcaseLoading ? (
-                <section className="mt-10 rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
-                  Загружаем витрину книги...
-                </section>
-              ) : showcase ? (
-                <ShowcaseBlock showcase={showcase} />
+            <AnalysisSection eyebrow="i · Описание" title="О чём эта книга">
+              <p style={{ color: "var(--ink)", fontFamily: "var(--font-serif)", fontSize: 19, lineHeight: 1.6, textWrap: "pretty" }}>
+                {resolveBookSummary(book, showcase)}
+              </p>
+            </AnalysisSection>
+
+            <Divider />
+
+            <AnalysisSection eyebrow="ii · Ключевая идея" title="Что говорит автор">
+              <div style={{ borderLeft: "3px solid var(--mark)", marginTop: 8, paddingLeft: 24 }}>
+                <p style={{ color: "var(--ink)", fontFamily: "var(--font-serif)", fontSize: 22, fontStyle: "italic", lineHeight: 1.45, textWrap: "pretty" }}>
+                  {resolveMainIdea(showcase)}
+                </p>
+              </div>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 20 }}>
+                {resolveChips(book, showcase).map((chip) => (
+                  <div key={chip} className="chip" style={{ cursor: "default" }}>{chip}</div>
+                ))}
+              </div>
+            </AnalysisSection>
+
+            <Divider />
+
+            <AnalysisSection eyebrow="iii · Главные персонажи" title="Кто движет сюжет">
+              {showcase?.characters.length ? (
+                <div className="book-character-grid" style={{ display: "grid", gap: 18, gridTemplateColumns: "repeat(2, 1fr)", marginTop: 8 }}>
+                  {showcase.characters.map((character, index) => (
+                    <article key={`${character.name}:${character.rank}`} className="card" style={{ background: "var(--cream)", padding: 20 }}>
+                      <div className="row-sm" style={{ marginBottom: 8 }}>
+                        <div
+                          style={{
+                            alignItems: "center",
+                            background: CHARACTER_COLORS[index % CHARACTER_COLORS.length],
+                            borderRadius: "50%",
+                            color: "#fff",
+                            display: "flex",
+                            fontFamily: "var(--font-serif)",
+                            fontSize: 14,
+                            height: 32,
+                            justifyContent: "center",
+                            width: 32,
+                          }}
+                        >
+                          {character.name.trim().charAt(0) || "?"}
+                        </div>
+                        <div style={{ fontFamily: "var(--font-serif)", fontSize: 17, fontWeight: 500 }}>{character.name}</div>
+                      </div>
+                      <p className="soft" style={{ fontSize: 14, lineHeight: 1.5 }}>{character.description}</p>
+                    </article>
+                  ))}
+                </div>
               ) : (
-                <section className="mt-10 rounded-2xl border border-border bg-card p-6 text-sm text-muted-foreground">
-                  Витрина книги ещё не собрана. Она появится автоматически после завершения пост-обработки анализа.
-                </section>
+                <p className="soft" style={{ fontSize: 15, lineHeight: 1.6 }}>Главные персонажи появятся после полного анализа книги.</p>
               )}
-            </motion.div>
+            </AnalysisSection>
 
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.1 }}
-              className="mt-10"
-            >
-              <ChatPreview
-                bookId={bookId}
-                bookTitle={book.title}
-                readiness={readiness}
-                readinessLoading={readinessLoading}
-                readinessError={readinessError}
-              />
-            </motion.div>
-          </>
-        ) : null}
-      </div>
+            <Divider />
+
+            <AnalysisSection eyebrow="iv · Ключевые события" title="Сюжет в пяти точках">
+              {showcase?.keyEvents.length ? (
+                <ol style={{ listStyle: "none", marginTop: 12, padding: 0 }}>
+                  {showcase.keyEvents.map((event, index) => (
+                    <li
+                      key={`${event.title}:${index}`}
+                      style={{
+                        borderBottom: index < showcase.keyEvents.length - 1 ? "1px solid var(--rule-soft)" : "none",
+                        display: "grid",
+                        gap: 20,
+                        gridTemplateColumns: "48px 1fr",
+                        padding: "18px 0",
+                      }}
+                    >
+                      <div style={{ color: "var(--mark)", fontFamily: "var(--font-serif)", fontSize: 28, lineHeight: 1 }}>
+                        {String(index + 1).padStart(2, "0")}
+                      </div>
+                      <div style={{ color: "var(--ink)", fontFamily: "var(--font-serif)", fontSize: 19, lineHeight: 1.5, paddingTop: 2 }}>
+                        <div>{event.title}</div>
+                        <p className="soft" style={{ fontFamily: "var(--font-sans)", fontSize: 14, lineHeight: 1.55, marginTop: 6 }}>
+                          {event.description}
+                        </p>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              ) : (
+                <p className="soft" style={{ fontSize: 15, lineHeight: 1.6 }}>Ключевые события появятся после полного анализа книги.</p>
+              )}
+            </AnalysisSection>
+
+            <div style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: "var(--r-xl)", marginTop: 72, padding: "48px 32px", textAlign: "center" }}>
+              <div className="mono" style={{ color: "var(--mark)", marginBottom: 14 }}>Дальше — вопросы</div>
+              <h3 style={{ fontSize: 30, letterSpacing: 0, margin: "0 auto", maxWidth: 520, textWrap: "balance" }}>
+                Хотите спросить о чём-то, чего нет в разборе?
+              </h3>
+              <p className="soft" style={{ fontSize: 15, lineHeight: 1.55, margin: "14px auto 0", maxWidth: 460 }}>
+                Откройте чат — AI-эксперт ответит, опираясь на текст книги, и покажет, откуда пришёл ответ.
+              </p>
+              <Link className="btn btn-mark btn-lg" style={{ marginTop: 28 }} href={chatHref}>
+                <MessageCircle size={16} /> Перейти в чат
+              </Link>
+            </div>
+          </main>
+        </>
+      )}
+      <style jsx>{`
+        @media (max-width: 820px) {
+          .book-hero-grid {
+            grid-template-columns: 1fr !important;
+            gap: 32px !important;
+          }
+          .book-hero-actions {
+            align-items: stretch;
+            flex-direction: column;
+          }
+          .book-hero-actions :global(.btn) {
+            justify-content: center;
+            width: 100%;
+          }
+          .book-character-grid {
+            grid-template-columns: 1fr !important;
+          }
+        }
+        @media (max-width: 520px) {
+          .book-hero-grid > div:first-child {
+            width: min(260px, 100%) !important;
+          }
+        }
+      `}</style>
     </div>
   );
+}
+
+function AnalysisSection({ eyebrow, title, children }: { eyebrow: string; title: string; children: React.ReactNode }) {
+  return (
+    <motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="stack">
+      <div>
+        <div className="mono" style={{ color: "var(--ink-muted)", marginBottom: 10 }}>{eyebrow}</div>
+        <h3 style={{ fontSize: 28, letterSpacing: 0 }}>{title}</h3>
+      </div>
+      {children}
+    </motion.section>
+  );
+}
+
+function Divider() {
+  return <div className="hr" style={{ margin: "56px 0" }} />;
 }

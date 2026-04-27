@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildBookCapabilitySnapshot, canUseMvpBookChat } from "./bookCapabilitySnapshot";
+import { buildBookCapabilitySnapshot, canUseMvpBookChat, canUseParagraphOnlyBookChat } from "./bookCapabilitySnapshot";
 import { buildBookChatReadiness, createEmptyAnalyzerStatus } from "./bookChatReadiness";
 import type { BookAnalysisStatusDTO } from "./books";
 
@@ -109,4 +109,55 @@ test("buildBookChatReadiness opens MVP chat when capability snapshot is ready", 
   const readiness = buildBookChatReadiness(analyzers, snapshot);
   assert.equal(readiness.canChat, true);
   assert.match(readiness.summary, /MVP-чат/);
+});
+
+test("buildBookChatReadiness opens paragraph-only chat when scenes are temporarily disabled", () => {
+  const analyzers = {
+    ingest_normalize: completedStatus(),
+    structural_pass: completedStatus(),
+    local_extraction_mentions: completedStatus(),
+    local_extraction_quotes: completedStatus(),
+    local_extraction_events: completedStatus(),
+    local_extraction_relations: completedStatus(),
+    local_extraction_time_location: completedStatus(),
+    validation_pass: completedStatus(),
+    entity_resolution: completedStatus(),
+    scene_assembly: completedStatus(),
+    event_timeline: completedStatus(),
+    relation_aggregation: completedStatus(),
+    summary_synthesis: completedStatus(),
+    index_build: completedStatus(),
+    repair: completedStatus(),
+  } satisfies BookAnalysisStatusDTO["analyzers"];
+
+  const snapshot = buildBookCapabilitySnapshot({
+    bookId: "book-1",
+    contentVersion: null,
+    overallState: "completed",
+    coverage: "partial",
+    analyzers,
+    counts: {
+      source: { chapters: 7, paragraphs: 4426, windows: 0 },
+      observations: { total: 0, valid: 0, invalid: 0 },
+      canonical: { entities: 0, scenes: 0, events: 0, relations: 0, quotes: 0, summaries: 0 },
+      readLayer: {
+        entityCards: 0,
+        sceneCards: 0,
+        relationCards: 0,
+        timelineSlices: 0,
+        quoteSlices: 0,
+        searchDocuments: 4426,
+        evidenceHits: 0,
+        presenceMaps: 0,
+        processingReports: 0,
+      },
+    },
+  });
+
+  assert.equal(canUseMvpBookChat(snapshot), false);
+  assert.equal(canUseParagraphOnlyBookChat(snapshot), true);
+
+  const readiness = buildBookChatReadiness(analyzers, snapshot);
+  assert.equal(readiness.canChat, true);
+  assert.match(readiness.summary, /поиск по абзацам/);
 });
