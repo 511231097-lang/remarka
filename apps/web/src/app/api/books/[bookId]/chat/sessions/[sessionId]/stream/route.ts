@@ -151,6 +151,9 @@ export async function POST(request: Request, context: RouteContext) {
             selectedTools,
             // Internal model thoughts are intentionally not streamed to the UI.
             // Some providers emit many repeated reasoning deltas, which can flood the chat surface.
+            onStatus: async (status) => {
+              sendStatus(status);
+            },
             onToolCall: async (event) => {
               sendStatus(statusForToolCall(event.toolName));
             },

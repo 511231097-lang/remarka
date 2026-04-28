@@ -12,6 +12,9 @@ type CliOptions = {
   runAnalysisOverride?: boolean;
   maxQuestionsOverride?: number;
   golden: boolean;
+  runs: number;
+  warmup: boolean;
+  deterministic: boolean;
 };
 
 type GoldenCategory = "factual" | "chain" | "comparison" | "character" | "theme" | "quote";
@@ -228,6 +231,10 @@ function parseArgs(argv: string[]): CliOptions {
   let runAnalysisOverride: boolean | undefined;
   let maxQuestionsOverride: number | undefined;
   let golden = false;
+  let runs = 1;
+  let warmup = false;
+  let deterministic = false;
+  let deterministicExplicit = false;
 
   for (let index = 0; index < argv.length; index += 1) {
     const token = String(argv[index] || "").trim();
@@ -253,6 +260,28 @@ function parseArgs(argv: string[]): CliOptions {
       golden = true;
       continue;
     }
+    if (token === "--runs" && next) {
+      const parsed = Number.parseInt(next, 10);
+      if (Number.isFinite(parsed) && parsed > 0) {
+        runs = parsed;
+      }
+      index += 1;
+      continue;
+    }
+    if (token === "--warmup") {
+      warmup = true;
+      continue;
+    }
+    if (token === "--deterministic") {
+      deterministic = true;
+      deterministicExplicit = true;
+      continue;
+    }
+    if (token === "--no-deterministic") {
+      deterministic = false;
+      deterministicExplicit = true;
+      continue;
+    }
     if (token === "--run-analysis" && next) {
       runAnalysisOverride = ["1", "true", "yes", "on"].includes(next.toLowerCase());
       index += 1;
@@ -268,6 +297,10 @@ function parseArgs(argv: string[]): CliOptions {
     }
   }
 
+  if (golden && !deterministicExplicit) {
+    deterministic = true;
+  }
+
   return {
     configPath,
     outputPath,
@@ -275,6 +308,9 @@ function parseArgs(argv: string[]): CliOptions {
     runAnalysisOverride,
     maxQuestionsOverride,
     golden,
+    runs,
+    warmup,
+    deterministic,
   };
 }
 
@@ -930,9 +966,9 @@ function createDefaultOutputPath(): string {
   return `evals/results/chat-regression-${timestamp}.json`;
 }
 
-function createDefaultGoldenOutputPath(): string {
+function createDefaultGoldenOutputPath(suffix = ""): string {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  return `${DEFAULT_GOLDEN_RESULTS_DIR}/golden-${timestamp}.json`;
+  return `${DEFAULT_GOLDEN_RESULTS_DIR}/golden-${timestamp}${suffix}.json`;
 }
 
 function createDefaultBaselineOutputPath(): string {
@@ -964,29 +1000,18 @@ async function findLatestGoldenBaseline(resultsDir: string): Promise<string | nu
   return rows[0]?.filePath || null;
 }
 
-async function runGolden() {
-  process.env.BOOK_CHAT_EVAL_RETRIEVAL_METRICS_ENABLED =
-    process.env.BOOK_CHAT_EVAL_RETRIEVAL_METRICS_ENABLED || "1";
+type GoldenPassParams = {
+  questionsByBook: Map<string, GoldenQuestion[]>;
+  expectedRefById: Map<string, string>;
+  goldenSetDir: string;
+  chatTools: BookChatToolName[];
+  thresholds: EvalThresholds;
+  runLabel: string;
+};
 
-  const options = parseArgs(process.argv.slice(2));
-  const goldenSetDir = resolvePathFromCwd(DEFAULT_GOLDEN_SET_DIR);
-  const questions = await loadGoldenQuestions(goldenSetDir);
-  const expectedRefById = await loadExpectedParagraphRefs(questions);
-  const questionsByBook = new Map<string, GoldenQuestion[]>();
-  for (const question of questions) {
-    const rows = questionsByBook.get(question.bookId) || [];
-    rows.push(question);
-    questionsByBook.set(question.bookId, rows);
-  }
-
-  const chatTools = normalizeTools(undefined);
-  const thresholds = DEFAULT_THRESHOLDS;
-  const baselinePath = options.baselinePath
-    ? resolvePathFromCwd(options.baselinePath)
-    : await findLatestGoldenBaseline(resolvePathFromCwd(DEFAULT_GOLDEN_RESULTS_DIR));
-
+async function executeGoldenPass(params: GoldenPassParams): Promise<EvalReport> {
   const booksReport: EvalBookReport[] = [];
-  const bookEntries = Array.from(questionsByBook.entries()).sort((left, right) => left[0].localeCompare(right[0]));
+  const bookEntries = Array.from(params.questionsByBook.entries()).sort((left, right) => left[0].localeCompare(right[0]));
   for (const [bookIndex, [bookId, bookQuestions]] of bookEntries.entries()) {
     const bookRecord = await prisma.book.findUnique({
       where: { id: bookId },
@@ -996,7 +1021,7 @@ async function runGolden() {
       throw new Error(`Book not found: ${bookId}`);
     }
 
-    process.stdout.write(`\n[${bookIndex + 1}/${bookEntries.length}] ${bookRecord.title} (${bookId})\n`);
+    process.stdout.write(`\n[${params.runLabel}] [${bookIndex + 1}/${bookEntries.length}] ${bookRecord.title} (${bookId})\n`);
     const analysis = await runAnalysisIfNeeded({
       bookId,
       runAnalysis: false,
@@ -1010,7 +1035,7 @@ async function runGolden() {
       process.stdout.write(`  q${questionIndex + 1}/${bookQuestions.length} ${question.id}: ${question.question.slice(0, 80)}\n`);
       const result = await answerBookChatQuestion({
         bookId,
-        enabledTools: chatTools,
+        enabledTools: params.chatTools,
         messages: [
           {
             role: "user",
@@ -1021,7 +1046,7 @@ async function runGolden() {
 
       const llmSteps = parseLlmSteps(result.llmStepRuns as any);
       const answerText = String(result.answer || "").trim();
-      const expectedParagraphRefs = question.expectedParagraphIds.map((id) => expectedRefById.get(id) || "");
+      const expectedParagraphRefs = question.expectedParagraphIds.map((id) => params.expectedRefById.get(id) || "");
       const retrievedParagraphRefs = extractRetrievedParagraphRefs(result.toolRuns);
       const keywordMetrics = calculateKeywordCoverage(answerText, question.expectedKeywords);
       const actualFirstTool = firstMeaningfulTool(result.toolRuns);
@@ -1080,54 +1105,226 @@ async function runGolden() {
   }
 
   const overall = aggregateQuestions(booksReport.flatMap((book) => book.questions));
-  const report: EvalReport = {
+  return {
     version: "v1",
     generatedAt: new Date().toISOString(),
-    configPath: goldenSetDir,
+    configPath: params.goldenSetDir,
     name: "golden-set",
     runAnalysis: false,
-    thresholds,
-    chatTools,
+    thresholds: params.thresholds,
+    chatTools: params.chatTools,
     books: booksReport,
     overall,
   };
+}
+
+const STABILITY_METRIC_KEYS = [
+  "recallAt5",
+  "recallAt10",
+  "mrr",
+  "keywordCoverage",
+  "toolCorrectnessRate",
+  "citationsRate",
+  "groundedProxyRate",
+  "p95LatencyMs",
+  "avgLatencyMs",
+  "totalCostUsd",
+] as const;
+
+type StabilityMetric = typeof STABILITY_METRIC_KEYS[number];
+
+type StabilityStat = {
+  mean: number;
+  min: number;
+  max: number;
+  spread: number;
+  std: number;
+  values: number[];
+};
+
+type StabilitySummary = {
+  runs: number;
+  metrics: Record<StabilityMetric, StabilityStat>;
+};
+
+function computeStabilityStat(values: number[]): StabilityStat {
+  if (!values.length) {
+    return { mean: 0, min: 0, max: 0, spread: 0, std: 0, values: [] };
+  }
+  const finite = values.map((value) => (Number.isFinite(value) ? value : 0));
+  const sum = finite.reduce((acc, value) => acc + value, 0);
+  const mean = sum / finite.length;
+  const min = Math.min(...finite);
+  const max = Math.max(...finite);
+  const variance = finite.reduce((acc, value) => acc + (value - mean) ** 2, 0) / finite.length;
+  return {
+    mean: round(mean, 6),
+    min: round(min, 6),
+    max: round(max, 6),
+    spread: round(max - min, 6),
+    std: round(Math.sqrt(variance), 6),
+    values: finite.map((value) => round(value, 6)),
+  };
+}
+
+function buildStabilitySummary(reports: EvalReport[]): StabilitySummary {
+  const metrics = {} as Record<StabilityMetric, StabilityStat>;
+  for (const key of STABILITY_METRIC_KEYS) {
+    const values = reports.map((report) => Number(report.overall[key] || 0));
+    metrics[key] = computeStabilityStat(values);
+  }
+  return { runs: reports.length, metrics };
+}
+
+function buildAveragedReport(reports: EvalReport[], summary: StabilitySummary): EvalReport {
+  const last = reports[reports.length - 1];
+  const averagedOverall: AggregateMetrics = {
+    ...last.overall,
+    recallAt5: summary.metrics.recallAt5.mean,
+    recallAt10: summary.metrics.recallAt10.mean,
+    mrr: summary.metrics.mrr.mean,
+    keywordCoverage: summary.metrics.keywordCoverage.mean,
+    toolCorrectnessRate: summary.metrics.toolCorrectnessRate.mean,
+    citationsRate: summary.metrics.citationsRate.mean,
+    groundedProxyRate: summary.metrics.groundedProxyRate.mean,
+    p95LatencyMs: summary.metrics.p95LatencyMs.mean,
+    avgLatencyMs: summary.metrics.avgLatencyMs.mean,
+    totalCostUsd: summary.metrics.totalCostUsd.mean,
+  };
+  return {
+    ...last,
+    generatedAt: new Date().toISOString(),
+    overall: averagedOverall,
+  };
+}
+
+function formatStabilityLine(name: StabilityMetric, stat: StabilityStat): string {
+  return `  ${name.padEnd(20)} mean=${stat.mean} min=${stat.min} max=${stat.max} spread=${stat.spread} std=${stat.std}`;
+}
+
+async function runGolden() {
+  const options = parseArgs(process.argv.slice(2));
+
+  if (options.deterministic) {
+    process.env.BOOK_CHAT_EVAL_DETERMINISTIC = "1";
+  }
+  process.env.BOOK_CHAT_EVAL_RETRIEVAL_METRICS_ENABLED =
+    process.env.BOOK_CHAT_EVAL_RETRIEVAL_METRICS_ENABLED || "1";
+
+  const goldenSetDir = resolvePathFromCwd(DEFAULT_GOLDEN_SET_DIR);
+  const questions = await loadGoldenQuestions(goldenSetDir);
+  const expectedRefById = await loadExpectedParagraphRefs(questions);
+  const questionsByBook = new Map<string, GoldenQuestion[]>();
+  for (const question of questions) {
+    const rows = questionsByBook.get(question.bookId) || [];
+    rows.push(question);
+    questionsByBook.set(question.bookId, rows);
+  }
+
+  const chatTools = normalizeTools(undefined);
+  const thresholds = DEFAULT_THRESHOLDS;
+  const baselinePath = options.baselinePath
+    ? resolvePathFromCwd(options.baselinePath)
+    : await findLatestGoldenBaseline(resolvePathFromCwd(DEFAULT_GOLDEN_RESULTS_DIR));
+
+  const runs = Math.max(1, options.runs);
+  const passParams: Omit<GoldenPassParams, "runLabel"> = {
+    questionsByBook,
+    expectedRefById,
+    goldenSetDir,
+    chatTools,
+    thresholds,
+  };
+
+  process.stdout.write(
+    `\nGolden run config: runs=${runs}, warmup=${options.warmup}, deterministic=${options.deterministic}\n`
+  );
+
+  if (options.warmup) {
+    process.stdout.write(`\n=== Warmup pass (results discarded) ===\n`);
+    await executeGoldenPass({ ...passParams, runLabel: "warmup" });
+  }
+
+  const reports: EvalReport[] = [];
+  const reportPaths: string[] = [];
+  for (let i = 0; i < runs; i += 1) {
+    if (runs > 1) {
+      process.stdout.write(`\n=== Run ${i + 1}/${runs} ===\n`);
+    }
+    const report = await executeGoldenPass({
+      ...passParams,
+      runLabel: runs > 1 ? `run ${i + 1}/${runs}` : "golden",
+    });
+    reports.push(report);
+
+    const suffix = runs > 1 ? `-run-${i + 1}` : "";
+    const fallbackOutput = options.outputPath
+      ? options.outputPath.replace(/\.json$/i, `${suffix}.json`)
+      : createDefaultGoldenOutputPath(suffix);
+    const outputPath = resolvePathFromCwd(fallbackOutput);
+    await mkdir(path.dirname(outputPath), { recursive: true });
+    await writeFile(outputPath, JSON.stringify(report, null, 2), "utf-8");
+    reportPaths.push(outputPath);
+    process.stdout.write(`  saved: ${outputPath}\n`);
+  }
+
+  const stabilitySummary = runs > 1 ? buildStabilitySummary(reports) : null;
+  const finalReport = stabilitySummary ? buildAveragedReport(reports, stabilitySummary) : reports[0];
 
   if (baselinePath) {
     const baselineRaw = await readFile(baselinePath, "utf-8");
     const baseline = JSON.parse(baselineRaw) as Partial<EvalReport>;
     if (baseline?.overall) {
-      report.comparison = buildComparison({
+      finalReport.comparison = buildComparison({
         baselinePath,
-        current: overall,
+        current: finalReport.overall,
         baseline: baseline.overall as AggregateMetrics,
         thresholds,
       });
     }
   }
 
-  const outputPath = resolvePathFromCwd(options.outputPath || createDefaultGoldenOutputPath());
-  await mkdir(path.dirname(outputPath), { recursive: true });
-  await writeFile(outputPath, JSON.stringify(report, null, 2), "utf-8");
+  let summaryPath: string | null = null;
+  if (stabilitySummary) {
+    summaryPath = resolvePathFromCwd(createDefaultGoldenOutputPath("-averaged"));
+    await mkdir(path.dirname(summaryPath), { recursive: true });
+    const summaryPayload = {
+      ...finalReport,
+      stability: stabilitySummary,
+      runReports: reportPaths,
+    };
+    await writeFile(summaryPath, JSON.stringify(summaryPayload, null, 2), "utf-8");
+  }
 
   let baselineCreatedPath: string | null = null;
   if (!baselinePath) {
     baselineCreatedPath = resolvePathFromCwd(createDefaultBaselineOutputPath());
-    await copyFile(outputPath, baselineCreatedPath);
+    const baselineSource = summaryPath || reportPaths[0];
+    await copyFile(baselineSource, baselineCreatedPath);
   }
 
-  process.stdout.write(`\nSaved report: ${outputPath}\n`);
+  process.stdout.write(`\n=== Golden summary ===\n`);
+  process.stdout.write(
+    `Overall: recall@5=${finalReport.overall.recallAt5}, recall@10=${finalReport.overall.recallAt10}, mrr=${finalReport.overall.mrr}, keyword_coverage=${finalReport.overall.keywordCoverage}, costUsd=${finalReport.overall.totalCostUsd}, p95=${finalReport.overall.p95LatencyMs}ms\n`
+  );
+  if (stabilitySummary) {
+    process.stdout.write(`Stability across ${stabilitySummary.runs} runs:\n`);
+    for (const key of STABILITY_METRIC_KEYS) {
+      process.stdout.write(`${formatStabilityLine(key, stabilitySummary.metrics[key])}\n`);
+    }
+    if (summaryPath) {
+      process.stdout.write(`Saved averaged report: ${summaryPath}\n`);
+    }
+  }
   if (baselineCreatedPath) {
     process.stdout.write(`Saved baseline: ${baselineCreatedPath}\n`);
   }
-  process.stdout.write(
-    `Golden overall: recall@5=${report.overall.recallAt5}, recall@10=${report.overall.recallAt10}, mrr=${report.overall.mrr}, keyword_coverage=${report.overall.keywordCoverage}, costUsd=${report.overall.totalCostUsd}, p95=${report.overall.p95LatencyMs}ms\n`
-  );
-  if (report.comparison) {
+  if (finalReport.comparison) {
     process.stdout.write(
-      `Golden deltas: recall@5=${report.comparison.deltas.recallAt5Delta}, recall@10=${report.comparison.deltas.recallAt10Delta}, mrr=${report.comparison.deltas.mrrDelta}, keyword_coverage=${report.comparison.deltas.keywordCoverageDelta}\n`
+      `Deltas vs baseline: recall@5=${finalReport.comparison.deltas.recallAt5Delta}, recall@10=${finalReport.comparison.deltas.recallAt10Delta}, mrr=${finalReport.comparison.deltas.mrrDelta}, keyword_coverage=${finalReport.comparison.deltas.keywordCoverageDelta}\n`
     );
-    process.stdout.write(`Regression status: ${report.comparison.regression.failed ? "FAILED" : "OK"}\n`);
-    if (report.comparison.regression.failed) process.exitCode = 2;
+    process.stdout.write(`Regression status: ${finalReport.comparison.regression.failed ? "FAILED" : "OK"}\n`);
+    if (finalReport.comparison.regression.failed) process.exitCode = 2;
   }
 }
 

@@ -1009,6 +1009,13 @@ model BookChatThread {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  // History compaction: when a thread grows past N pairs we compress the older
+  // turns into a single summary string via a cheap lite-model call. The summary
+  // is reused across subsequent turns until new compactable history accumulates.
+  compactedHistory                 String?
+  compactedHistoryThroughMessageId String?
+  compactedHistoryUpdatedAt        DateTime?
+
   book     Book                    @relation(fields: [bookId], references: [id], onDelete: Cascade)
   owner    User                    @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   messages BookChatThreadMessage[]

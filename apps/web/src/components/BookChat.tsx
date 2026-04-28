@@ -88,24 +88,6 @@ function appendReasoningPreview(current: string | null, delta: string): string {
   return `...${merged.slice(-MAX_STREAM_REASONING_CHARS)}`;
 }
 
-function makeGreeting(bookTitle: string): UiMessage {
-  return {
-    id: `local:greeting:${Date.now()}`,
-    role: "assistant",
-    content: `Здравствуйте. Я помогу разобраться в книге «${bookTitle}»: в мотивах персонажей, ключевых сценах, скрытых деталях и общем смысле.`,
-    rawAnswer: null,
-    evidence: [],
-    usedSources: [],
-    confidence: null,
-    mode: null,
-    citations: [],
-    inlineCitations: [],
-    answerItems: [],
-    referenceResolution: null,
-    createdAt: new Date().toISOString(),
-  };
-}
-
 function toAssistantMessageFromFinal(final: BookChatStreamFinalEventDTO): UiMessage {
   return {
     id: final.messageId || `local:assistant:${Date.now()}`,
@@ -220,7 +202,7 @@ export function BookChat() {
   const loadMessages = async (sessionId: string) => {
     if (!bookId || !sessionId) return;
     const nextMessages = await getBookChatMessages(bookId, sessionId);
-    setMessages(nextMessages.length > 0 ? nextMessages : [makeGreeting(book?.title || "Книга")]);
+    setMessages(nextMessages);
   };
 
   useEffect(() => {
@@ -307,7 +289,7 @@ export function BookChat() {
       try {
         const nextMessages = await getBookChatMessages(bookId, nextActiveSessionId);
         if (!active) return;
-        setMessages(nextMessages.length > 0 ? nextMessages : [makeGreeting(book?.title || "Книга")]);
+        setMessages(nextMessages);
       } catch (error) {
         if (!active) return;
         setMessages([
@@ -356,7 +338,7 @@ export function BookChat() {
       title: "Новый чат",
     });
     await refreshSessions(created.id);
-    setMessages([makeGreeting(book?.title || "Книга")]);
+    setMessages([]);
     router.push(buildBookPath(`/book/${bookId}/chat/${created.id}`));
   };
 
