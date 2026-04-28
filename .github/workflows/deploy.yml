@@ -100,6 +100,12 @@ jobs:
           path: _bundle
           retention-days: 7
           if-no-files-found: error
+          # CRITICAL: by default upload-artifact@v4 ignores hidden files/dirs
+          # (anything starting with a dot). Without this flag the .next/
+          # standalone build is silently dropped, and the deployed server.js
+          # goes missing on disk. See:
+          # https://github.com/actions/upload-artifact#hidden-files
+          include-hidden-files: true
 
   deploy-web:
     name: Deploy web
