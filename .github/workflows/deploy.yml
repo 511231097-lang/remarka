@@ -53,9 +53,9 @@ jobs:
         run: npm run test:unit
 
       - name: Build web (Next.js)
+        # apps/web has a postbuild hook that copies .next/static and public
+        # into the standalone bundle (Next.js doesn't do that automatically).
         env:
-          # We don't need real secrets at build time — Next.js evaluates env at
-          # runtime for SSR. Only NEXT_PUBLIC_* must be set if you reference any.
           NEXT_TELEMETRY_DISABLED: "1"
           NODE_ENV: production
         run: npm run web:build

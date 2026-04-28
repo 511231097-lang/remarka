@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "postbuild": "node -e \"const fs=require('fs');const path=require('path');const src=path.join('.next','static');const dst=path.join('.next','standalone','apps','web','.next','static');if(fs.existsSync(src)){fs.cpSync(src,dst,{recursive:true,force:true});console.log('copied .next/static -> standalone');}const psrc='public';const pdst=path.join('.next','standalone','apps','web','public');if(fs.existsSync(psrc)){fs.cpSync(psrc,pdst,{recursive:true,force:true});console.log('copied public -> standalone');}\"",
     "start": "next start",
     "typecheck": "tsc --noEmit",
     "test:unit": "node --import tsx --test src/**/*.test.ts src/**/*.test.tsx"
