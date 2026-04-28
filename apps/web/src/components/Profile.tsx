@@ -1,22 +1,10 @@
 "use client";
 
-import { motion } from "motion/react";
-import {
-  BookOpen,
-  Heart,
-  Calendar,
-  Mail,
-  Crown,
-  Check,
-  Sparkles,
-  Sun,
-  Moon,
-} from "lucide-react";
-import { currentUser, mockBooks, plans } from "@/lib/mockData";
-import { useState } from "react";
 import Link from "next/link";
+import { signOut } from "next-auth/react";
+import { Sparkles } from "lucide-react";
+import { currentUser } from "@/lib/mockData";
 import { useTheme } from "@/lib/ThemeContext";
-import { UserAvatar } from "@/components/UserAvatar";
 
 interface ProfileProps {
   authUser: {
@@ -29,337 +17,172 @@ interface ProfileProps {
 export function Profile({ authUser }: ProfileProps) {
   const displayName = authUser.name?.trim() || currentUser.name;
   const displayEmail = authUser.email?.trim() || currentUser.email;
-  const myBooks = mockBooks.filter((b) => b.uploadedBy.id === currentUser.id);
-  const publicBooks = myBooks.filter((b) => b.isPublic);
-  const totalLikes = publicBooks.reduce(
-    (sum, book) => sum + book.likesCount,
-    0,
-  );
-  const [showPlans, setShowPlans] = useState(false);
-  const { theme, toggleTheme } = useTheme();
+  const initial = displayName.slice(0, 1).toUpperCase() || "А";
+  const plan = currentUser.plan.type === "plus" ? "plus" : "free";
+  const isPlus = plan === "plus";
+  const { theme, setTheme } = useTheme();
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="max-w-6xl mx-auto px-6 py-12">
-        {/* Profile Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-12"
-        >
-          <div className="flex flex-col sm:flex-row items-center sm:items-center gap-6 mb-8">
-            <UserAvatar
-              name={displayName}
-              image={authUser.image}
-              size="md"
-              fallbackTextClassName="text-4xl"
-            />
-            <div className="flex-1 text-center sm:text-left">
-              <h1 className="text-4xl text-foreground mb-2 break-words">
-                {displayName}
-              </h1>
-              <div className="flex items-center justify-center sm:justify-start gap-2 text-muted-foreground mb-4">
-                <Mail className="w-4 h-4" />
-                <span className="break-all">{displayEmail}</span>
-              </div>
-              <div className="flex items-center justify-center sm:justify-start gap-2 text-sm text-muted-foreground">
-                <Calendar className="w-4 h-4" />
-                <span>На платформе с марта 2026</span>
-              </div>
-            </div>
+    <div className="screen-fade">
+      <div className="container-narrow" style={{ paddingBottom: 96, paddingTop: 56 }}>
+        <div className="mono" style={{ color: "var(--mark)", marginBottom: 16 }}>Профиль</div>
+        <div className="row" style={{ alignItems: "center", gap: 24 }}>
+          <div className="avatar" style={{ fontSize: 28, height: 72, width: 72 }}>
+            {authUser.image ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img src={authUser.image} alt="" style={{ height: "100%", objectFit: "cover", width: "100%" }} />
+            ) : (
+              initial
+            )}
           </div>
-        </motion.div>
-
-        {/* Stats */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-12"
-        >
-          <div className="p-6 bg-card border border-border rounded-lg">
-            <div className="flex items-center gap-3 mb-2">
-              <BookOpen className="w-5 h-5 text-primary" />
-              <span className="text-3xl text-foreground">{myBooks.length}</span>
-            </div>
-            <p className="text-sm text-muted-foreground">Загружено книг</p>
-          </div>
-
-          <div className="p-6 bg-card border border-border rounded-lg">
-            <div className="flex items-center gap-3 mb-2">
-              <BookOpen className="w-5 h-5 text-primary" />
-              <span className="text-3xl text-foreground">
-                {publicBooks.length}
-              </span>
-            </div>
-            <p className="text-sm text-muted-foreground">Публичных анализов</p>
-          </div>
-
-          <div className="p-6 bg-card border border-border rounded-lg">
-            <div className="flex items-center gap-3 mb-2">
-              <Heart className="w-5 h-5 text-primary" />
-              <span className="text-3xl text-foreground">{totalLikes}</span>
-            </div>
-            <p className="text-sm text-muted-foreground">Получено лайков</p>
-          </div>
-        </motion.div>
-
-        {/* Current Plan */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.2 }}
-          className="mb-12"
-        >
-          <h2 className="text-2xl text-foreground mb-6">Тарифный план</h2>
-
-          <div className="p-6 bg-card border border-border rounded-lg mb-4">
-            <div className="flex items-center justify-between mb-4">
-              <div className="flex items-center gap-3">
-                {currentUser.plan.type === "plus" && (
-                  <Crown className="w-6 h-6 text-primary" />
-                )}
-                <div>
-                  <h3 className="text-lg text-foreground">
-                    Тариф {currentUser.plan.name}
-                  </h3>
-                  <p className="text-sm text-muted-foreground">
-                    {currentUser.plan.type === "plus"
-                      ? "Безлимитные возможности"
-                      : "Базовые функции"}
-                  </p>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div className="row" style={{ alignItems: "baseline", flexWrap: "wrap", gap: 12 }}>
+              <h1 style={{ fontSize: 36, letterSpacing: 0, lineHeight: 1.08 }}>{displayName}</h1>
+              {isPlus && (
+                <div className="plan-pill plus">
+                  <Sparkles size={14} /> Плюс
                 </div>
-              </div>
-              {currentUser.plan.type === "basic" && (
-                <Link
-                  href="/plans"
-                  className="px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity flex items-center gap-2"
-                >
-                  <Sparkles className="w-4 h-4" />
-                  Обновить
-                </Link>
               )}
             </div>
-
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div className="flex items-center gap-2">
-                <Check className="w-4 h-4 text-primary" />
-                <span className="text-muted-foreground">
-                  {currentUser.plan.features.maxBooks === "unlimited"
-                    ? "Безлимитно книг"
-                    : `До ${currentUser.plan.features.maxBooks} книг`}
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                {currentUser.plan.features.privateBooks ? (
-                  <Check className="w-4 h-4 text-primary" />
-                ) : (
-                  <div className="w-4 h-4" />
-                )}
-                <span
-                  className={
-                    currentUser.plan.features.privateBooks
-                      ? "text-muted-foreground"
-                      : "text-muted-foreground/50"
-                  }
-                >
-                  Приватные книги
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                {currentUser.plan.features.advancedAnalysis ? (
-                  <Check className="w-4 h-4 text-primary" />
-                ) : (
-                  <div className="w-4 h-4" />
-                )}
-                <span
-                  className={
-                    currentUser.plan.features.advancedAnalysis
-                      ? "text-muted-foreground"
-                      : "text-muted-foreground/50"
-                  }
-                >
-                  Расширенный анализ
-                </span>
-              </div>
-              <div className="flex items-center gap-2">
-                {currentUser.plan.features.exportFeatures ? (
-                  <Check className="w-4 h-4 text-primary" />
-                ) : (
-                  <div className="w-4 h-4" />
-                )}
-                <span
-                  className={
-                    currentUser.plan.features.exportFeatures
-                      ? "text-muted-foreground"
-                      : "text-muted-foreground/50"
-                  }
-                >
-                  Экспорт анализов
-                </span>
-              </div>
+            <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 6 }}>
+              {displayEmail} · Google
             </div>
           </div>
+        </div>
 
-          {showPlans && currentUser.plan.type === "basic" && (
-            <motion.div
-              initial={{ opacity: 0, height: 0 }}
-              animate={{ opacity: 1, height: "auto" }}
-              className="grid grid-cols-1 md:grid-cols-2 gap-4"
-            >
-              <div className="p-6 bg-card border border-border rounded-lg">
-                <h4 className="text-foreground mb-2">Базовый</h4>
-                <div className="mb-4">
-                  <span className="text-3xl text-foreground">Бесплатно</span>
-                </div>
-                <ul className="space-y-2 text-sm text-muted-foreground mb-6">
-                  <li className="flex items-center gap-2">
-                    <Check className="w-4 h-4 text-primary" />
-                    До 5 книг
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <Check className="w-4 h-4 text-primary" />
-                    Только публичные книги
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <Check className="w-4 h-4 text-primary" />
-                    Базовый анализ
-                  </li>
-                </ul>
-                <button
-                  disabled
-                  className="w-full px-4 py-2 bg-secondary text-muted-foreground rounded-lg cursor-not-allowed"
-                >
-                  Текущий план
+        <div className="hr" style={{ margin: "40px 0" }} />
+
+        <Section title="Оформление">
+          <Row label="Тема">
+            <div className="row-sm">
+              {(["light", "dark"] as const).map((item) => (
+                <button key={item} className={`chip ${theme === item ? "active" : ""}`} onClick={() => setTheme(item)}>
+                  {item === "light" ? "Светлая" : "Тёмная"}
                 </button>
-              </div>
+              ))}
+            </div>
+          </Row>
+        </Section>
 
-              <div className="p-6 bg-gradient-to-br from-primary/10 to-primary/5 border-2 border-primary rounded-lg relative">
-                <div className="absolute -top-3 left-1/2 -translate-x-1/2 px-3 py-1 bg-primary text-primary-foreground rounded-full text-xs">
-                  Рекомендуем
+        <Section title="Приватность">
+          <Row label="Cookie-файлы" sub="Необходимые cookie-файлы включены всегда. Аналитика — по согласию.">
+            <Link className="chip active" href="/legal/cookies">Настройки</Link>
+          </Row>
+          <Row label="Документы" sub="Пользовательское соглашение, политика ПДн, условия загрузки.">
+            <div className="row-sm" style={{ flexWrap: "wrap", justifyContent: "flex-end" }}>
+              <Link className="chip" href="/legal/terms">Соглашение</Link>
+              <Link className="chip" href="/legal/privacy">ПДн</Link>
+              <Link className="chip" href="/legal/upload">Загрузка</Link>
+            </div>
+          </Row>
+        </Section>
+
+        <Section title="Подписка">
+          <div style={{ padding: 24 }}>
+            <div className="row" style={{ alignItems: "flex-start", flexWrap: "wrap", gap: 20, justifyContent: "space-between" }}>
+              <div style={{ flex: 1, minWidth: 260 }}>
+                <div className="row" style={{ alignItems: "baseline", gap: 10 }}>
+                  <div style={{ fontFamily: "var(--font-serif)", fontSize: 26, letterSpacing: 0 }}>
+                    {isPlus ? "Плюс" : "Читатель"}
+                  </div>
+                  <div className="mono" style={{ color: "var(--ink-muted)" }}>
+                    {isPlus ? "390 ₽ / мес · активен" : "бесплатный · бессрочно"}
+                  </div>
                 </div>
-                <h4 className="text-foreground mb-2 flex items-center gap-2">
-                  <Crown className="w-5 h-5 text-primary" />
-                  Плюс
-                </h4>
-                <div className="mb-4">
-                  <span className="text-3xl text-foreground">₽399</span>
-                  <span className="text-sm text-muted-foreground">/месяц</span>
-                </div>
-                <ul className="space-y-2 text-sm text-muted-foreground mb-6">
-                  <li className="flex items-center gap-2">
-                    <Check className="w-4 h-4 text-primary" />
-                    Безлимитно книг
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <Check className="w-4 h-4 text-primary" />
-                    Приватные книги
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <Check className="w-4 h-4 text-primary" />
-                    Расширенный анализ
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <Check className="w-4 h-4 text-primary" />
-                    Экспорт в PDF и Markdown
-                  </li>
-                </ul>
-                <button className="w-full px-4 py-2 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity">
-                  Обновить план
-                </button>
+                <p className="soft" style={{ fontSize: 14, lineHeight: 1.55, marginTop: 10, maxWidth: 440 }}>
+                  {isPlus
+                    ? "Полный доступ к ремарке: каталог, чат, загрузка и анализ собственных книг. Следующее списание 14 марта."
+                    : "Вы можете читать, задавать вопросы и добавлять книги из каталога. Загрузка собственных книг — на тарифе Плюс."}
+                </p>
               </div>
-            </motion.div>
-          )}
-        </motion.div>
-
-        {/* Settings Section */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.3 }}
-        >
-          <h2 className="text-2xl text-foreground mb-6">Настройки</h2>
-
-          <div className="space-y-4">
-            <div className="p-6 bg-card border border-border rounded-lg">
-              <h3 className="text-foreground mb-2">Внешний вид</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                Выберите тему оформления приложения
-              </p>
-              <button
-                onClick={toggleTheme}
-                className="flex items-center gap-3 px-4 py-3 bg-secondary rounded-lg hover:bg-secondary/80 transition-colors w-full"
-              >
-                {theme === "light" ? (
+              <div className="row-sm" style={{ alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+                {isPlus ? (
                   <>
-                    <Moon className="w-5 h-5 text-foreground" />
-                    <div className="flex-1 text-left">
-                      <p className="text-sm text-foreground">Тёмная тема</p>
-                      <p className="text-xs text-muted-foreground">
-                        Переключить на тёмное оформление
-                      </p>
-                    </div>
+                    <Link className="btn btn-ghost btn-sm" href="/plans">Сравнить</Link>
+                    <button className="btn btn-plain btn-sm" disabled title="Billing backend пока не подключён">Отменить подписку</button>
                   </>
                 ) : (
                   <>
-                    <Sun className="w-5 h-5 text-foreground" />
-                    <div className="flex-1 text-left">
-                      <p className="text-sm text-foreground">Светлая тема</p>
-                      <p className="text-xs text-muted-foreground">
-                        Переключить на светлое оформление
-                      </p>
-                    </div>
+                    <Link className="btn btn-plain btn-sm" href="/plans">Сравнить тарифы</Link>
+                    <Link className="btn btn-mark" href="/plans">
+                      <Sparkles size={14} /> Перейти на Плюс
+                    </Link>
                   </>
                 )}
-              </button>
+              </div>
             </div>
 
-            <div className="p-6 bg-card border border-border rounded-lg">
-              <h3 className="text-foreground mb-2">Уведомления</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                Получайте уведомления о новых лайках и комментариях
-              </p>
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  defaultChecked
-                  className="w-5 h-5 rounded border-border text-primary focus:ring-primary"
-                />
-                <span className="text-sm text-foreground">
-                  Включить уведомления
-                </span>
-              </label>
-            </div>
-
-            <div className="p-6 bg-card border border-border rounded-lg">
-              <h3 className="text-foreground mb-2">Конфиденциальность</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                По умолчанию делать загруженные книги публичными
-              </p>
-              <label className="flex items-center gap-3 cursor-pointer">
-                <input
-                  type="checkbox"
-                  defaultChecked
-                  className="w-5 h-5 rounded border-border text-primary focus:ring-primary"
-                />
-                <span className="text-sm text-foreground">
-                  Публиковать автоматически
-                </span>
-              </label>
-            </div>
-
-            <div className="p-6 bg-card border border-border rounded-lg">
-              <h3 className="text-foreground mb-2">Аккаунт</h3>
-              <p className="text-sm text-muted-foreground mb-4">
-                Управление вашим аккаунтом и данными
-              </p>
-              <button className="text-sm text-destructive hover:underline">
-                Удалить аккаунт
-              </button>
-            </div>
+            {!isPlus && (
+              <div style={{ alignItems: "flex-start", background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: "var(--r)", display: "flex", gap: 12, marginTop: 20, padding: "14px 16px" }}>
+                <div style={{ color: "var(--mark)", marginTop: 2 }}><Sparkles size={16} /></div>
+                <div>
+                  <div style={{ color: "var(--ink)", fontSize: 14 }}>Что откроет Плюс</div>
+                  <div className="soft" style={{ fontSize: 13, lineHeight: 1.55, marginTop: 4 }}>
+                    Загрузку книг в EPUB, FB2, PDF · персональный AI-разбор каждой · чат по смешанной полке.
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-        </motion.div>
+        </Section>
+
+        <Section title="Аккаунт">
+          <div className="row" style={{ flexWrap: "wrap", gap: 12, padding: "20px 20px" }}>
+            <button className="btn btn-ghost" disabled title="Функция готовится">Выгрузить данные</button>
+            <button className="btn btn-plain" onClick={() => void signOut({ callbackUrl: "/signin" })}>Выйти</button>
+            <button className="btn btn-plain" disabled title="Функция готовится" style={{ color: "var(--mark)" }}>Удалить аккаунт</button>
+          </div>
+          <div className="soft" style={{ borderTop: "1px solid var(--rule-soft)", fontSize: 13, lineHeight: 1.55, padding: "14px 20px" }}>
+            Выгрузка данных и удаление аккаунта пока недоступны в интерфейсе. Эти функции готовятся.
+          </div>
+        </Section>
       </div>
+    </div>
+  );
+}
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div style={{ marginTop: 40 }}>
+      <h3 style={{ fontSize: 22, marginBottom: 18 }}>{title}</h3>
+      <div className="card" style={{ padding: 4 }}>{children}</div>
+    </div>
+  );
+}
+
+function Row({
+  label,
+  sub,
+  children,
+}: {
+  label: string;
+  sub?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="profile-row">
+      <div>
+        <div style={{ color: "var(--ink)", fontSize: 15 }}>{label}</div>
+        {sub && <div className="soft" style={{ fontSize: 13, marginTop: 4, maxWidth: 420 }}>{sub}</div>}
+      </div>
+      <div>{children}</div>
+      <style jsx>{`
+        .profile-row {
+          align-items: center;
+          border-bottom: 1px solid var(--rule-soft);
+          display: flex;
+          gap: 20px;
+          justify-content: space-between;
+          padding: 18px 20px;
+        }
+
+        @media (max-width: 680px) {
+          .profile-row {
+            align-items: flex-start;
+            flex-direction: column;
+          }
+        }
+      `}</style>
     </div>
   );
 }

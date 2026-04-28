@@ -1,0 +1,128 @@
+# Remarka — nginx site config template.
+#
+# Install:
+#   sudo cp scripts/deploy/nginx.conf.template /etc/nginx/sites-available/remarka
+#   sudo sed -i "s/__DOMAIN__/your.domain.com/g" /etc/nginx/sites-available/remarka
+#   sudo ln -sf /etc/nginx/sites-available/remarka /etc/nginx/sites-enabled/remarka
+#   sudo rm -f /etc/nginx/sites-enabled/default
+#   sudo nginx -t && sudo systemctl reload nginx
+#   sudo certbot --nginx -d your.domain.com
+#   sudo systemctl reload nginx
+#
+# Rate-limit zone for chat-stream — declare at http {} level. Add this line
+# inside /etc/nginx/nginx.conf (http block) once, not per-site:
+#
+#   limit_req_zone $binary_remote_addr zone=chat_stream:10m rate=20r/m;
+#
+# (Drop a snippet at /etc/nginx/conf.d/00-rate-limits.conf with the line above.)
+
+# --------------------------- HTTP -> HTTPS redirect ---------------------------
+server {
+    listen 80;
+    listen [::]:80;
+    server_name __DOMAIN__;
+
+    # Let certbot validate over HTTP-01 before forcing redirect.
+    location /.well-known/acme-challenge/ {
+        root /var/www/html;
+    }
+
+    location / {
+        return 301 https://$host$request_uri;
+    }
+}
+
+# --------------------------- HTTPS server ------------------------------------
+server {
+    listen 443 ssl;
+    listen [::]:443 ssl;
+    http2 on;
+    server_name __DOMAIN__;
+
+    # TLS — managed by certbot. Re-issued certs reload nginx automatically.
+    ssl_certificate     /etc/letsencrypt/live/__DOMAIN__/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/__DOMAIN__/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_ciphers         ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384:ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-RSA-CHACHA20-POLY1305;
+    ssl_prefer_server_ciphers on;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 1d;
+    ssl_session_tickets off;
+
+    # Security headers.
+    add_header Strict-Transport-Security "max-age=63072000; includeSubDomains" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header X-Frame-Options           "DENY" always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+
+    # Upload limit — book imports can be ~25 MiB FB2 zips.
+    client_max_body_size 50m;
+
+    # gzip — disabled for streamed SSE on /api/.../stream below.
+    gzip on;
+    gzip_proxied any;
+    gzip_vary on;
+    gzip_min_length 1024;
+    gzip_types
+        application/javascript
+        application/json
+        application/xml
+        text/css
+        text/plain
+        text/xml;
+
+    # Health check — no auth, no rate limit, fast pass-through.
+    location = /api/health {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        access_log off;
+    }
+
+    # Long-lived chat streaming — disable buffering, extend timeouts, rate-limit.
+    location ~ ^/api/books/[^/]+/chat/sessions/[^/]+/stream$ {
+        limit_req zone=chat_stream burst=10 nodelay;
+
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Connection        "";
+
+        proxy_buffering    off;
+        proxy_cache        off;
+        proxy_read_timeout 600s;
+        proxy_send_timeout 600s;
+        chunked_transfer_encoding on;
+
+        # SSE-friendly: don't gzip a stream.
+        gzip off;
+    }
+
+    # Next.js immutable static assets (hashed filenames) — cache hard.
+    location /_next/static/ {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+
+        expires 1y;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+    }
+
+    # Default: everything else proxies to Next.js.
+    location / {
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header   Host              $host;
+        proxy_set_header   X-Real-IP         $remote_addr;
+        proxy_set_header   X-Forwarded-For   $proxy_add_x_forwarded_for;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_set_header   Upgrade           $http_upgrade;
+        proxy_set_header   Connection        "upgrade";
+
+        proxy_read_timeout 60s;
+        proxy_send_timeout 60s;
+    }
+}

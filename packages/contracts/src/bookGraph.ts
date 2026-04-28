@@ -1,0 +1,152 @@
+import { z } from "zod";
+
+export const BOOK_CHAT_GRAPH_STAGE_KEYS = [
+  "canonical_text",
+  "scene_build",
+  "entity_graph",
+  "event_relation_graph",
+  "summary_store",
+  "evidence_store",
+  "text_index",
+  "quote_store",
+] as const;
+
+export type BookChatGraphStageKey = (typeof BOOK_CHAT_GRAPH_STAGE_KEYS)[number];
+export const BookChatGraphStageKeySchema = z.enum(BOOK_CHAT_GRAPH_STAGE_KEYS);
+
+export const BOOK_CHAT_PLAN_INTENTS = [
+  "character",
+  "event",
+  "scene",
+  "chapter",
+  "compare",
+  "analysis",
+  "retelling",
+  "quote_proof",
+  "social",
+] as const;
+
+export const BOOK_CHAT_PLAN_SCOPES = ["scene", "chapter", "full_book", "unknown"] as const;
+export const BOOK_CHAT_SCOPE_MODES = ["book_only", "book_plus_meta"] as const;
+export const BOOK_CHAT_PLAN_DEPTHS = ["fast", "deep"] as const;
+export const BOOK_CHAT_ANSWER_MODES = [
+  "factual",
+  "explain",
+  "compare",
+  "retell_scene",
+  "retell_chapter",
+  "deep_analysis",
+  "answer_with_proof",
+] as const;
+export const BOOK_CHAT_STATE_ACTIONS = ["keep", "narrow", "reset"] as const;
+export const BOOK_CHAT_GROUNDING_MODES = ["book_strict", "book_with_meta", "meta_only", "general"] as const;
+export const BOOK_CHAT_QUESTION_CLASSES = [
+  "entity_lookup",
+  "presence_lookup",
+  "evidence_lookup",
+  "analysis_meta",
+  "mixed",
+  "general",
+] as const;
+
+export type BookChatPlanIntent = (typeof BOOK_CHAT_PLAN_INTENTS)[number];
+export type BookChatPlanScope = (typeof BOOK_CHAT_PLAN_SCOPES)[number];
+export type BookChatScopeMode = (typeof BOOK_CHAT_SCOPE_MODES)[number];
+export type BookChatPlanDepth = (typeof BOOK_CHAT_PLAN_DEPTHS)[number];
+export type BookChatAnswerMode = (typeof BOOK_CHAT_ANSWER_MODES)[number];
+export type BookChatStateAction = (typeof BOOK_CHAT_STATE_ACTIONS)[number];
+export type BookChatGroundingMode = (typeof BOOK_CHAT_GROUNDING_MODES)[number];
+export type BookChatQuestionClass = (typeof BOOK_CHAT_QUESTION_CLASSES)[number];
+
+export const BookChatFollowupAnswerItemSchema = z
+  .object({
+    id: z.string().trim().min(1).max(80),
+    ordinal: z.number().int().min(1).max(12).nullable().default(null),
+    label: z.string().trim().min(1).max(240),
+    summary: z.string().trim().min(1).max(600),
+    linkedEntityIds: z.array(z.string().trim().min(1).max(80)).max(8).default([]),
+    linkedEvidenceIds: z.array(z.string().trim().min(1).max(120)).max(8).default([]),
+  })
+  .strict();
+
+export type BookChatFollowupAnswerItem = z.infer<typeof BookChatFollowupAnswerItemSchema>;
+
+export const BookChatFollowupRefsSchema = z
+  .object({
+    primaryEntityId: z.string().trim().min(1).max(80).nullable().default(null),
+    activeEntityIds: z.array(z.string().trim().min(1).max(80)).max(16).default([]),
+    lastAssistantMessageId: z.string().trim().min(1).max(80).nullable().default(null),
+    answerItems: z.array(BookChatFollowupAnswerItemSchema).max(8).default([]),
+  })
+  .strict();
+
+export type BookChatFollowupRefs = z.infer<typeof BookChatFollowupRefsSchema>;
+
+export const BookChatTurnStateSchema = z
+  .object({
+    currentBookId: z.string().trim().min(1).max(80).nullable().default(null),
+    activeEntityIds: z.array(z.string().trim().min(1).max(80)).max(16).default([]),
+    activeTargets: z
+      .array(
+        z
+          .object({
+            id: z.string().trim().min(1).max(80),
+            name: z.string().trim().min(1).max(240),
+            type: z.string().trim().min(1).max(80),
+          })
+          .strict()
+      )
+      .max(8)
+      .default([]),
+    activeEvidenceIds: z.array(z.string().trim().min(1).max(120)).max(24).default([]),
+    activeSceneIds: z.array(z.string().trim().min(1).max(80)).max(12).default([]),
+    activeEventIds: z.array(z.string().trim().min(1).max(80)).max(12).default([]),
+    activeRelationIds: z.array(z.string().trim().min(1).max(80)).max(12).default([]),
+    lastGroundingMode: z.enum(BOOK_CHAT_GROUNDING_MODES).nullable().default(null),
+    lastQuestionClass: z.enum(BOOK_CHAT_QUESTION_CLASSES).nullable().default(null),
+    lastIntent: z.enum(BOOK_CHAT_PLAN_INTENTS).nullable().default(null),
+    lastScope: z.enum(BOOK_CHAT_PLAN_SCOPES).nullable().default(null),
+    lastAnswerMode: z.enum(BOOK_CHAT_ANSWER_MODES).nullable().default(null),
+    lastCompareSet: z.array(z.string().trim().min(1).max(80)).max(8).default([]),
+    followupRefs: BookChatFollowupRefsSchema.nullable().default(null),
+    sectionContext: z.string().trim().min(1).max(80).nullable().default(null),
+    lastUserQuestion: z.string().trim().min(1).max(600).nullable().default(null),
+  })
+  .strict();
+
+export type BookChatTurnState = z.infer<typeof BookChatTurnStateSchema>;
+
+export const BookChatPlanSchema = z
+  .object({
+    intent: z.enum(BOOK_CHAT_PLAN_INTENTS),
+    targets: z.array(z.string().trim().min(1).max(160)).max(8).default([]),
+    scope: z.enum(BOOK_CHAT_PLAN_SCOPES),
+    scopeMode: z.enum(BOOK_CHAT_SCOPE_MODES).default("book_only"),
+    timeRef: z.string().trim().min(1).max(160).nullable().default(null),
+    depth: z.enum(BOOK_CHAT_PLAN_DEPTHS),
+    needQuote: z.boolean().default(false),
+    answerMode: z.enum(BOOK_CHAT_ANSWER_MODES),
+    lane: z.enum(BOOK_CHAT_PLAN_DEPTHS),
+    stateAction: z.enum(BOOK_CHAT_STATE_ACTIONS),
+  })
+  .strict();
+
+export type BookChatPlan = z.infer<typeof BookChatPlanSchema>;
+
+export const BookChatAnswerSchema = z
+  .object({
+    answer: z.string().trim().min(1).max(12000),
+  })
+  .strict();
+
+export type BookChatAnswer = z.infer<typeof BookChatAnswerSchema>;
+
+export const BookChatVerifierResultSchema = z
+  .object({
+    passed: z.boolean(),
+    missingFactIds: z.array(z.string().trim().min(1).max(120)).max(24).default([]),
+    strippedClaims: z.array(z.string().trim().min(1).max(300)).max(16).default([]),
+  })
+  .strict();
+
+export type BookChatVerifierResult = z.infer<typeof BookChatVerifierResultSchema>;

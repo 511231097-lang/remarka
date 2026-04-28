@@ -7,52 +7,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-enum EntityType {
-  character
-  location
-  event
-}
-
-enum AnalysisRunState {
-  queued
-  running
-  completed
-  failed
-  superseded
-}
-
-enum AnalysisRunPhase {
-  queued
-  prepass
-  entity_pass
-  sweep
-  mention_completion
-  act_pass
-  appearance_pass
-  apply
-  completed
-  failed
-  superseded
-}
-
-enum MentionRouting {
-  deterministic
-  patch
-}
-
-enum MentionDecisionStatus {
-  pending
-  accepted
-  rejected
-}
-
-enum MentionCandidateType {
-  alias
-  role
-  coreference
-  ambiguous
-}
-
 enum MentionType {
   named
   alias
@@ -67,77 +21,364 @@ enum AliasType {
   descriptor
 }
 
-enum AppearanceScope {
-  stable
-  temporary
-  scene
-}
-
 enum BookFormat {
   fb2
   fb2_zip
 }
 
-enum ProjectImportState {
+enum BookAnalysisState {
   queued
   running
   completed
   failed
 }
 
-enum ProjectImportStage {
+enum AnalysisStatus {
+  not_started
   queued
-  loading_source
-  parsing
-  persisting
-  scheduling_analysis
+  running
   completed
   failed
 }
 
-model Project {
-  id          String   @id @default(cuid())
-  title       String
-  description String?
-  ownerUserId String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+enum UserRole {
+  user
+  admin
+}
 
-  owner                User? @relation(fields: [ownerUserId], references: [id], onDelete: SetNull)
-  chapters             Chapter[]
-  documents            Document[]
-  acts                 Act[]
-  entities             Entity[]
-  appearanceObservations CharacterAppearanceObservation[]
-  analysisRuns         AnalysisRun[]
-  locationContainments LocationContainment[]
-  projectImports       ProjectImport[]
+enum BookAnalyzerType {
+  summary
+  characters
+  themes
+  locations
+  quotes
+  literary
+  chat_index
+  core_window_scan
+  core_merge
+  core_resolve
+  core_entity_mentions
+  core_profiles
+  core_quotes_finalize
+  core_literary
+  events
+  canonical_text
+  scene_build
+  entity_graph
+  event_relation_graph
+  summary_store
+  evidence_store
+  text_index
+  quote_store
+}
 
-  @@index([ownerUserId])
+enum BookGraphEntityType {
+  character
+  location
+  group
+  object
+  theme
+  motif
+  concept
+}
+
+enum BookEventEdgeType {
+  before
+  after
+  causes
+  results_in
+  parallels
+}
+
+enum BookRelationEdgeType {
+  ally
+  family
+  romance
+  conflict
+  authority
+  dependence
+  rivalry
+  mirror
+  symbolic_association
+}
+
+enum BookSummaryArtifactKind {
+  book_brief
+  scene_summary
+  chapter_summary
+  entity_summary
+  character_arc
+  relationship_summary
+  theme_note
+  motif_note
+  chapter_retelling
+  literary_section
+}
+
+enum BookEvidenceSubjectType {
+  scene
+  event
+  relation
+  summary_artifact
+  entity
+}
+
+enum BookEvidenceRefType {
+  scene
+  paragraph
+  sentence
+  quote
+}
+
+enum BookQuoteType {
+  dialogue
+  monologue
+  narration
+  description
+  reflection
+  action
+}
+
+enum BookQuoteTag {
+  conflict
+  relationship
+  identity
+  morality
+  power
+  freedom
+  fear
+  guilt
+  hope
+  fate
+  society
+  violence
+  love
+  death
+  faith
+}
+
+enum BookQuoteMentionKind {
+  character
+  theme
+  location
+}
+
+enum BookRefResolutionStatus {
+  resolved
+  unresolved
+}
+
+enum BookAnalysisRunState {
+  queued
+  running
+  completed
+  failed
+  superseded
+}
+
+enum BookEvidenceStageKey {
+  ingest_normalize
+  structural_pass
+  local_extraction_mentions
+  local_extraction_quotes
+  local_extraction_events
+  local_extraction_relations
+  local_extraction_time_location
+  validation_pass
+  entity_resolution
+  scene_assembly
+  event_timeline
+  relation_aggregation
+  summary_synthesis
+  index_build
+  repair
+  paragraph_embeddings
+  scene_chunk_llm
+  scene_embeddings
+  evidence_fragments
+  finalize
+}
+
+enum BookObservationType {
+  mention
+  quote
+  scene_boundary
+  event
+  relation
+  location
+  time_marker
+}
+
+enum BookObservationCertainty {
+  explicit
+  implied
+  uncertain
+}
+
+enum BookObservationValidationStatus {
+  pending
+  valid
+  invalid
+}
+
+enum BookCanonicalEntityStatus {
+  active
+  ambiguous
+  merged
+}
+
+enum BookTimelineOrder {
+  before
+  after
+  same
+  uncertain
+}
+
+enum BookSummaryTargetType {
+  entity
+  scene
+  chapter
+  book
+  arc
+  relation
+}
+
+enum BookSummaryKind {
+  short
+  full
+  timeline
+  role
+  relation_history
+}
+
+enum BookCoverageStatus {
+  full
+  partial
 }
 
 model Book {
-  id              String   @id @default(cuid())
-  ownerUserId     String
-  title           String
-  author          String?
-  chapterCount    Int      @default(0)
-  isPublic        Boolean  @default(true)
-  fileName        String
-  mimeType        String
-  sizeBytes       Int
-  storageProvider String
-  storageKey      String
-  fileSha256      String
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id                       String            @id @default(cuid())
+  ownerUserId              String
+  title                    String
+  author                   String?
+  coverUrl                 String?
+  summary                  String?
+  chapterCount             Int               @default(0)
+  isPublic                 Boolean           @default(false)
+  analysisState            BookAnalysisState @default(queued)
+  analysisStatus           AnalysisStatus    @default(not_started)
+  analysisError            String?
+  analysisTotalBlocks      Int               @default(0)
+  analysisCheckedBlocks    Int               @default(0)
+  analysisPromptTokens     Int               @default(0)
+  analysisCompletionTokens Int               @default(0)
+  analysisTotalTokens      Int               @default(0)
+  analysisChapterStatsJson Json              @default("[]")
+  analysisRequestedAt      DateTime?
+  analysisStartedAt        DateTime?
+  analysisFinishedAt       DateTime?
+  analysisCompletedAt      DateTime?
+  currentAnalysisRunId     String?
+  latestAnalysisRunId      String?
+  fileName                 String
+  mimeType                 String
+  sizeBytes                Int
+  storageProvider          String
+  storageKey               String
+  fileSha256               String
+  textCorpusStorageProvider String?
+  textCorpusStorageKey     String?
+  textCorpusSizeBytes      Int?
+  textCorpusSha256         String?
+  textCorpusCompression    String?
+  textCorpusSchemaVersion  String?
+  createdAt                DateTime          @default(now())
+  updatedAt                DateTime          @updatedAt
 
-  owner    User          @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
-  chapters BookChapter[]
-  likes    BookLike[]
+  owner                User                     @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  chapters             BookChapter[]
+  analyzerTasks        BookAnalyzerTask[]
+  bookCharacters       BookCharacter[]
+  bookThemes           BookTheme[]
+  bookLocations        BookLocation[]
+  bookQuotes           BookQuote[]
+  chunks               BookChunk[]
+  chatSessions         BookChatSession[]
+  literaryAnalysis     BookLiteraryAnalysis?
+  expertCore           BookExpertCore?
+  likes                BookLike[]
+  paragraphs           BookParagraph[]
+  sentences            BookSentence[]
+  scenes               BookScene[]
+  entities             BookEntity[]
+  mentions             BookMention[]
+  eventsGraph          BookEvent[]
+  eventEdges           BookEventEdge[]
+  relationEdges        BookRelationEdge[]
+  entityMemberships    BookEntityMembership[]
+  summaryArtifacts     BookSummaryArtifact[]
+  evidenceLinks        BookEvidenceLink[]
+  chatSessionStates    BookChatSessionState[]
+  contentVersionsV2    BookContentVersion[]
+  analysisRunsV2       BookAnalysisRun[]
+  stageExecutionsV2    BookStageExecution[]
+  analysisChapterMetricsV2 BookAnalysisChapterMetric[]
+  validationFailuresV2 BookValidationFailure[]
+  sourceChaptersV2     BookSourceChapter[]
+  sourceParagraphsV2   BookSourceParagraph[]
+  analysisWindowsV2    BookAnalysisWindow[]
+  observationsV2       BookObservation[]
+  canonicalEntitiesV2  BookCanonicalEntity[]
+  canonicalAliasesV2   BookCanonicalAlias[]
+  canonicalScenesV2    BookCanonicalScene[]
+  canonicalEventsV2    BookCanonicalEvent[]
+  timelineEdgesV2      BookTimelineEdge[]
+  canonicalRelationsV2 BookCanonicalRelation[]
+  canonicalQuotesV2    BookCanonicalQuote[]
+  canonicalSummariesV2 BookCanonicalSummary[]
+  entityCardsV2        BookEntityCard[]
+  sceneCardsV2         BookSceneCard[]
+  relationCardsV2      BookRelationCard[]
+  timelineSlicesV2     BookTimelineSlice[]
+  quoteSlicesV2        BookQuoteSlice[]
+  searchDocumentsV2    BookSearchDocument[]
+  evidenceHitsV2       BookEvidenceHit[]
+  presenceMapsV2       BookPresenceMap[]
+  processingReportsV2  BookProcessingReport[]
+  analysisArtifacts    BookAnalysisArtifact[]
+  analysisScenes       BookAnalysisScene[]
+  sceneEmbeddings      BookSceneEmbedding[]
+  paragraphEmbeddings  BookParagraphEmbedding[]
+  evidenceFragments    BookEvidenceFragment[]
+  evidenceFragmentEmbeddings BookEvidenceFragmentEmbedding[]
+  chatThreads          BookChatThread[]
+  chatTurnMetrics      BookChatTurnMetric[]
 
   @@index([ownerUserId, createdAt])
   @@index([isPublic, createdAt])
+  @@index([latestAnalysisRunId, createdAt])
+}
+
+model BookLiteraryAnalysis {
+  id           String   @id @default(cuid())
+  bookId       String   @unique
+  sectionsJson Json
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+}
+
+model BookExpertCore {
+  id           String    @id @default(cuid())
+  bookId       String    @unique
+  version      Int       @default(1)
+  snapshotJson Json
+  generatedAt  DateTime?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 }
 
 model BookChapter {
@@ -145,14 +386,818 @@ model BookChapter {
   bookId     String
   orderIndex Int
   title      String
-  previewText String?
+  summary    String?
+  rawText    String?  @db.Text
   createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
-  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  book                Book                     @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  paragraphs          BookParagraph[]
+  sentences           BookSentence[]
+  scenes              BookScene[]
+  analysisScenes      BookAnalysisScene[]
+  sceneEmbeddings     BookSceneEmbedding[]
+  paragraphEmbeddings BookParagraphEmbedding[]
+  evidenceFragments   BookEvidenceFragment[]
+  evidenceFragmentEmbeddings BookEvidenceFragmentEmbedding[]
+  analysisArtifacts   BookAnalysisArtifact[]
+  analysisChapterMetricsV2 BookAnalysisChapterMetric[]
+  mentions            BookMention[]
+  eventsGraph         BookEvent[]
+  summaryArtifacts    BookSummaryArtifact[]
 
   @@unique([bookId, orderIndex])
   @@index([bookId, orderIndex])
+}
+
+model BookAnalysisArtifact {
+  id                  String   @id @default(cuid())
+  runId               String?
+  bookId              String
+  chapterId           String
+  chapterOrderIndex   Int
+  chapterTitle        String
+  chunkStartParagraph Int
+  chunkEndParagraph   Int
+  attempt             Int
+  stageKey            BookEvidenceStageKey?
+  phase               String
+  status              String
+  llmModel            String
+  promptTokens        Int      @default(0)
+  completionTokens    Int      @default(0)
+  totalTokens         Int      @default(0)
+  elapsedMs           Int      @default(0)
+  promptText          String?  @db.Text
+  inputJson           Json?
+  responseText        String?  @db.Text
+  parsedJson          Json?
+  errorMessage        String?
+  storageProvider     String?
+  payloadKey          String?
+  payloadSizeBytes    Int      @default(0)
+  payloadSha256       String?
+  compression         String?
+  schemaVersion       String?
+  createdAt           DateTime @default(now())
+
+  book    Book        @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter BookChapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  run     BookAnalysisRun? @relation(fields: [runId], references: [id], onDelete: SetNull)
+
+  @@index([bookId, createdAt])
+  @@index([bookId, chapterId, createdAt])
+  @@index([bookId, chapterId, chunkStartParagraph, chunkEndParagraph, attempt])
+  @@index([runId, createdAt])
+}
+
+model BookAnalysisScene {
+  id                    String   @id @default(cuid())
+  bookId                String
+  chapterId             String
+  sceneIndex            Int
+  paragraphStart        Int
+  paragraphEnd          Int
+  locationLabel         String?
+  timeLabel             String?
+  participantsJson      Json     @default("[]")
+  sceneSummary          String
+  sceneCard             String
+  mentionedEntitiesJson Json     @default("[]")
+  locationHintsJson     Json     @default("[]")
+  timeHintsJson         Json     @default("[]")
+  eventLabelsJson       Json     @default("[]")
+  unresolvedFormsJson   Json     @default("[]")
+  factsJson             Json     @default("[]")
+  evidenceSpansJson     Json     @default("[]")
+  changeSignal          String
+  excerptText           String   @db.Text
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+
+  book      Book                @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter   BookChapter         @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  embedding BookSceneEmbedding?
+  evidenceFragments BookEvidenceFragment[]
+
+  @@unique([bookId, chapterId, sceneIndex])
+  @@index([bookId, chapterId])
+  @@index([bookId, sceneIndex])
+}
+
+model BookSceneEmbedding {
+  id               String                      @id @default(cuid())
+  sceneId          String                      @unique
+  bookId           String
+  chapterId        String
+  sceneIndex       Int
+  embeddingModel   String
+  embeddingVersion Int                         @default(1)
+  taskType         String
+  dimensions       Int
+  sourceText       String                      @db.Text
+  sourceTextHash   String
+  vector           Unsupported("vector(768)")?
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+
+  book    Book              @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter BookChapter       @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  scene   BookAnalysisScene @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+
+  @@index([bookId, chapterId, sceneIndex])
+  @@index([bookId, embeddingVersion])
+  @@index([embeddingModel])
+}
+
+model BookParagraphEmbedding {
+  id               String                      @id @default(cuid())
+  bookId           String
+  chapterId        String
+  paragraphId      String?
+  paragraphIndex   Int
+  embeddingModel   String
+  embeddingVersion Int                         @default(1)
+  taskType         String
+  dimensions       Int
+  sourceText       String                      @db.Text
+  sourceTextHash   String
+  vector           Unsupported("vector(768)")?
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+
+  book    Book        @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter BookChapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  paragraph BookParagraph? @relation(fields: [paragraphId], references: [id], onDelete: Cascade)
+
+  @@unique([bookId, chapterId, paragraphIndex, embeddingVersion])
+  @@index([bookId, chapterId, paragraphIndex])
+  @@index([paragraphId])
+  @@index([bookId, embeddingVersion])
+  @@index([embeddingModel])
+}
+
+model BookParagraph {
+  id             String   @id @default(cuid())
+  bookId         String
+  chapterId      String
+  chapterOrderIndex Int   @default(0)
+  paragraphIndex Int      @default(0)
+  sceneId        String?
+  orderIndex     Int
+  orderInChapter Int
+  startChar      Int
+  endChar        Int
+  text           String   @db.Text
+  textHash       String   @default("")
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  book      Book           @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter   BookChapter    @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  scene     BookScene?     @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  sentences BookSentence[]
+  mentions  BookMention[]
+  embeddings BookParagraphEmbedding[]
+
+  @@unique([bookId, orderIndex])
+  @@unique([bookId, chapterId, paragraphIndex])
+  @@index([chapterId, orderInChapter])
+  @@index([chapterId, paragraphIndex])
+  @@index([sceneId, orderIndex])
+}
+
+model BookEvidenceFragment {
+  id               String   @id @default(cuid())
+  bookId           String
+  chapterId        String
+  primarySceneId   String?
+  sceneIdsJson     Json     @default("[]")
+  fragmentType     String
+  paragraphStart   Int
+  paragraphEnd     Int
+  orderIndex       Int
+  text             String   @db.Text
+  textHash         String
+  embeddingVersion Int      @default(1)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  book         Book                @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter      BookChapter         @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  primaryScene BookAnalysisScene?  @relation(fields: [primarySceneId], references: [id], onDelete: SetNull)
+  embedding    BookEvidenceFragmentEmbedding?
+
+  @@unique([bookId, chapterId, fragmentType, paragraphStart, paragraphEnd, embeddingVersion])
+  @@index([bookId])
+  @@index([bookId, chapterId])
+  @@index([bookId, fragmentType])
+  @@index([primarySceneId])
+}
+
+model BookEvidenceFragmentEmbedding {
+  id               String                      @id @default(cuid())
+  fragmentId       String                      @unique
+  bookId           String
+  chapterId        String
+  fragmentType     String
+  embeddingModel   String
+  embeddingVersion Int                         @default(1)
+  taskType         String
+  dimensions       Int
+  sourceText       String                      @db.Text
+  sourceTextHash   String
+  vector           Unsupported("vector(768)")?
+  createdAt        DateTime                    @default(now())
+  updatedAt        DateTime                    @updatedAt
+
+  book     Book                 @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter  BookChapter          @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  fragment BookEvidenceFragment @relation(fields: [fragmentId], references: [id], onDelete: Cascade)
+
+  @@index([bookId, chapterId])
+  @@index([bookId, fragmentType])
+  @@index([bookId, embeddingVersion])
+  @@index([embeddingModel])
+}
+
+model BookSentence {
+  id             String   @id @default(cuid())
+  bookId         String
+  chapterId      String
+  paragraphId    String
+  sceneId        String?
+  orderIndex     Int
+  orderInChapter Int
+  orderInScene   Int
+  startChar      Int
+  endChar        Int
+  text           String   @db.Text
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  book      Book          @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter   BookChapter   @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  paragraph BookParagraph @relation(fields: [paragraphId], references: [id], onDelete: Cascade)
+  scene     BookScene?    @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  mentions  BookMention[]
+
+  @@unique([bookId, orderIndex])
+  @@index([paragraphId, orderIndex])
+  @@index([sceneId, orderIndex])
+}
+
+model BookScene {
+  id                  String                      @id @default(cuid())
+  bookId              String
+  chapterId           String
+  orderIndex          Int
+  title               String?
+  summary             String?                     @db.Text
+  startParagraphOrder Int
+  endParagraphOrder   Int
+  startChar           Int
+  endChar             Int
+  text                String                      @db.Text
+  embedding           Unsupported("vector(768)")?
+  embeddingModel      String?
+  metadataJson        Json?
+  createdAt           DateTime                    @default(now())
+  updatedAt           DateTime                    @updatedAt
+
+  book               Book                   @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter            BookChapter            @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  paragraphs         BookParagraph[]
+  sentences          BookSentence[]
+  mentions           BookMention[]
+  eventsGraph        BookEvent[]
+  relationEdges      BookRelationEdge[]
+  entityMemberships  BookEntityMembership[]
+  summaryArtifacts   BookSummaryArtifact[]
+  firstSceneEntities BookEntity[]           @relation("BookEntityFirstScene")
+  lastSceneEntities  BookEntity[]           @relation("BookEntityLastScene")
+
+  @@unique([bookId, orderIndex])
+  @@index([chapterId, orderIndex])
+}
+
+model BookEntity {
+  id             String              @id
+  bookId         String
+  type           BookGraphEntityType
+  canonicalName  String
+  normalizedName String
+  summary        String              @default("") @db.Text
+  metadataJson   Json?
+  mentionCount   Int                 @default(0)
+  firstSceneId   String?
+  lastSceneId    String?
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+
+  book                 Book                   @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  firstScene           BookScene?             @relation("BookEntityFirstScene", fields: [firstSceneId], references: [id], onDelete: SetNull)
+  lastScene            BookScene?             @relation("BookEntityLastScene", fields: [lastSceneId], references: [id], onDelete: SetNull)
+  aliases              BookEntityAlias[]
+  mentions             BookMention[]
+  eventParticipants    BookEventParticipant[]
+  summaryArtifacts     BookSummaryArtifact[]
+  outgoingRelations    BookRelationEdge[]     @relation("BookRelationFromEntity")
+  incomingRelations    BookRelationEdge[]     @relation("BookRelationToEntity")
+  collectedMemberships BookEntityMembership[] @relation("BookEntityMembershipCollection")
+  memberMemberships    BookEntityMembership[] @relation("BookEntityMembershipMember")
+  quoteMentions        BookQuoteMention[]
+
+  @@unique([bookId, type, normalizedName])
+  @@index([bookId, type, mentionCount])
+  @@index([firstSceneId])
+  @@index([lastSceneId])
+}
+
+model BookEntityAlias {
+  id              String    @id @default(cuid())
+  entityId        String
+  alias           String
+  normalizedAlias String
+  aliasType       AliasType @default(name)
+  confidence      Float     @default(1)
+  createdAt       DateTime  @default(now())
+
+  entity BookEntity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+
+  @@unique([entityId, normalizedAlias])
+  @@index([normalizedAlias])
+}
+
+model BookMention {
+  id          String      @id @default(cuid())
+  bookId      String
+  entityId    String
+  chapterId   String
+  sceneId     String
+  paragraphId String?
+  sentenceId  String?
+  mentionType MentionType @default(alias)
+  startChar   Int
+  endChar     Int
+  sourceText  String
+  confidence  Float       @default(1)
+  createdAt   DateTime    @default(now())
+
+  book      Book           @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  entity    BookEntity     @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  chapter   BookChapter    @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  scene     BookScene      @relation(fields: [sceneId], references: [id], onDelete: Cascade)
+  paragraph BookParagraph? @relation(fields: [paragraphId], references: [id], onDelete: SetNull)
+  sentence  BookSentence?  @relation(fields: [sentenceId], references: [id], onDelete: SetNull)
+
+  @@index([bookId, entityId])
+  @@index([sceneId, entityId])
+  @@index([paragraphId])
+  @@index([sentenceId])
+}
+
+model BookEvent {
+  id           String   @id
+  bookId       String
+  chapterId    String
+  sceneId      String?
+  orderIndex   Int
+  title        String
+  summary      String   @db.Text
+  metadataJson Json?
+  importance   Float    @default(0.5)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  book              Book                   @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter           BookChapter            @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  scene             BookScene?             @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  participants      BookEventParticipant[]
+  entityMemberships BookEntityMembership[]
+  outgoingEdges     BookEventEdge[]        @relation("BookEventEdgeFrom")
+  incomingEdges     BookEventEdge[]        @relation("BookEventEdgeTo")
+
+  @@unique([bookId, orderIndex])
+  @@index([chapterId, orderIndex])
+  @@index([sceneId])
+}
+
+model BookEventParticipant {
+  id             String   @id @default(cuid())
+  eventId        String
+  entityId       String?
+  role           String
+  displayName    String
+  normalizedName String
+  createdAt      DateTime @default(now())
+
+  event  BookEvent   @relation(fields: [eventId], references: [id], onDelete: Cascade)
+  entity BookEntity? @relation(fields: [entityId], references: [id], onDelete: SetNull)
+
+  @@index([eventId])
+  @@index([entityId])
+}
+
+model BookEventEdge {
+  id          String            @id @default(cuid())
+  bookId      String
+  fromEventId String
+  toEventId   String
+  type        BookEventEdgeType
+  confidence  Float             @default(0.7)
+  createdAt   DateTime          @default(now())
+
+  book      Book      @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  fromEvent BookEvent @relation("BookEventEdgeFrom", fields: [fromEventId], references: [id], onDelete: Cascade)
+  toEvent   BookEvent @relation("BookEventEdgeTo", fields: [toEventId], references: [id], onDelete: Cascade)
+
+  @@unique([fromEventId, toEventId, type])
+  @@index([bookId, type])
+}
+
+model BookRelationEdge {
+  id           String               @id
+  bookId       String
+  fromEntityId String
+  toEntityId   String
+  type         BookRelationEdgeType
+  summary      String               @db.Text
+  metadataJson Json?
+  confidence   Float                @default(0.7)
+  sceneId      String?
+  createdAt    DateTime             @default(now())
+  updatedAt    DateTime             @updatedAt
+
+  book       Book       @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  fromEntity BookEntity @relation("BookRelationFromEntity", fields: [fromEntityId], references: [id], onDelete: Cascade)
+  toEntity   BookEntity @relation("BookRelationToEntity", fields: [toEntityId], references: [id], onDelete: Cascade)
+  scene      BookScene? @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+
+  @@unique([bookId, fromEntityId, toEntityId, type])
+  @@index([sceneId])
+  @@index([bookId, type])
+}
+
+model BookEntityMembership {
+  id                    String                  @id @default(cuid())
+  bookId                String
+  collectionEntityId    String
+  memberEntityId        String?
+  memberValue           String
+  memberNormalizedValue String
+  resolutionStatus      BookRefResolutionStatus @default(unresolved)
+  role                  String
+  summary               String                  @db.Text
+  confidence            Float                   @default(0.7)
+  sceneId               String?
+  eventId               String?
+  createdAt             DateTime                @default(now())
+  updatedAt             DateTime                @updatedAt
+
+  book             Book        @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  collectionEntity BookEntity  @relation("BookEntityMembershipCollection", fields: [collectionEntityId], references: [id], onDelete: Cascade)
+  memberEntity     BookEntity? @relation("BookEntityMembershipMember", fields: [memberEntityId], references: [id], onDelete: SetNull)
+  scene            BookScene?  @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  event            BookEvent?  @relation(fields: [eventId], references: [id], onDelete: SetNull)
+
+  @@unique([bookId, collectionEntityId, memberNormalizedValue, role])
+  @@index([bookId, collectionEntityId])
+  @@index([bookId, memberEntityId])
+  @@index([bookId, memberNormalizedValue])
+  @@index([sceneId])
+  @@index([eventId])
+}
+
+model BookSummaryArtifact {
+  id           String                  @id
+  bookId       String
+  kind         BookSummaryArtifactKind
+  key          String?
+  title        String
+  summary      String                  @db.Text
+  bodyMarkdown String?                 @db.Text
+  chapterId    String?
+  sceneId      String?
+  entityId     String?
+  metadataJson Json?
+  confidence   Float                   @default(0.7)
+  createdAt    DateTime                @default(now())
+  updatedAt    DateTime                @updatedAt
+
+  book    Book         @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  chapter BookChapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
+  scene   BookScene?   @relation(fields: [sceneId], references: [id], onDelete: SetNull)
+  entity  BookEntity?  @relation(fields: [entityId], references: [id], onDelete: SetNull)
+
+  @@unique([bookId, kind, key])
+  @@index([chapterId])
+  @@index([sceneId])
+  @@index([entityId])
+}
+
+model BookEvidenceLink {
+  id                String                  @id @default(cuid())
+  bookId            String
+  subjectType       BookEvidenceSubjectType
+  subjectId         String
+  evidenceType      BookEvidenceRefType
+  evidenceId        String
+  chapterOrderIndex Int?
+  snippet           String?                 @db.Text
+  confidence        Float                   @default(0.7)
+  createdAt         DateTime                @default(now())
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId, subjectType, subjectId])
+  @@index([bookId, evidenceType, evidenceId])
+}
+
+model BookAnalyzerTask {
+  id           String            @id @default(cuid())
+  bookId       String
+  analyzerType BookAnalyzerType
+  state        BookAnalysisState @default(queued)
+  error        String?
+  metadataJson Json?
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([bookId, analyzerType])
+  @@index([bookId, state, analyzerType])
+  @@index([state, updatedAt], map: "BookAnalyzerTask_state_updatedAt_idx")
+}
+
+model BookChunk {
+  id                String                     @id @default(cuid())
+  bookId            String
+  chapterOrderIndex Int
+  chunkIndex        Int
+  startChar         Int
+  endChar           Int
+  text              String                     @db.Text
+  embedding         Unsupported("vector(768)")
+  embeddingModel    String
+  metadataJson      Json?
+  createdAt         DateTime                   @default(now())
+  updatedAt         DateTime                   @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([bookId, chapterOrderIndex, chunkIndex])
+  @@index([bookId, chapterOrderIndex, chunkIndex], map: "BookChunk_bookId_chapter_chunk_idx")
+}
+
+model BookChatSession {
+  id            String    @id @default(cuid())
+  bookId        String
+  userId        String
+  title         String
+  lastMessageAt DateTime?
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  book     Book                  @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  user     User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages BookChatMessage[]
+  state    BookChatSessionState?
+
+  @@index([bookId, userId, lastMessageAt], map: "BookChatSession_book_user_lastMessage_idx")
+  @@index([userId, createdAt], map: "BookChatSession_user_createdAt_idx")
+}
+
+model BookChatSessionState {
+  id        String   @id @default(cuid())
+  sessionId String   @unique
+  bookId    String
+  stateJson Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  session BookChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  book    Book            @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId, updatedAt])
+}
+
+model BookChatMessage {
+  id               String   @id @default(cuid())
+  sessionId        String
+  role             String
+  content          String   @db.Text
+  citationsJson    Json?
+  promptTokens     Int?
+  completionTokens Int?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  session BookChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  @@index([sessionId, createdAt], map: "BookChatMessage_session_createdAt_idx")
+}
+
+model BookChatThread {
+  id        String   @id @default(cuid())
+  bookId    String
+  ownerUserId String
+  title     String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // History compaction: when a thread grows past N pairs we compress the older
+  // turns into a single summary string via a cheap lite-model call. The summary
+  // is reused across subsequent turns until new compactable history accumulates.
+  compactedHistory                 String?
+  compactedHistoryThroughMessageId String?
+  compactedHistoryUpdatedAt        DateTime?
+
+  book     Book                    @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  owner    User                    @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
+  messages BookChatThreadMessage[]
+  turnMetrics BookChatTurnMetric[]
+
+  @@index([bookId, updatedAt])
+  @@index([ownerUserId, updatedAt])
+  @@index([createdAt])
+}
+
+enum BookChatThreadMessageRole {
+  user
+  assistant
+}
+
+model BookChatThreadMessage {
+  id            String                    @id @default(cuid())
+  threadId      String
+  role          BookChatThreadMessageRole
+  content       String                    @db.Text
+  citationsJson Json                      @default("[]")
+  toolRunsJson  Json                      @default("[]")
+  metricsJson   Json                      @default("{}")
+  createdAt     DateTime                  @default(now())
+  updatedAt     DateTime                  @updatedAt
+
+  thread BookChatThread @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  turnMetric BookChatTurnMetric?
+
+  @@index([threadId, createdAt])
+  @@index([role, createdAt])
+}
+
+model BookCharacter {
+  id                          String   @id @default(cuid())
+  bookId                      String
+  name                        String
+  normalizedName              String
+  role                        String
+  description                 String
+  arc                         String
+  mentionCount                Int      @default(0)
+  firstAppearanceChapterOrder Int?
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  book   Book                 @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  quotes BookCharacterQuote[]
+
+  @@unique([bookId, normalizedName])
+  @@index([bookId, mentionCount(sort: Desc), firstAppearanceChapterOrder, name], map: "BookCharacter_bookId_mentionCount_desc_firstAppearance_idx")
+}
+
+model BookCharacterQuote {
+  id                String   @id @default(cuid())
+  bookCharacterId   String
+  chapterOrderIndex Int
+  text              String   @db.Text
+  context           String   @db.Text
+  createdAt         DateTime @default(now())
+
+  character BookCharacter @relation(fields: [bookCharacterId], references: [id], onDelete: Cascade)
+
+  @@index([bookCharacterId, chapterOrderIndex])
+}
+
+model BookTheme {
+  id                          String   @id @default(cuid())
+  bookId                      String
+  name                        String
+  normalizedName              String
+  description                 String
+  development                 String
+  mentionCount                Int      @default(0)
+  firstAppearanceChapterOrder Int?
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  book   Book             @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  quotes BookThemeQuote[]
+
+  @@unique([bookId, normalizedName])
+  @@index([bookId, mentionCount(sort: Desc), firstAppearanceChapterOrder, name], map: "BookTheme_bookId_mentionCount_desc_firstAppearance_idx")
+}
+
+model BookThemeQuote {
+  id                String   @id @default(cuid())
+  bookThemeId       String
+  chapterOrderIndex Int
+  text              String   @db.Text
+  context           String   @db.Text
+  createdAt         DateTime @default(now())
+
+  theme BookTheme @relation(fields: [bookThemeId], references: [id], onDelete: Cascade)
+
+  @@index([bookThemeId, chapterOrderIndex])
+}
+
+model BookLocation {
+  id                          String   @id @default(cuid())
+  bookId                      String
+  name                        String
+  normalizedName              String
+  description                 String
+  significance                String
+  mentionCount                Int      @default(0)
+  firstAppearanceChapterOrder Int?
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  book   Book                @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  quotes BookLocationQuote[]
+
+  @@unique([bookId, normalizedName])
+  @@index([bookId, mentionCount(sort: Desc), firstAppearanceChapterOrder, name], map: "BookLocation_bookId_mentionCount_desc_firstAppearance_idx")
+}
+
+model BookLocationQuote {
+  id                String   @id @default(cuid())
+  bookLocationId    String
+  chapterOrderIndex Int
+  text              String   @db.Text
+  context           String   @db.Text
+  createdAt         DateTime @default(now())
+
+  location BookLocation @relation(fields: [bookLocationId], references: [id], onDelete: Cascade)
+
+  @@index([bookLocationId, chapterOrderIndex])
+}
+
+model BookQuote {
+  id                String        @id @default(cuid())
+  bookId            String
+  chapterOrderIndex Int
+  startChar         Int
+  endChar           Int
+  text              String        @db.Text
+  type              BookQuoteType
+  confidence        Float
+  commentary        String?       @db.Text
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+
+  book     Book               @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  tags     BookQuoteTagLink[]
+  mentions BookQuoteMention[]
+
+  @@index([bookId, chapterOrderIndex, startChar], map: "BookQuote_bookId_chapter_start_idx")
+  @@index([bookId, type], map: "BookQuote_bookId_type_idx")
+  @@index([bookId, confidence], map: "BookQuote_bookId_confidence_idx")
+}
+
+model BookQuoteTagLink {
+  quoteId   String
+  tag       BookQuoteTag
+  createdAt DateTime     @default(now())
+
+  quote BookQuote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+
+  @@id([quoteId, tag])
+  @@index([tag], map: "BookQuoteTagLink_tag_idx")
+}
+
+model BookQuoteMention {
+  id               String                  @id @default(cuid())
+  quoteId          String
+  entityId         String?
+  kind             BookQuoteMentionKind
+  value            String
+  normalizedValue  String
+  resolutionStatus BookRefResolutionStatus @default(unresolved)
+  startChar        Int
+  endChar          Int
+  confidence       Float
+  createdAt        DateTime                @default(now())
+
+  quote  BookQuote   @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  entity BookEntity? @relation(fields: [entityId], references: [id], onDelete: SetNull)
+
+  @@index([quoteId], map: "BookQuoteMention_quoteId_idx")
+  @@index([entityId], map: "BookQuoteMention_entityId_idx")
+  @@index([kind, normalizedValue, confidence], map: "BookQuoteMention_kind_normalized_confidence_idx")
 }
 
 model BookLike {
@@ -168,386 +1213,646 @@ model BookLike {
   @@index([bookId, createdAt])
 }
 
-model SourceAsset {
-  id         String   @id @default(cuid())
-  provider   String
-  storageKey String
-  fileName   String
-  mimeType   String
-  sizeBytes  Int
-  sha256     String
-  createdAt  DateTime @default(now())
+model BookContentVersion {
+  id                   String     @id @default(cuid())
+  bookId               String
+  version              Int
+  sourceFormat         BookFormat
+  normalizationVersion Int        @default(1)
+  fileSha256           String
+  metadataJson         Json?
+  createdAt            DateTime   @default(now())
+  updatedAt            DateTime   @updatedAt
 
-  projectImports ProjectImport[]
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
-  @@index([provider, storageKey])
+  @@unique([bookId, version])
+  @@index([bookId, createdAt])
 }
 
-model ProjectImport {
-  id            String             @id @default(cuid())
-  projectId     String
-  sourceAssetId String
-  format        BookFormat
-  state         ProjectImportState @default(queued)
-  stage         ProjectImportStage @default(queued)
-  error         String?
-  chapterCount  Int?
-  metadataJson  Json?
-  startedAt     DateTime?
-  completedAt   DateTime?
-  createdAt     DateTime           @default(now())
-  updatedAt     DateTime           @updatedAt
+model BookAnalysisRun {
+  id               String                @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  attempt          Int                   @default(1)
+  state            BookAnalysisRunState  @default(queued)
+  currentStageKey  BookEvidenceStageKey?
+  error            String?
+  configVersion    String?
+  configHash       String?
+  extractModel     String?
+  chatModel        String?
+  embeddingModel   String?
+  pricingVersion   String?
+  llmPromptTokens  Int                   @default(0)
+  llmCompletionTokens Int                @default(0)
+  llmTotalTokens   Int                   @default(0)
+  embeddingInputTokens Int               @default(0)
+  embeddingTotalTokens Int               @default(0)
+  llmCostUsd       Float                 @default(0)
+  embeddingCostUsd Float                 @default(0)
+  totalCostUsd     Float                 @default(0)
+  totalElapsedMs   Int                   @default(0)
+  llmLatencyMs     Int                   @default(0)
+  embeddingLatencyMs Int                 @default(0)
+  chunkCount       Int                   @default(0)
+  chunkFailedCount Int                   @default(0)
+  llmCalls         Int                   @default(0)
+  llmRetries       Int                   @default(0)
+  embeddingCalls   Int                   @default(0)
+  paragraphEmbeddingCount Int            @default(0)
+  sceneCount       Int                   @default(0)
+  artifactCount    Int                   @default(0)
+  storageBytesJson Json?
+  qualityFlagsJson Json?
+  metricsJson      Json?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime              @default(now())
+  updatedAt        DateTime              @updatedAt
 
-  project     Project     @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  sourceAsset SourceAsset @relation(fields: [sourceAssetId], references: [id], onDelete: Restrict)
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  stageExecutions BookStageExecution[]
+  chapterMetrics  BookAnalysisChapterMetric[]
+  artifacts       BookAnalysisArtifact[]
 
-  @@index([projectId, createdAt])
-  @@index([state, createdAt])
+  @@index([bookId, state, createdAt])
+  @@index([bookId, contentVersionId])
+  @@index([bookId, attempt, createdAt])
 }
 
-model Chapter {
-  id         String   @id @default(cuid())
-  projectId  String
-  title      String
-  orderIndex Int      @default(0)
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
+model BookStageExecution {
+  id               String               @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  runId            String
+  stageKey         BookEvidenceStageKey
+  state            BookAnalysisState    @default(queued)
+  error            String?
+  promptTokens     Int                  @default(0)
+  completionTokens Int                  @default(0)
+  totalTokens      Int                  @default(0)
+  embeddingInputTokens Int              @default(0)
+  embeddingTotalTokens Int              @default(0)
+  llmCostUsd       Float                @default(0)
+  embeddingCostUsd Float                @default(0)
+  totalCostUsd     Float                @default(0)
+  elapsedMs        Int                  @default(0)
+  retryCount       Int                  @default(0)
+  llmCalls         Int                  @default(0)
+  embeddingCalls   Int                  @default(0)
+  chunkCount       Int                  @default(0)
+  chunkFailedCount Int                  @default(0)
+  outputRowCount   Int                  @default(0)
+  storageBytesJson Json?
+  metadataJson     Json?
+  startedAt        DateTime?
+  completedAt      DateTime?
+  createdAt        DateTime             @default(now())
+  updatedAt        DateTime             @updatedAt
 
-  project                 Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  document                Document?
-  acts                    Act[]
-  analysisRuns            AnalysisRun[]
-  firstAppearanceEntities Entity[]               @relation("EntityFirstAppearanceChapter")
-  lastAppearanceEntities  Entity[]               @relation("EntityLastAppearanceChapter")
-  characterStats          CharacterChapterStat[]
-  appearanceObservations  CharacterAppearanceObservation[]
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  run  BookAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
 
-  @@index([projectId, orderIndex])
+  @@unique([runId, stageKey])
+  @@index([bookId, contentVersionId, stageKey])
+  @@index([state, updatedAt])
 }
 
-model Document {
-  id             String   @id @default(cuid())
-  projectId      String
-  chapterId      String   @unique
-  content        String   @db.Text
-  richContent    Json
-  contentVersion Int      @default(0)
-  currentRunId   String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+model BookAnalysisChapterMetric {
+  id                  String               @id @default(cuid())
+  bookId              String
+  contentVersionId    String
+  runId               String
+  chapterId           String
+  chapterOrderIndex   Int
+  chapterTitle        String
+  stageKey            BookEvidenceStageKey
+  state               BookAnalysisState    @default(queued)
+  error               String?
+  promptTokens        Int                  @default(0)
+  completionTokens    Int                  @default(0)
+  totalTokens         Int                  @default(0)
+  embeddingInputTokens Int                 @default(0)
+  embeddingTotalTokens Int                 @default(0)
+  elapsedMs           Int                  @default(0)
+  retryCount          Int                  @default(0)
+  llmCalls            Int                  @default(0)
+  embeddingCalls      Int                  @default(0)
+  chunkCount          Int                  @default(0)
+  chunkFailedCount    Int                  @default(0)
+  outputRowCount      Int                  @default(0)
+  storageBytesJson    Json?
+  metadataJson        Json?
+  startedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime             @default(now())
+  updatedAt           DateTime             @updatedAt
 
-  project           Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  chapter           Chapter            @relation(fields: [chapterId], references: [id], onDelete: Cascade)
-  currentRun        AnalysisRun?       @relation("DocumentCurrentRun", fields: [currentRunId], references: [id], onDelete: SetNull)
-  analysisRuns      AnalysisRun[]
-  acts              Act[]
-  mentions          Mention[]
-  appearanceObservations CharacterAppearanceObservation[]
-  mentionCandidates MentionCandidate[]
+  book    Book            @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  run     BookAnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  chapter BookChapter     @relation(fields: [chapterId], references: [id], onDelete: Cascade)
 
-  @@index([projectId])
-  @@index([chapterId])
-  @@index([currentRunId])
+  @@unique([runId, chapterId, stageKey])
+  @@index([bookId, contentVersionId, chapterOrderIndex, stageKey])
+  @@index([runId, stageKey, chapterOrderIndex])
 }
 
-model AnalysisRun {
-  id                      String           @id @default(cuid())
-  projectId               String
-  documentId              String
-  chapterId               String
-  contentVersion          Int
-  idempotencyKey          String?
-  state                   AnalysisRunState @default(queued)
-  phase                   AnalysisRunPhase @default(queued)
-  error                   String?
-  patchBudgetReached      Boolean          @default(false)
-  uncertainCountRemaining Int              @default(0)
-  eligibleTotal           Int              @default(0)
-  eligibleResolved        Int              @default(0)
-  routingPolicyVersion    String?
-  qualityFlags            Json?
-  quickSnapshot           Json?
-  finalSnapshot           Json?
-  supersededByRunId       String?
-  startedAt               DateTime?
-  completedAt             DateTime?
-  createdAt               DateTime         @default(now())
-  updatedAt               DateTime         @updatedAt
+model BookValidationFailure {
+  id               String               @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  runId            String
+  stageKey         BookEvidenceStageKey
+  observationId    String?
+  code             String
+  message          String
+  sourceSpanJson   Json?
+  createdAt        DateTime             @default(now())
 
-  project            Project            @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  document           Document           @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  chapter            Chapter            @relation(fields: [chapterId], references: [id], onDelete: Cascade)
-  supersededByRun    AnalysisRun?       @relation("RunSupersede", fields: [supersededByRunId], references: [id], onDelete: SetNull)
-  supersededRuns     AnalysisRun[]      @relation("RunSupersede")
-  currentForDocument Document[]         @relation("DocumentCurrentRun")
-  createdEntities    Entity[]           @relation("CreatedEntities")
-  createdActs        Act[]              @relation("CreatedActs")
-  createdAppearanceObservations CharacterAppearanceObservation[] @relation("CreatedCharacterAppearanceObservations")
-  mentionCandidates  MentionCandidate[]
-  mentions           Mention[]
-  patchDecisions     PatchDecision[]
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
-  @@unique([documentId, idempotencyKey])
-  @@index([projectId, state])
-  @@index([documentId, contentVersion])
-  @@index([chapterId, createdAt])
+  @@index([bookId, contentVersionId, stageKey])
+  @@index([runId, stageKey])
+  @@index([observationId])
 }
 
-model Entity {
-  id                       String     @id @default(cuid())
-  projectId                String
-  type                     EntityType
+model BookSourceChapter {
+  id               String   @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  bookChapterId    String?
+  orderIndex       Int
+  title            String
+  paragraphStart   Int
+  paragraphEnd     Int
+  charLength       Int
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([contentVersionId, orderIndex])
+  @@index([bookId, contentVersionId, orderIndex])
+}
+
+model BookSourceParagraph {
+  id                  String   @id @default(cuid())
+  bookId              String
+  contentVersionId    String
+  sourceChapterId     String
+  orderIndexInBook    Int
+  orderIndexInChapter Int
+  startChar           Int
+  endChar             Int
+  text                String   @db.Text
+  charLength          Int
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([contentVersionId, orderIndexInBook])
+  @@index([bookId, contentVersionId, sourceChapterId])
+  @@index([sourceChapterId, orderIndexInChapter])
+}
+
+model BookAnalysisWindow {
+  id               String   @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  sourceChapterId  String
+  windowIndex      Int
+  paragraphStart   Int
+  paragraphEnd     Int
+  stride           Int
+  windowSize       Int
+  textPreview      String?  @db.Text
+  metadataJson     Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([contentVersionId, windowIndex])
+  @@index([bookId, contentVersionId, sourceChapterId])
+}
+
+model BookObservation {
+  id               String                          @id
+  bookId           String
+  contentVersionId String
+  runId            String
+  windowId         String?
+  observationType  BookObservationType
+  sourceSpansJson  Json
+  evidenceQuote    String?                         @db.Text
+  certainty        BookObservationCertainty
+  confidence       Float
+  validationStatus BookObservationValidationStatus @default(pending)
+  payloadJson      Json
+  createdAt        DateTime                        @default(now())
+  updatedAt        DateTime                        @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId, contentVersionId, observationType])
+  @@index([runId, observationType])
+  @@index([runId, validationStatus])
+  @@index([windowId])
+}
+
+model BookCanonicalEntity {
+  id                       String                    @id
+  bookId                   String
+  contentVersionId         String
+  runId                    String
+  type                     BookGraphEntityType
+  subtype                  String?
   canonicalName            String
   normalizedName           String
-  summary                  String     @default("")
-  mentionCount             Int        @default(0)
-  firstAppearanceChapterId String?
-  firstAppearanceOffset    Int?
-  lastAppearanceChapterId  String?
-  lastAppearanceOffset     Int?
-  status                   String     @default("active")
-  createdByRunId           String?
-  mergedIntoEntityId       String?
-  lastSeenAt               DateTime?
-  createdAt                DateTime   @default(now())
-  updatedAt                DateTime   @updatedAt
+  aliasesJson              Json?
+  summaryShort             String?                   @db.Text
+  summaryFull              String?                   @db.Text
+  stableFactsJson          Json?
+  firstSceneId             String?
+  lastSceneId              String?
+  status                   BookCanonicalEntityStatus @default(active)
+  supportingObservationIds String[]                  @default([])
+  sourceSpansJson          Json
+  metadataJson             Json?
+  createdAt                DateTime                  @default(now())
+  updatedAt                DateTime                  @updatedAt
 
-  project                Project                @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  createdByRun           AnalysisRun?           @relation("CreatedEntities", fields: [createdByRunId], references: [id], onDelete: SetNull)
-  firstAppearanceChapter Chapter?               @relation("EntityFirstAppearanceChapter", fields: [firstAppearanceChapterId], references: [id], onDelete: SetNull)
-  lastAppearanceChapter  Chapter?               @relation("EntityLastAppearanceChapter", fields: [lastAppearanceChapterId], references: [id], onDelete: SetNull)
-  mergedIntoEntity       Entity?                @relation("EntityMerge", fields: [mergedIntoEntityId], references: [id], onDelete: SetNull)
-  mergedFromEntities     Entity[]               @relation("EntityMerge")
-  aliases                EntityAlias[]
-  mentions               Mention[]
-  chapterStats           CharacterChapterStat[]
-  actStats               CharacterActStat[]
-  appearanceObservations CharacterAppearanceObservation[]
-  hintedCandidates       MentionCandidate[]
-  containerLinks         LocationContainment[]  @relation("LocationContainmentChild")
-  containedByLinks       LocationContainment[]  @relation("LocationContainmentParent")
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
-  @@unique([projectId, type, normalizedName])
-  @@index([projectId, type, canonicalName])
-  @@index([projectId, type, normalizedName])
-  @@index([projectId, type, mentionCount])
-  @@index([firstAppearanceChapterId])
-  @@index([lastAppearanceChapterId])
+  @@unique([contentVersionId, type, normalizedName])
+  @@index([bookId, contentVersionId, type])
+  @@index([bookId, contentVersionId, firstSceneId])
+  @@index([bookId, contentVersionId, lastSceneId])
 }
 
-model Act {
-  id             String   @id @default(cuid())
-  projectId      String
-  chapterId      String
-  documentId     String
-  contentVersion Int
-  orderIndex     Int
-  title          String
-  summary        String   @default("")
-  paragraphStart Int
-  paragraphEnd   Int
-  createdByRunId String?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
+model BookCanonicalAlias {
+  id               String   @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  entityId         String
+  value            String
+  normalizedValue  String
+  kind             String
+  confidence       Float    @default(1)
+  createdAt        DateTime @default(now())
 
-  project      Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  chapter      Chapter      @relation(fields: [chapterId], references: [id], onDelete: Cascade)
-  document     Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  createdByRun AnalysisRun? @relation("CreatedActs", fields: [createdByRunId], references: [id], onDelete: SetNull)
-  mentions     Mention[]
-  characterStats CharacterActStat[]
-  appearanceObservations CharacterAppearanceObservation[]
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
-  @@unique([documentId, contentVersion, orderIndex])
-  @@index([projectId, chapterId, orderIndex])
-  @@index([documentId, contentVersion, orderIndex])
-  @@index([chapterId, contentVersion, orderIndex])
-  @@index([createdByRunId])
+  @@unique([entityId, normalizedValue])
+  @@index([bookId, contentVersionId, normalizedValue])
 }
 
-model EntityAlias {
-  id              String    @id @default(cuid())
-  entityId        String
-  alias           String
-  normalizedAlias String
-  aliasType       AliasType @default(name)
-  source          String
-  confidence      Float
-  observed        Boolean   @default(true)
-  confirmedAt     DateTime?
-  createdAt       DateTime  @default(now())
+model BookCanonicalScene {
+  id                       String   @id
+  bookId                   String
+  contentVersionId         String
+  runId                    String
+  sourceChapterId          String
+  chapterOrderIndex        Int
+  indexInBook              Int
+  paragraphStart           Int
+  paragraphEnd             Int
+  participantEntityIds     String[] @default([])
+  locationEntityIds        String[] @default([])
+  timeMarkerValuesJson     Json?
+  summaryShort             String?  @db.Text
+  summaryFull              String?  @db.Text
+  supportingObservationIds String[] @default([])
+  sourceSpansJson          Json
+  unresolvedParagraphCount Int      @default(0)
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
 
-  entity Entity @relation(fields: [entityId], references: [id], onDelete: Cascade)
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
-  @@unique([entityId, normalizedAlias])
-  @@index([entityId])
-  @@index([normalizedAlias])
+  @@unique([contentVersionId, indexInBook])
+  @@index([bookId, contentVersionId, sourceChapterId])
 }
 
-model MentionCandidate {
-  id              String                @id @default(cuid())
-  runId           String
-  documentId      String
-  contentVersion  Int
-  paragraphIndex  Int
-  startOffset     Int
-  endOffset       Int
-  sourceText      String
-  candidateType   MentionCandidateType
-  routing         MentionRouting        @default(deterministic)
-  decisionStatus  MentionDecisionStatus @default(pending)
-  confidence      Float                 @default(0)
-  featuresJson    Json?
-  conflictGroupId String?
-  entityHintId    String?
-  createdAt       DateTime              @default(now())
-  updatedAt       DateTime              @updatedAt
+model BookCanonicalEvent {
+  id                       String   @id
+  bookId                   String
+  contentVersionId         String
+  runId                    String
+  sceneId                  String?
+  sourceChapterId          String?
+  orderIndex               Int
+  type                     String
+  label                    String
+  actorEntityIds           String[] @default([])
+  targetEntityIds          String[] @default([])
+  locationEntityIds        String[] @default([])
+  timeMarkerValuesJson     Json?
+  importance               Float    @default(0.5)
+  supportingObservationIds String[] @default([])
+  evidenceRefsJson         Json?
+  metadataJson             Json?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
 
-  run        AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
-  document   Document    @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  entityHint Entity?     @relation(fields: [entityHintId], references: [id], onDelete: SetNull)
-  mentions   Mention[]
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
-  @@index([runId])
-  @@index([documentId, paragraphIndex])
-  @@index([decisionStatus])
+  @@unique([contentVersionId, orderIndex])
+  @@index([bookId, contentVersionId, sceneId])
 }
 
-model Mention {
-  id             String      @id @default(cuid())
-  runId          String
-  documentId     String
-  contentVersion Int
-  entityId       String
-  candidateId    String?
-  actId          String?
-  mentionType    MentionType @default(alias)
-  paragraphIndex Int
-  startOffset    Int
-  endOffset      Int
-  sourceText     String
-  confidence     Float       @default(1)
-  resolvedBy     String      @default("deterministic")
-  createdAt      DateTime    @default(now())
+model BookTimelineEdge {
+  id                       String            @id @default(cuid())
+  bookId                   String
+  contentVersionId         String
+  runId                    String
+  fromEventId              String
+  toEventId                String
+  order                    BookTimelineOrder
+  reason                   String?
+  supportingObservationIds String[]          @default([])
+  evidenceRefsJson         Json?
+  createdAt                DateTime          @default(now())
 
-  run       AnalysisRun       @relation(fields: [runId], references: [id], onDelete: Cascade)
-  document  Document          @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  entity    Entity            @relation(fields: [entityId], references: [id], onDelete: Cascade)
-  act       Act?              @relation(fields: [actId], references: [id], onDelete: SetNull)
-  candidate MentionCandidate? @relation(fields: [candidateId], references: [id], onDelete: SetNull)
-  appearanceEvidence CharacterAppearanceEvidence[]
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
-  @@index([documentId, paragraphIndex])
-  @@index([documentId, entityId])
-  @@index([documentId, contentVersion, entityId])
-  @@index([entityId, mentionType])
-  @@index([actId])
-  @@index([entityId, actId])
-  @@index([runId])
-  @@index([candidateId])
+  @@unique([contentVersionId, fromEventId, toEventId])
+  @@index([bookId, contentVersionId, order])
 }
 
-model CharacterChapterStat {
-  id           String   @id @default(cuid())
-  characterId  String
-  chapterId    String
-  mentionCount Int
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+model BookCanonicalRelation {
+  id                       String   @id
+  bookId                   String
+  contentVersionId         String
+  runId                    String
+  entityAId                String
+  entityBId                String
+  relationType             String
+  currentState             String?
+  stateHistoryJson         Json?
+  supportingObservationIds String[] @default([])
+  evidenceRefsJson         Json?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
 
-  character Entity  @relation(fields: [characterId], references: [id], onDelete: Cascade)
-  chapter   Chapter @relation(fields: [chapterId], references: [id], onDelete: Cascade)
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
-  @@unique([characterId, chapterId])
-  @@index([chapterId])
+  @@unique([contentVersionId, entityAId, entityBId, relationType])
+  @@index([bookId, contentVersionId, entityAId])
+  @@index([bookId, contentVersionId, entityBId])
 }
 
-model CharacterActStat {
-  id           String   @id @default(cuid())
-  characterId  String
-  actId        String
-  mentionCount Int
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+model BookCanonicalQuote {
+  id                       String   @id
+  bookId                   String
+  contentVersionId         String
+  runId                    String
+  sceneId                  String?
+  speakerEntityId          String?
+  aboutEntityIds           String[] @default([])
+  quoteText                String   @db.Text
+  spanRefJson              Json
+  attributionMode          String
+  supportingObservationIds String[] @default([])
+  metadataJson             Json?
+  createdAt                DateTime @default(now())
+  updatedAt                DateTime @updatedAt
 
-  character Entity @relation(fields: [characterId], references: [id], onDelete: Cascade)
-  act       Act    @relation(fields: [actId], references: [id], onDelete: Cascade)
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
 
-  @@unique([characterId, actId])
-  @@index([actId])
+  @@index([bookId, contentVersionId, sceneId])
+  @@index([bookId, contentVersionId, speakerEntityId])
 }
 
-model CharacterAppearanceObservation {
-  id             String          @id @default(cuid())
-  projectId      String
-  chapterId      String
-  documentId     String
-  contentVersion Int
-  runId          String?
-  characterId    String
-  actId          String?
-  orderIndex     Int
-  attributeKey   String
-  attributeLabel String
-  valueText      String
-  summary        String          @default("")
-  scope          AppearanceScope @default(scene)
-  confidence     Float           @default(0.6)
-  createdAt      DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-
-  project   Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  chapter   Chapter      @relation(fields: [chapterId], references: [id], onDelete: Cascade)
-  document  Document     @relation(fields: [documentId], references: [id], onDelete: Cascade)
-  run       AnalysisRun? @relation("CreatedCharacterAppearanceObservations", fields: [runId], references: [id], onDelete: SetNull)
-  character Entity       @relation(fields: [characterId], references: [id], onDelete: Cascade)
-  act       Act?         @relation(fields: [actId], references: [id], onDelete: SetNull)
-  evidence  CharacterAppearanceEvidence[]
-
-  @@index([projectId, characterId, chapterId, orderIndex])
-  @@index([documentId, contentVersion, orderIndex])
-  @@index([characterId, actId])
-  @@index([runId])
-}
-
-model CharacterAppearanceEvidence {
-  id            String   @id @default(cuid())
-  observationId String
-  mentionId     String
-  evidenceOrder Int      @default(0)
-  paragraphIndex Int
-  startOffset   Int
-  endOffset     Int
-  sourceText    String
-  snippet       String
-  createdAt     DateTime @default(now())
-
-  observation CharacterAppearanceObservation @relation(fields: [observationId], references: [id], onDelete: Cascade)
-  mention     Mention                      @relation(fields: [mentionId], references: [id], onDelete: Cascade)
-
-  @@unique([observationId, mentionId])
-  @@index([observationId, evidenceOrder])
-  @@index([mentionId])
-}
-
-model PatchDecision {
-  id                 String   @id @default(cuid())
+model BookCanonicalSummary {
+  id                 String                @id
+  bookId             String
+  contentVersionId   String
   runId              String
-  windowKey          String
-  inputCandidateIds  String[] @default([])
-  model              String
-  usageJson          Json?
-  applied            Boolean  @default(false)
-  validationError    String?
-  responseHashSha256 String?
-  rawResponseSnippet String?
-  responseBytes      Int?
-  blobKey            String?
+  targetType         BookSummaryTargetType
+  targetId           String
+  summaryKind        BookSummaryKind
+  text               String                @db.Text
+  supportingRefsJson Json
+  metadataJson       Json?
+  createdAt          DateTime              @default(now())
+  updatedAt          DateTime              @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([contentVersionId, targetType, targetId, summaryKind])
+  @@index([bookId, contentVersionId, targetType])
+}
+
+model BookEntityCard {
+  id               String   @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  entityId         String
+  cardJson         Json
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([contentVersionId, entityId])
+  @@index([bookId, contentVersionId])
+}
+
+model BookSceneCard {
+  id               String   @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  sceneId          String
+  cardJson         Json
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([contentVersionId, sceneId])
+  @@index([bookId, contentVersionId])
+}
+
+model BookRelationCard {
+  id               String   @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  relationId       String
+  cardJson         Json
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([contentVersionId, relationId])
+  @@index([bookId, contentVersionId])
+}
+
+model BookTimelineSlice {
+  id               String   @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  sliceKey         String
+  sliceJson        Json
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([contentVersionId, sliceKey])
+  @@index([bookId, contentVersionId])
+}
+
+model BookQuoteSlice {
+  id               String   @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  quoteId          String
+  sliceJson        Json
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([contentVersionId, quoteId])
+  @@index([bookId, contentVersionId])
+}
+
+model BookSearchDocument {
+  id               String   @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  documentType     String
+  documentId       String
+  title            String?
+  bodyText         String   @db.Text
+  metadataJson     Json?
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([contentVersionId, documentType, documentId])
+  @@index([bookId, contentVersionId, documentType])
+}
+
+model BookEvidenceHit {
+  id               String   @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  subjectType      String
+  subjectId        String
+  linkedObjectIds  String[] @default([])
+  spanRefJson      Json
+  whyMatched       String
+  snippet          String   @db.Text
+  createdAt        DateTime @default(now())
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId, contentVersionId, subjectType, subjectId])
+}
+
+model BookPresenceMap {
+  id                 String   @id @default(cuid())
+  bookId             String
+  contentVersionId   String
+  entityId           String
+  sceneId            String
+  chapterOrderIndex  Int
+  paragraphStart     Int
+  paragraphEnd       Int
+  mentionCount       Int      @default(0)
+  copresentEntityIds String[] @default([])
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@unique([contentVersionId, entityId, sceneId])
+  @@index([bookId, contentVersionId, sceneId])
+}
+
+model BookProcessingReport {
+  id               String             @id @default(cuid())
+  bookId           String
+  contentVersionId String
+  runId            String
+  coverage         BookCoverageStatus @default(partial)
+  reportJson       Json
+  countsJson       Json
+  unresolvedJson   Json
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+
+  book Book @relation(fields: [bookId], references: [id], onDelete: Cascade)
+
+  @@index([bookId, coverage])
+  @@index([bookId, contentVersionId, createdAt])
+  @@index([runId])
+}
+
+model BookChatTurnMetric {
+  id                  String   @id @default(cuid())
+  bookId              String
+  threadId            String
+  messageId           String   @unique
+  chatModel           String
+  embeddingModel      String
+  selectedToolsJson   Json     @default("[]")
+  toolConfigKey       String
+  promptVariant       String
+  systemPromptVersion String
+  pricingVersion      String
+  modelInputTokens    Int      @default(0)
+  modelOutputTokens   Int      @default(0)
+  modelTotalTokens    Int      @default(0)
+  embeddingInputTokens Int     @default(0)
+  chatCostUsd         Float    @default(0)
+  embeddingCostUsd    Float    @default(0)
+  totalCostUsd        Float    @default(0)
+  totalLatencyMs      Int      @default(0)
+  answerLengthChars   Int      @default(0)
+  citationCount       Int      @default(0)
+  fallbackUsed        Boolean  @default(false)
+  fallbackKind        String?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  book    Book                  @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  thread  BookChatThread        @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  message BookChatThreadMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  toolRuns BookChatToolRun[]
+
+  @@index([bookId, createdAt])
+  @@index([threadId, createdAt])
+}
+
+model BookChatToolRun {
+  id                 String   @id @default(cuid())
+  turnMetricId       String
+  toolName           String
+  orderIndex         Int
+  latencyMs          Int      @default(0)
+  argsSummaryJson    Json     @default("{}")
+  resultSummaryJson  Json     @default("{}")
+  errorCode          String?
+  errorMessage       String?
+  storageProvider    String?
+  payloadKey         String?
+  payloadSizeBytes   Int      @default(0)
+  payloadSha256      String?
+  compression        String?
   createdAt          DateTime @default(now())
 
-  run AnalysisRun @relation(fields: [runId], references: [id], onDelete: Cascade)
+  turnMetric BookChatTurnMetric @relation(fields: [turnMetricId], references: [id], onDelete: Cascade)
 
-  @@index([runId, windowKey])
+  @@unique([turnMetricId, orderIndex])
+  @@index([toolName, createdAt])
+  @@index([turnMetricId, createdAt])
 }
 
 model Outbox {
@@ -556,42 +1861,32 @@ model Outbox {
   aggregateId   String
   eventType     String
   payloadJson   Json
+  availableAt   DateTime  @default(now())
   createdAt     DateTime  @default(now())
   processedAt   DateTime?
   error         String?
   attemptCount  Int       @default(0)
 
   @@index([processedAt, createdAt])
+  @@index([processedAt, availableAt, createdAt], map: "Outbox_processedAt_availableAt_createdAt_idx")
   @@index([aggregateType, aggregateId])
 }
 
-model LocationContainment {
-  id             String   @id @default(cuid())
-  projectId      String
-  childEntityId  String
-  parentEntityId String
-  createdAt      DateTime @default(now())
-
-  project      Project @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  childEntity  Entity  @relation("LocationContainmentChild", fields: [childEntityId], references: [id], onDelete: Cascade)
-  parentEntity Entity  @relation("LocationContainmentParent", fields: [parentEntityId], references: [id], onDelete: Cascade)
-
-  @@unique([childEntityId])
-  @@unique([childEntityId, parentEntityId])
-  @@index([projectId, parentEntityId])
-}
-
 model User {
-  id            String    @id @default(cuid())
-  name          String?
-  email         String?   @unique
-  emailVerified DateTime?
-  image         String?
-  accounts      Account[]
-  sessions      Session[]
-  projects      Project[]
-  books         Book[]
-  bookLikes     BookLike[]
+  id                          String            @id @default(cuid())
+  name                        String?
+  email                       String?           @unique
+  emailVerified               DateTime?
+  image                       String?
+  role                        UserRole          @default(user)
+  accounts                    Account[]
+  sessions                    Session[]
+  books                       Book[]
+  bookLikes                   BookLike[]
+  bookChatSessions            BookChatSession[]
+  chatThreads                 BookChatThread[]
+
+  @@index([role])
 }
 
 model Account {

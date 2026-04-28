@@ -1,0 +1,236 @@
+name: Deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Which hosts to deploy ('both', 'web', 'worker')"
+        required: true
+        default: both
+        type: choice
+        options:
+          - both
+          - web
+          - worker
+  push:
+    branches:
+      - deploy/main
+
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build artifact bundle
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install dependencies (npm ci)
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Typecheck (web)
+        run: npx tsc --noEmit -p apps/web/tsconfig.json
+
+      - name: Typecheck (worker)
+        run: npm --prefix apps/worker run typecheck
+
+      - name: Unit tests (web)
+        run: npm run test:unit
+
+      - name: Build web (Next.js)
+        # apps/web has a postbuild hook that copies .next/static and public
+        # into the standalone bundle (Next.js doesn't do that automatically).
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          NODE_ENV: production
+        run: npm run web:build
+
+      # Worker has no build step (runs via tsx). If apps/worker/package.json
+      # ever gains a `build` script, this step will pick it up.
+      - name: Build worker (if a build script exists)
+        run: |
+          if node -e "process.exit(require('./apps/worker/package.json').scripts.build ? 0 : 1)"; then
+            npm --prefix apps/worker run build
+          else
+            echo "No worker build script — skipping (worker uses tsx at runtime)."
+          fi
+
+      - name: Compute release id
+        id: release
+        run: echo "id=$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage release bundle
+        run: |
+          set -euo pipefail
+          mkdir -p _bundle
+          # Copy everything except dev/build cruft. We deliberately keep
+          # node_modules out — it's reinstalled on the host (smaller transfer,
+          # platform-correct binaries).
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='.next/cache' \
+            --exclude='evals' \
+            --exclude='_bundle' \
+            --exclude='.pgdata-local' \
+            --exclude='tmp-*' \
+            --exclude='*.log' \
+            ./ _bundle/
+
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: remarka-bundle-${{ steps.release.outputs.id }}
+          path: _bundle
+          retention-days: 7
+          if-no-files-found: error
+
+  deploy-web:
+    name: Deploy web
+    needs: build
+    if: ${{ github.event_name == 'push' || github.event.inputs.target == 'both' || github.event.inputs.target == 'web' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RELEASE_ID: ${{ needs.build.outputs.release_id }}
+      DEPLOY_HOST: ${{ secrets.WEB_HOST }}
+      DEPLOY_USER: root
+      APP_USER: remarka
+      APP_HOME: /srv/remarka
+    steps:
+      - name: Download bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: remarka-bundle-${{ needs.build.outputs.release_id }}
+          path: _bundle
+
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_DEPLOY_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Rsync release to host
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@$DEPLOY_HOST" \
+            "install -d -o $APP_USER -g $APP_USER -m 755 $APP_HOME/releases/$RELEASE_ID"
+          rsync -az --delete \
+            -e "ssh -i ~/.ssh/id_deploy" \
+            _bundle/ \
+            "$DEPLOY_USER@$DEPLOY_HOST:$APP_HOME/releases/$RELEASE_ID/"
+
+      - name: Install deps and switch symlink
+        run: |
+          ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@$DEPLOY_HOST" bash -s <<EOF
+          set -euo pipefail
+          RELEASE_DIR=$APP_HOME/releases/$RELEASE_ID
+          chown -R $APP_USER:$APP_USER "\$RELEASE_DIR"
+          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && npm ci --omit=dev --no-audit --no-fund"
+          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && npm run db:generate"
+
+          ln -snfT "\$RELEASE_DIR" $APP_HOME/current
+          systemctl restart remarka-web
+
+          # Wait for the new instance to come up.
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
+              echo "Health check OK on attempt \$i"
+              break
+            fi
+            sleep 2
+            if [ "\$i" = "10" ]; then
+              echo "Health check failed after 10 attempts."
+              journalctl -u remarka-web -n 50 --no-pager
+              exit 1
+            fi
+          done
+
+          # Prune all but the 3 newest releases.
+          cd $APP_HOME/releases
+          ls -1t | tail -n +4 | xargs -r rm -rf
+          EOF
+
+  deploy-worker:
+    name: Deploy worker
+    needs: build
+    if: ${{ github.event_name == 'push' || github.event.inputs.target == 'both' || github.event.inputs.target == 'worker' }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      RELEASE_ID: ${{ needs.build.outputs.release_id }}
+      DEPLOY_HOST: ${{ secrets.WORKER_HOST }}
+      JUMP_HOST: ${{ secrets.WEB_HOST }}
+      DEPLOY_USER: root
+      APP_USER: remarka
+      APP_HOME: /srv/remarka
+    steps:
+      - name: Download bundle
+        uses: actions/download-artifact@v4
+        with:
+          name: remarka-bundle-${{ needs.build.outputs.release_id }}
+          path: _bundle
+
+      - name: Configure SSH (with ProxyJump via web)
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_DEPLOY_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$JUMP_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          cat >>~/.ssh/config <<EOF
+          Host worker
+            HostName $DEPLOY_HOST
+            User $DEPLOY_USER
+            IdentityFile ~/.ssh/id_deploy
+            ProxyJump $DEPLOY_USER@$JUMP_HOST
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+
+      - name: Rsync release to worker (via jump host)
+        run: |
+          set -euo pipefail
+          ssh worker \
+            "install -d -o $APP_USER -g $APP_USER -m 755 $APP_HOME/releases/$RELEASE_ID"
+          rsync -az --delete \
+            -e "ssh" \
+            _bundle/ \
+            "worker:$APP_HOME/releases/$RELEASE_ID/"
+
+      - name: Install deps and restart worker
+        run: |
+          ssh worker bash -s <<EOF
+          set -euo pipefail
+          RELEASE_DIR=$APP_HOME/releases/$RELEASE_ID
+          chown -R $APP_USER:$APP_USER "\$RELEASE_DIR"
+          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && npm ci --omit=dev --no-audit --no-fund"
+          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && npm run db:generate"
+
+          ln -snfT "\$RELEASE_DIR" $APP_HOME/current
+          systemctl restart remarka-worker
+          sleep 3
+          systemctl is-active remarka-worker
+
+          cd $APP_HOME/releases
+          ls -1t | tail -n +4 | xargs -r rm -rf
+          EOF

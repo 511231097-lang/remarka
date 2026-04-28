@@ -146,7 +146,6 @@ API:
 
 ## Worker/agent pipeline
 
-Worker/extraction pipeline is preserved as-is (`apps/worker`, `apps/preprocessor`, `packages/contracts`, `packages/db`):
+Book analysis worker and shared packages live in `apps/worker`, `packages/contracts`, and `packages/db`:
 - outbox-driven event processing
-- import pipeline (`project.import.requested`)
-- extraction pipeline (`analysis.run.requested`)
+- outbox-driven book analysis (`book.npz-analysis.requested`)

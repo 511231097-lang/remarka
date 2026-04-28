@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && npx tsc*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && npm run test*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && npm run lint*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && npm run typecheck*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && docker compose ps*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && docker compose logs*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && node --version*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && npm --version*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && git status*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && git diff*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && git log*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && git branch*\")"
+    ],
+    "ask": [
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && npm run eval*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && docker compose up*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && docker compose down*\")",
+      "Bash(wsl.exe -d Ubuntu -e bash -lc \"cd /home/west/Documents/myb/remarka && npm run db:*\")"
+    ]
+  }
+}

@@ -2,68 +2,9 @@ import JSZip from "jszip";
 import { DOMParser } from "@xmldom/xmldom";
 import { z } from "zod";
 
-export const BOOK_FORMATS = ["fb2", "fb2_zip"] as const;
+export const BOOK_FORMATS = ["fb2", "fb2_zip", "epub", "pdf"] as const;
 export type BookFormat = (typeof BOOK_FORMATS)[number];
 export const BookFormatSchema = z.enum(BOOK_FORMATS);
-
-export const PROJECT_IMPORT_STATES = ["queued", "running", "completed", "failed"] as const;
-export type ProjectImportState = (typeof PROJECT_IMPORT_STATES)[number];
-export const ProjectImportStateSchema = z.enum(PROJECT_IMPORT_STATES);
-
-export const PROJECT_IMPORT_STAGES = [
-  "queued",
-  "loading_source",
-  "parsing",
-  "persisting",
-  "scheduling_analysis",
-  "completed",
-  "failed",
-] as const;
-export type ProjectImportStage = (typeof PROJECT_IMPORT_STAGES)[number];
-export const ProjectImportStageSchema = z.enum(PROJECT_IMPORT_STAGES);
-
-export const IMPORT_ANALYSIS_MODEL_IDS = [
-  "462a2c83-7b99-4eb8-b73a-284a98547ec0",
-  "a438cea2-68e0-4a3b-81cf-bd5f5aac7510",
-  "a87eb84d-06a9-4216-8d2e-57c3f25a21d1",
-] as const;
-export type ImportAnalysisModelId = (typeof IMPORT_ANALYSIS_MODEL_IDS)[number];
-export const ImportAnalysisModelIdSchema = z.enum(IMPORT_ANALYSIS_MODEL_IDS);
-
-export const IMPORT_ANALYSIS_MODEL_OPTIONS: Array<{
-  id: ImportAnalysisModelId;
-  code: "grok" | "qwen" | "flash";
-  label: string;
-}> = [
-  {
-    id: "462a2c83-7b99-4eb8-b73a-284a98547ec0",
-    code: "grok",
-    label: "Grok",
-  },
-  {
-    id: "a438cea2-68e0-4a3b-81cf-bd5f5aac7510",
-    code: "qwen",
-    label: "Qwen",
-  },
-  {
-    id: "a87eb84d-06a9-4216-8d2e-57c3f25a21d1",
-    code: "flash",
-    label: "Flash",
-  },
-];
-
-export function normalizeImportAnalysisModelId(value: unknown): ImportAnalysisModelId | null {
-  const raw = String(value || "").trim();
-  if (!raw) return null;
-  const parsed = ImportAnalysisModelIdSchema.safeParse(raw);
-  return parsed.success ? parsed.data : null;
-}
-
-export function getImportAnalysisModelLabel(modelId: string | null | undefined): string | null {
-  const normalized = normalizeImportAnalysisModelId(modelId);
-  if (!normalized) return null;
-  return IMPORT_ANALYSIS_MODEL_OPTIONS.find((item) => item.id === normalized)?.label || null;
-}
 
 export const ParsedInlineMarkSchema = z.enum(["bold", "italic"]);
 export type ParsedInlineMark = z.infer<typeof ParsedInlineMarkSchema>;
@@ -107,25 +48,6 @@ export const ParsedBookSchema = z
   })
   .strict();
 export type ParsedBook = z.infer<typeof ParsedBookSchema>;
-
-export const ProjectImportPayloadSchema = z
-  .object({
-    id: z.string(),
-    projectId: z.string(),
-    format: BookFormatSchema,
-    state: ProjectImportStateSchema,
-    stage: ProjectImportStageSchema,
-    error: z.string().nullable(),
-    chapterCount: z.number().int().nullable(),
-    startedAt: z.string().nullable(),
-    completedAt: z.string().nullable(),
-    selectedModelId: ImportAnalysisModelIdSchema.nullable(),
-    selectedModelLabel: z.string().nullable(),
-    createdAt: z.string(),
-    updatedAt: z.string(),
-  })
-  .strict();
-export type ProjectImportPayload = z.infer<typeof ProjectImportPayloadSchema>;
 
 export interface BookParseInput {
   format: BookFormat;
@@ -296,6 +218,25 @@ function textFromElement(element: Element | null): string {
   if (!element) return "";
   const inlines = normalizeInlines(collectInline(element));
   return normalizeWhitespace(inlines.map((item) => item.text).join(""));
+}
+
+function parseXmlDocument(source: string, errorCode: string, errorMessage: string): Document {
+  const xml = String(source || "").trim();
+  if (!xml) {
+    throw new BookImportError(errorCode, errorMessage);
+  }
+
+  return new DOMParser({
+    errorHandler: {
+      warning: () => undefined,
+      error: () => undefined,
+      fatalError: () => undefined,
+    },
+  }).parseFromString(xml, "text/xml");
+}
+
+function localElementName(element: Element): string {
+  return localNameOf(element);
 }
 
 function inlineFromElement(element: Element | null): ParsedInline[] {
@@ -656,6 +597,314 @@ export async function extractSingleFb2FromZip(
   };
 }
 
+function zipDirname(path: string): string {
+  const normalized = String(path || "").replace(/\\/g, "/");
+  const index = normalized.lastIndexOf("/");
+  return index >= 0 ? normalized.slice(0, index) : "";
+}
+
+function normalizeZipPath(path: string): string {
+  const parts = String(path || "")
+    .replace(/\\/g, "/")
+    .split("/")
+    .filter((part) => part && part !== ".");
+  const resolved: string[] = [];
+  for (const part of parts) {
+    if (part === "..") {
+      resolved.pop();
+      continue;
+    }
+    resolved.push(part);
+  }
+  return resolved.join("/");
+}
+
+function resolveZipHref(baseFilePath: string, href: string): string {
+  const cleanHref = decodeURIComponent(String(href || "").split("#")[0] || "");
+  if (!cleanHref) return "";
+  if (cleanHref.startsWith("/")) return normalizeZipPath(cleanHref.slice(1));
+  const base = zipDirname(baseFilePath);
+  return normalizeZipPath(base ? `${base}/${cleanHref}` : cleanHref);
+}
+
+function extensionlessNameFromPath(path: string): string {
+  const base = String(path || "").replace(/\\/g, "/").split("/").pop() || "";
+  return base.replace(/\.[a-z0-9]+$/i, "").replace(/[._-]+/g, " ").trim();
+}
+
+function firstElementByLocalNameDeep(node: Node | null, name: string): Element | null {
+  if (!node) return null;
+  const target = name.trim().toLowerCase();
+  if ((node as any).nodeType === 1 && localNameOf(node) === target) {
+    return node as unknown as Element;
+  }
+
+  const children = (node as any).childNodes;
+  if (!children) return null;
+  for (let index = 0; index < children.length; index += 1) {
+    const found = firstElementByLocalNameDeep(children[index] as Node, target);
+    if (found) return found;
+  }
+  return null;
+}
+
+function childTextByAnyLocalName(node: Node | null, names: string[]): string {
+  for (const name of names) {
+    const value = textFromElement(firstChildByLocalName(node, name));
+    if (value) return value;
+  }
+  return "";
+}
+
+function parseHtmlBlocks(root: Element | null): ParsedBlock[] {
+  if (!root) return [];
+  const blocks: ParsedBlock[] = [];
+
+  function pushBlockFromElement(element: Element, type: ParsedBlock["type"], level?: number) {
+    const inlines = inlineFromElement(element);
+    if (!inlines.length || !normalizeWhitespace(inlines.map((inline) => inline.text).join(""))) return;
+    blocks.push({
+      type,
+      ...(level ? { level } : {}),
+      inlines,
+    });
+  }
+
+  function walk(element: Element) {
+    const local = localElementName(element);
+    if (["script", "style", "nav", "head"].includes(local)) return;
+
+    const headingMatch = local.match(/^h([1-6])$/);
+    if (headingMatch) {
+      pushBlockFromElement(element, "heading", Number(headingMatch[1]));
+      return;
+    }
+
+    if (["title", "subtitle"].includes(local)) {
+      pushBlockFromElement(element, "subtitle", 2);
+      return;
+    }
+
+    if (["p", "li"].includes(local)) {
+      pushBlockFromElement(element, "paragraph");
+      return;
+    }
+
+    if (["blockquote", "q"].includes(local)) {
+      pushBlockFromElement(element, "quote");
+      return;
+    }
+
+    if (["pre"].includes(local)) {
+      pushBlockFromElement(element, "poem");
+      return;
+    }
+
+    for (const child of childElements(element)) {
+      walk(child);
+    }
+  }
+
+  walk(root);
+  return blocks;
+}
+
+function titleFromBlocks(blocks: ParsedBlock[], fallback: string): string {
+  for (const block of blocks) {
+    if (block.type !== "heading" && block.type !== "subtitle") continue;
+    const title = normalizeWhitespace(block.inlines.map((inline) => inline.text).join(""));
+    if (title) return title;
+  }
+  return normalizeWhitespace(fallback) || "Глава";
+}
+
+export async function parseEpubBook(bytes: Uint8Array): Promise<ParsedBook> {
+  let zip: JSZip;
+  try {
+    zip = await JSZip.loadAsync(bytes);
+  } catch {
+    throw new BookImportError("EPUB_INVALID", "Invalid EPUB archive");
+  }
+
+  const containerEntry = zip.file("META-INF/container.xml");
+  if (!containerEntry) {
+    throw new BookImportError("EPUB_CONTAINER_MISSING", "EPUB container.xml is missing");
+  }
+
+  const containerXml = await containerEntry.async("text");
+  const containerDoc = parseXmlDocument(containerXml, "EPUB_CONTAINER_INVALID", "Invalid EPUB container.xml");
+  const rootfile = firstElementByLocalNameDeep(containerDoc as unknown as Node, "rootfile");
+  const opfPath = String(rootfile?.getAttribute("full-path") || "").trim();
+  if (!opfPath) {
+    throw new BookImportError("EPUB_OPF_MISSING", "EPUB package document is missing");
+  }
+
+  const opfEntry = zip.file(opfPath);
+  if (!opfEntry) {
+    throw new BookImportError("EPUB_OPF_MISSING", "EPUB package document is missing");
+  }
+
+  const opfXml = await opfEntry.async("text");
+  const opfDoc = parseXmlDocument(opfXml, "EPUB_OPF_INVALID", "Invalid EPUB package document");
+  const packageNode = firstElementByLocalNameDeep(opfDoc as unknown as Node, "package");
+  const metadataNode = firstChildByLocalName(packageNode, "metadata");
+  const manifestNode = firstChildByLocalName(packageNode, "manifest");
+  const spineNode = firstChildByLocalName(packageNode, "spine");
+
+  const manifest = new Map<string, { href: string; mediaType: string }>();
+  for (const item of childrenByLocalName(manifestNode, "item")) {
+    const id = String(item.getAttribute("id") || "").trim();
+    const href = String(item.getAttribute("href") || "").trim();
+    if (!id || !href) continue;
+    manifest.set(id, {
+      href,
+      mediaType: String(item.getAttribute("media-type") || "").trim().toLowerCase(),
+    });
+  }
+
+  const spineIds = childrenByLocalName(spineNode, "itemref")
+    .map((item) => String(item.getAttribute("idref") || "").trim())
+    .filter(Boolean);
+  if (!spineIds.length) {
+    throw new BookImportError("EPUB_SPINE_EMPTY", "EPUB spine is empty");
+  }
+
+  const chapters: ParsedChapter[] = [];
+  for (const idref of spineIds) {
+    const item = manifest.get(idref);
+    if (!item) continue;
+    const mediaType = item.mediaType;
+    const isHtml =
+      mediaType.includes("html") ||
+      /\.x?html?$/i.test(item.href);
+    if (!isHtml) continue;
+
+    const chapterPath = resolveZipHref(opfPath, item.href);
+    const chapterEntry = zip.file(chapterPath);
+    if (!chapterEntry) continue;
+
+    const html = await chapterEntry.async("text");
+    const doc = parseXmlDocument(html, "EPUB_CHAPTER_INVALID", `Invalid EPUB chapter: ${chapterPath}`);
+    const body = firstElementByLocalNameDeep(doc as unknown as Node, "body") || firstElementByLocalNameDeep(doc as unknown as Node, "html");
+    const blocks = parseHtmlBlocks(body);
+    if (!blocks.length) continue;
+
+    chapters.push({
+      title: titleFromBlocks(blocks, extensionlessNameFromPath(chapterPath) || `Глава ${chapters.length + 1}`),
+      blocks,
+    });
+  }
+
+  if (!chapters.length) {
+    throw new BookImportError("EPUB_TEXT_EMPTY", "EPUB does not contain readable text");
+  }
+
+  const metadata = {
+    title: childTextByAnyLocalName(metadataNode, ["title"]) || undefined,
+    author: childTextByAnyLocalName(metadataNode, ["creator", "author"]) || undefined,
+    annotation: childTextByAnyLocalName(metadataNode, ["description", "annotation"]) || undefined,
+  };
+
+  const normalized = ParsedBookSchema.safeParse({
+    format: "epub",
+    metadata,
+    chapters,
+  });
+  if (!normalized.success) {
+    throw new BookImportError("EPUB_NORMALIZE_FAILED", "Failed to normalize parsed EPUB content");
+  }
+  return normalized.data;
+}
+
+function normalizePdfTextItems(items: Array<{ str?: unknown }>): string {
+  const chunks = items
+    .map((item) => String(item?.str || "").trim())
+    .filter(Boolean);
+  return canonicalizeContent(chunks.join(" "));
+}
+
+function classifyPdfLoadError(error: unknown): BookImportError {
+  const name = String((error as { name?: unknown })?.name || "");
+  const message = String((error as { message?: unknown })?.message || "");
+  const code = String((error as { code?: unknown })?.code || "");
+  const combined = `${name} ${message} ${code}`.toLowerCase();
+
+  if (combined.includes("password") || combined.includes("encrypted")) {
+    return new BookImportError("PDF_PASSWORD_PROTECTED", "PDF защищен паролем. Загрузите файл без пароля.");
+  }
+
+  return new BookImportError("PDF_INVALID", "Не удалось прочитать PDF. Проверьте, что файл не поврежден и является PDF-документом.");
+}
+
+export async function parsePdfBook(bytes: Uint8Array, fileName: string): Promise<ParsedBook> {
+  const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  const cwd = process.cwd().replace(/\\/g, "/");
+  const workspaceRoot = cwd.endsWith("/apps/web") ? cwd.slice(0, -"/apps/web".length) : cwd;
+  const workerPath = `${workspaceRoot}/node_modules/pdfjs-dist/legacy/build/pdf.worker.mjs`;
+  pdfjs.GlobalWorkerOptions.workerSrc = `file://${workerPath.startsWith("/") ? "" : "/"}${workerPath}`;
+
+  let pdf: any;
+  try {
+    const task = pdfjs.getDocument({
+      data: new Uint8Array(bytes),
+      disableWorker: true,
+      isEvalSupported: false,
+      useSystemFonts: true,
+    } as any);
+    pdf = await task.promise;
+  } catch (error) {
+    throw classifyPdfLoadError(error);
+  }
+
+  const meta = await pdf.getMetadata().catch(() => null);
+  const info = (meta?.info || {}) as { Title?: unknown; Author?: unknown; Subject?: unknown };
+  const chapters: ParsedChapter[] = [];
+
+  try {
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      const page = await pdf.getPage(pageNumber);
+      const textContent = await page.getTextContent();
+      const pageText = normalizePdfTextItems((textContent.items || []) as Array<{ str?: unknown }>);
+      if (!pageText) continue;
+      chapters.push({
+        title: `Страница ${pageNumber}`,
+        blocks: [
+          {
+            type: "paragraph",
+            inlines: [{ text: pageText, marks: [] }],
+          },
+        ],
+      });
+    }
+  } catch (error) {
+    const message = String((error as { message?: unknown })?.message || "");
+    throw new BookImportError(
+      "PDF_TEXT_EXTRACT_FAILED",
+      message ? `Не удалось извлечь текст из PDF: ${message}` : "Не удалось извлечь текст из PDF."
+    );
+  }
+
+  if (!chapters.length) {
+    throw new BookImportError("PDF_TEXT_EMPTY", "В PDF не найден извлекаемый текст. Загрузите PDF с текстовым слоем, не скан.");
+  }
+
+  const metadata = {
+    title: normalizeWhitespace(String(info.Title || "")) || inferBookTitleFromFileName(fileName) || undefined,
+    author: normalizeWhitespace(String(info.Author || "")) || undefined,
+    annotation: normalizeWhitespace(String(info.Subject || "")) || undefined,
+  };
+
+  const normalized = ParsedBookSchema.safeParse({
+    format: "pdf",
+    metadata,
+    chapters,
+  });
+  if (!normalized.success) {
+    throw new BookImportError("PDF_NORMALIZE_FAILED", "Failed to normalize parsed PDF content");
+  }
+  return normalized.data;
+}
+
 export async function parseBook(input: BookParseInput): Promise<ParsedBook> {
   if (input.format === "fb2") {
     const xml = decodeFb2XmlBytes(input.bytes);
@@ -677,6 +926,14 @@ export async function parseBook(input: BookParseInput): Promise<ParsedBook> {
     };
   }
 
+  if (input.format === "epub") {
+    return parseEpubBook(input.bytes);
+  }
+
+  if (input.format === "pdf") {
+    return parsePdfBook(input.bytes, input.fileName);
+  }
+
   throw new BookImportError("UNSUPPORTED_FORMAT", `Unsupported book format: ${input.format}`);
 }
 
@@ -685,6 +942,8 @@ export function detectBookFormatFromFileName(fileName: string): BookFormat | nul
   if (!normalized) return null;
   if (normalized.endsWith(".fb2.zip")) return "fb2_zip";
   if (normalized.endsWith(".fb2")) return "fb2";
+  if (normalized.endsWith(".epub")) return "epub";
+  if (normalized.endsWith(".pdf")) return "pdf";
   return null;
 }
 
@@ -693,7 +952,7 @@ export function inferBookTitleFromFileName(fileName: string): string {
   if (!normalized) return "";
 
   const withoutDirs = normalized.replace(/\\/g, "/").split("/").pop() || normalized;
-  const noExt = withoutDirs.replace(/\.fb2(?:\.zip)?$/i, "");
+  const noExt = withoutDirs.replace(/\.(?:fb2(?:\.zip)?|epub|pdf)$/i, "");
 
   return noExt
     .replace(/[._-]+/g, " ")

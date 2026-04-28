@@ -1,282 +1,179 @@
 "use client";
 
-import { motion } from "motion/react";
-import { Upload, FileText, Loader2, CheckCircle2, Globe, Lock, Crown, AlertCircle } from "lucide-react";
-import { useState } from "react";
 import Link from "next/link";
+import { motion } from "motion/react";
+import { AlertCircle, Check, FileText, Loader2, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { currentUser } from "@/lib/mockData";
-import { createBook } from "@/lib/booksClient";
+import { useEffect, useMemo, useState } from "react";
+import { createBook, getBookAnalysisStatus } from "@/lib/booksClient";
+import type { BookAnalysisStatusDTO } from "@/lib/books";
 
-type UploadStep = "select" | "metadata" | "processing" | "complete";
+type UploadStep = "select" | "consents" | "processing" | "complete";
 
 export function UploadFlow() {
   const [step, setStep] = useState<UploadStep>("select");
-  const [fileName, setFileName] = useState("");
   const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [isPublic, setIsPublic] = useState(true);
   const [createdBookId, setCreatedBookId] = useState<string | null>(null);
+  const [analysisStatus, setAnalysisStatus] = useState<BookAnalysisStatusDTO | null>(null);
+  const [consents, setConsents] = useState({ rights: false, license: false, process: false });
   const [error, setError] = useState<string | null>(null);
   const router = useRouter();
 
-  const canCreatePrivate = currentUser.plan.features.privateBooks;
+  const canStart = selectedFile && consents.rights && consents.license && consents.process;
 
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
+  useEffect(() => {
+    if (step !== "processing" || !createdBookId) return;
+    let active = true;
+    let pollTimer: ReturnType<typeof setTimeout> | null = null;
+    const schedulePoll = (delayMs: number) => {
+      pollTimer = setTimeout(() => void loadStatus(true), Math.max(1200, delayMs));
+    };
+    const loadStatus = async (isPoll: boolean) => {
+      try {
+        const nextStatus = await getBookAnalysisStatus(createdBookId);
+        if (!active) return;
+        setAnalysisStatus(nextStatus);
+        setError(null);
+        if (nextStatus.overallState === "completed") {
+          setStep("complete");
+          return;
+        }
+        if (nextStatus.overallState === "failed") {
+          setError("Анализ не завершился. Книга останется скрытой, пока не пройдет полный анализ.");
+          return;
+        }
+        if (nextStatus.shouldPoll) schedulePoll(nextStatus.pollIntervalMs || 3000);
+      } catch (loadError) {
+        if (!active) return;
+        setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить статус анализа");
+        schedulePoll(isPoll ? 4000 : 2500);
+      }
+    };
+    void loadStatus(false);
+    return () => {
+      active = false;
+      if (pollTimer) clearTimeout(pollTimer);
+    };
+  }, [createdBookId, step]);
+
+  useEffect(() => {
+    if (step !== "complete" || !createdBookId) return;
+    const timer = setTimeout(() => router.push(`/book/${createdBookId}`), 1200);
+    return () => clearTimeout(timer);
+  }, [createdBookId, router, step]);
+
+  const chapterStats = analysisStatus?.chapterStats ?? [];
+  const checkedBlocks = useMemo(() => chapterStats.reduce((sum, chapter) => sum + chapter.checkedBlocks, 0), [chapterStats]);
+  const totalBlocks = useMemo(() => chapterStats.reduce((sum, chapter) => sum + chapter.totalBlocks, 0), [chapterStats]);
+  const progress = totalBlocks > 0 ? Math.round((checkedBlocks / totalBlocks) * 100) : createdBookId ? 18 : 6;
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
     if (!file) return;
-
     setSelectedFile(file);
-    setFileName(file.name);
+    setCreatedBookId(null);
+    setAnalysisStatus(null);
     setError(null);
-    setStep("metadata");
+    setStep("consents");
   };
 
   const handleStartProcessing = async () => {
-    if (!selectedFile) {
-      setError("Выберите файл книги");
-      return;
-    }
-
+    if (!selectedFile || !canStart) return;
     setError(null);
+    setAnalysisStatus(null);
+    setCreatedBookId(null);
     setStep("processing");
-
     try {
-      const created = await createBook({
-        file: selectedFile,
-        isPublic,
-      });
-
+      const created = await createBook({ file: selectedFile });
       setCreatedBookId(created.id);
-      setStep("complete");
     } catch (createError) {
-      const message = createError instanceof Error ? createError.message : "Не удалось загрузить книгу";
-      setError(message);
-      setStep("metadata");
+      setError(createError instanceof Error ? createError.message : "Не удалось загрузить книгу");
+      setStep("consents");
     }
   };
-
-  const handleComplete = () => {
-    if (createdBookId) {
-      router.push(`/book/${createdBookId}`);
-      return;
-    }
-
-    router.push("/library");
-  };
-
-  if (step === "metadata") {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center px-6 py-12">
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="max-w-md w-full space-y-6"
-        >
-          <div className="text-center space-y-2 mb-8">
-            <h1 className="text-2xl text-foreground">Настройки публикации</h1>
-            <p className="text-muted-foreground">{fileName}</p>
-          </div>
-
-          <div className="p-6 bg-card border border-border rounded-lg space-y-6">
-            {error && (
-              <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/30 text-sm text-destructive flex items-start gap-2">
-                <AlertCircle className="w-4 h-4 mt-0.5" />
-                <span>{error}</span>
-              </div>
-            )}
-
-            <div>
-              <h3 className="text-foreground mb-4">Видимость анализа</h3>
-              <div className="space-y-3">
-                <label className="flex items-start gap-3 p-4 border border-border rounded-lg cursor-pointer hover:border-primary/30 transition-colors">
-                  <input
-                    type="radio"
-                    name="visibility"
-                    checked={isPublic}
-                    onChange={() => setIsPublic(true)}
-                    className="mt-1"
-                  />
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Globe className="w-4 h-4 text-primary" />
-                      <span className="text-foreground">Публичная</span>
-                    </div>
-                    <p className="text-sm text-muted-foreground">
-                      Анализ будет доступен всем пользователям в каталоге
-                    </p>
-                  </div>
-                </label>
-
-                <label
-                  className={`flex items-start gap-3 p-4 border border-border rounded-lg ${
-                    canCreatePrivate
-                      ? "cursor-pointer hover:border-primary/30"
-                      : "opacity-60 cursor-not-allowed"
-                  } transition-colors`}
-                >
-                  <input
-                    type="radio"
-                    name="visibility"
-                    checked={!isPublic}
-                    onChange={() => canCreatePrivate && setIsPublic(false)}
-                    disabled={!canCreatePrivate}
-                    className="mt-1"
-                  />
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2 mb-1">
-                      <Lock className="w-4 h-4" />
-                      <span className="text-foreground">Приватная</span>
-                      {!canCreatePrivate && (
-                        <span className="flex items-center gap-1 text-xs px-2 py-0.5 bg-primary/10 text-primary rounded-full">
-                          <Crown className="w-3 h-3" />
-                          Плюс
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-sm text-muted-foreground">
-                      Только вы сможете видеть этот анализ
-                    </p>
-                    {!canCreatePrivate && (
-                      <Link
-                        href="/plans"
-                        className="text-xs text-primary hover:underline mt-2 inline-block"
-                      >
-                        Обновить до тарифа Плюс
-                      </Link>
-                    )}
-                  </div>
-                </label>
-              </div>
-            </div>
-
-            <button
-              onClick={handleStartProcessing}
-              className="w-full px-6 py-3 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity"
-            >
-              Начать анализ
-            </button>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
-
-  if (step === "processing") {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center px-6 py-12">
-        <motion.div
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          className="max-w-md text-center space-y-6"
-        >
-          <div className="w-20 h-20 rounded-full bg-secondary mx-auto flex items-center justify-center">
-            <Loader2 className="w-10 h-10 text-primary animate-spin" />
-          </div>
-
-          <div className="space-y-2">
-            <h2 className="text-2xl text-foreground">Загружаем книгу</h2>
-            <p className="text-muted-foreground">{fileName}</p>
-          </div>
-
-          <div className="space-y-3 pt-4">
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              <div className="w-2 h-2 rounded-full bg-primary animate-pulse" />
-              <span>Проверяем формат FB2/ZIP</span>
-            </div>
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              <div className="w-2 h-2 rounded-full bg-primary animate-pulse" style={{ animationDelay: "0.2s" }} />
-              <span>Извлекаем метаданные книги</span>
-            </div>
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              <div className="w-2 h-2 rounded-full bg-primary animate-pulse" style={{ animationDelay: "0.4s" }} />
-              <span>Сохраняем книгу в библиотеке</span>
-            </div>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
-
-  if (step === "complete") {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center px-6">
-        <motion.div
-          initial={{ opacity: 0, scale: 0.95 }}
-          animate={{ opacity: 1, scale: 1 }}
-          className="max-w-md text-center space-y-6"
-        >
-          <motion.div
-            initial={{ scale: 0 }}
-            animate={{ scale: 1 }}
-            transition={{ delay: 0.2, type: "spring" }}
-            className="w-20 h-20 rounded-full bg-secondary mx-auto flex items-center justify-center"
-          >
-            <CheckCircle2 className="w-10 h-10 text-primary" />
-          </motion.div>
-
-          <div className="space-y-2">
-            <h2 className="text-2xl text-foreground">Книга загружена</h2>
-            <p className="text-muted-foreground">
-              Открыть страницу книги
-            </p>
-          </div>
-
-          <button
-            onClick={handleComplete}
-            className="px-6 py-3 bg-primary text-primary-foreground rounded-lg hover:opacity-90 transition-opacity"
-          >
-            Перейти к книге
-          </button>
-        </motion.div>
-      </div>
-    );
-  }
 
   return (
-    <div className="min-h-screen bg-background flex items-center justify-center px-6">
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        className="max-w-md w-full space-y-6"
-      >
-        <div className="text-center space-y-2">
-          <h1 className="text-2xl text-foreground">Загрузите книгу</h1>
-          <p className="text-muted-foreground">
-            Поддерживаются форматы FB2 и ZIP с одним файлом FB2
-          </p>
-        </div>
+    <div className="screen-fade">
+      <div className="container-narrow" style={{ paddingBottom: 72, paddingTop: 64 }}>
+        <div className="mono" style={{ color: "var(--mark)", marginBottom: 16 }}>Плюс · загрузка книги</div>
+        <h1 style={{ fontSize: "clamp(40px, 7vw, 56px)", letterSpacing: 0, lineHeight: 1.02 }}>
+          Загрузите книгу.<br />
+          <span style={{ color: "var(--mark)", fontStyle: "italic" }}>Ремарка</span> разберёт её.
+        </h1>
+        <p className="soft" style={{ fontSize: 17, lineHeight: 1.65, marginTop: 22, maxWidth: 620 }}>
+          Файл останется приватным. Перед обработкой нужно подтвердить права и согласие на технический анализ текста.
+        </p>
 
-        {error && (
-          <div className="p-3 rounded-lg bg-destructive/10 border border-destructive/30 text-sm text-destructive flex items-start gap-2">
-            <AlertCircle className="w-4 h-4 mt-0.5" />
-            <span>{error}</span>
-          </div>
-        )}
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="card" style={{ marginTop: 44, padding: 32 }}>
+          {step === "select" && (
+            <label style={{ alignItems: "center", border: "1px dashed var(--rule)", borderRadius: "var(--r-lg)", cursor: "pointer", display: "flex", flexDirection: "column", gap: 14, padding: "56px 24px", textAlign: "center" }}>
+              <Upload size={30} style={{ color: "var(--mark)" }} />
+              <div>
+                <h2 style={{ fontSize: 28 }}>Выберите файл</h2>
+                <p className="muted" style={{ fontSize: 14, marginTop: 8 }}>EPUB · FB2 · PDF · ZIP</p>
+              </div>
+              <span className="btn btn-mark">Открыть файл</span>
+              <input type="file" className="sr-only" accept=".fb2,.epub,.pdf,.zip" onChange={handleFileSelect} />
+            </label>
+          )}
 
-        <label className="block">
-          <input
-            type="file"
-            accept=".fb2,.zip,.fb2.zip"
-            onChange={handleFileSelect}
-            className="hidden"
-          />
-          <div className="border-2 border-dashed border-border rounded-lg p-12 text-center cursor-pointer hover:border-primary/50 hover:bg-secondary/50 transition-colors">
-            <Upload className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-            <p className="text-foreground mb-2">Нажмите для выбора файла</p>
-            <p className="text-sm text-muted-foreground">или перетащите файл сюда</p>
-          </div>
-        </label>
-
-        <div className="space-y-3 pt-4">
-          <div className="flex gap-3 items-start">
-            <FileText className="w-5 h-5 text-primary flex-shrink-0 mt-0.5" />
+          {step === "consents" && selectedFile && (
             <div>
-              <p className="text-sm text-foreground">Из файла автоматически извлечем название и автора</p>
-              <p className="text-xs text-muted-foreground">Для FB2 / FB2 ZIP</p>
+              <div className="row" style={{ alignItems: "flex-start", marginBottom: 24 }}>
+                <FileText size={24} style={{ color: "var(--mark)", flexShrink: 0 }} />
+                <div>
+                  <h2 style={{ fontSize: 28 }}>Подтверждение загрузки</h2>
+                  <p className="muted" style={{ fontSize: 14, marginTop: 4 }}>{selectedFile.name}</p>
+                </div>
+              </div>
+              {error && <div className="card" style={{ borderColor: "var(--mark)", color: "var(--mark)", marginBottom: 18, padding: 14 }}><AlertCircle size={16} /> {error}</div>}
+              <div className="stack">
+                <ConsentRow checked={consents.rights} onChange={(rights) => setConsents({ ...consents, rights })} label="У меня есть право использовать этот файл для личного чтения и анализа." />
+                <ConsentRow checked={consents.license} onChange={(license) => setConsents({ ...consents, license })} label="Я предоставляю ремарке ограниченную лицензию на техническую обработку файла." />
+                <ConsentRow checked={consents.process} onChange={(process) => setConsents({ ...consents, process })} label="Я согласен на автоматическое извлечение текста, индексацию и построение разбора." />
+              </div>
+              <div className="row" style={{ flexWrap: "wrap", justifyContent: "space-between", marginTop: 28 }}>
+                <Link className="lnk" href="/legal/upload">Условия загрузки произведения</Link>
+                <button className="btn btn-mark" disabled={!canStart} onClick={handleStartProcessing} style={{ opacity: canStart ? 1 : 0.5 }}>
+                  Начать анализ
+                </button>
+              </div>
             </div>
-          </div>
-        </div>
-      </motion.div>
+          )}
+
+          {step === "processing" && (
+            <div style={{ textAlign: "center" }}>
+              <Loader2 className="mx-auto animate-spin" size={34} style={{ color: "var(--mark)" }} />
+              <h2 style={{ fontSize: 32, marginTop: 18 }}>{analysisStatus?.overallState === "running" ? "Анализируем книгу" : "Запускаем анализ"}</h2>
+              <p className="muted" style={{ fontSize: 14, margin: "10px auto 0", maxWidth: 520 }}>
+                Книга станет доступна после завершения обработки. Можно оставить страницу открытой.
+              </p>
+              <div style={{ background: "var(--paper-3)", borderRadius: 999, height: 8, marginTop: 28, overflow: "hidden" }}>
+                <div style={{ background: "var(--mark)", height: "100%", transition: "width .25s ease", width: `${progress}%` }} />
+              </div>
+              <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 12 }}>{progress}%</div>
+              {error && <p style={{ color: "var(--mark)", fontSize: 13, marginTop: 18 }}>{error}</p>}
+            </div>
+          )}
+
+          {step === "complete" && (
+            <div style={{ textAlign: "center" }}>
+              <div className="complaint-check"><Check size={18} /></div>
+              <h2 style={{ fontSize: 32, marginTop: 18 }}>Книга готова</h2>
+              <p className="muted" style={{ marginTop: 10 }}>Переводим на страницу разбора.</p>
+            </div>
+          )}
+        </motion.div>
+      </div>
     </div>
+  );
+}
+
+function ConsentRow({ checked, onChange, label }: { checked: boolean; onChange: (checked: boolean) => void; label: string }) {
+  return (
+    <label className="complaint-sworn" style={{ marginTop: 0 }}>
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span>{label}</span>
+    </label>
   );
 }

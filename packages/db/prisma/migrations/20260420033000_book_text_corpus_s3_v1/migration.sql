@@ -1,0 +1,7 @@
+ALTER TABLE "Book"
+ADD COLUMN IF NOT EXISTS "textCorpusStorageProvider" TEXT,
+ADD COLUMN IF NOT EXISTS "textCorpusStorageKey" TEXT,
+ADD COLUMN IF NOT EXISTS "textCorpusSizeBytes" INTEGER,
+ADD COLUMN IF NOT EXISTS "textCorpusSha256" TEXT,
+ADD COLUMN IF NOT EXISTS "textCorpusCompression" TEXT,
+ADD COLUMN IF NOT EXISTS "textCorpusSchemaVersion" TEXT;

@@ -4,7 +4,9 @@ services:
       context: .
       dockerfile: Dockerfile
       target: base
-    user: "${LOCAL_UID:-1000}:${LOCAL_GID:-1000}"
+    # The named .next volume is created as root; keep the dev container as root
+    # so Next.js can initialize cache/trace files without crashing on EACCES.
+    user: "0:0"
     environment:
       NODE_ENV: development
       CHOKIDAR_USEPOLLING: "1"

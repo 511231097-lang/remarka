@@ -1,21 +1,12 @@
-import { getServerSession } from "next-auth";
 import { redirect } from "next/navigation";
-import { authOptions } from "@/auth";
 import { Profile } from "@/components/Profile";
+import { resolveAuthUser } from "@/lib/authUser";
 
 export default async function ProfilePage() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user) {
+  const authUser = await resolveAuthUser();
+  if (!authUser) {
     redirect("/signin");
   }
 
-  return (
-    <Profile
-      authUser={{
-        name: session.user.name || null,
-        email: session.user.email || null,
-        image: session.user.image || null,
-      }}
-    />
-  );
+  return <Profile authUser={authUser} />;
 }

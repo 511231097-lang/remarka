@@ -10,9 +10,15 @@ type VertexOpenAICompletionRequest = {
   messages: VertexOpenAIMessage[];
   temperature?: number;
   max_tokens?: number;
+  vertexThinkingLevel?: "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
   response_format?: {
     type?: string;
   };
+};
+
+type VertexThinkingConfig = {
+  thinkingBudget?: number;
+  thinkingLevel?: "MINIMAL" | "LOW" | "MEDIUM" | "HIGH";
 };
 
 type VertexUsageMetadata = {
@@ -109,6 +115,22 @@ async function callVertexGenerateContent(
       maxOutputTokens: Number(request.max_tokens || workerConfig.vertex.extractMaxTokens),
     },
   };
+
+  const requestedThinkingLevel = String(request.vertexThinkingLevel || "").trim().toUpperCase();
+  if (
+    requestedThinkingLevel === "MINIMAL" ||
+    requestedThinkingLevel === "LOW" ||
+    requestedThinkingLevel === "MEDIUM" ||
+    requestedThinkingLevel === "HIGH"
+  ) {
+    (body.generationConfig as Record<string, unknown>).thinkingConfig = {
+      thinkingLevel: requestedThinkingLevel,
+    } satisfies VertexThinkingConfig;
+  } else if (workerConfig.vertex.thinkingBudget > 0) {
+    (body.generationConfig as Record<string, unknown>).thinkingConfig = {
+      thinkingBudget: Math.max(1, Math.floor(workerConfig.vertex.thinkingBudget)),
+    } satisfies VertexThinkingConfig;
+  }
 
   if (systemText.trim().length > 0) {
     body.systemInstruction = {

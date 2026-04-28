@@ -1,0 +1,17 @@
+{
+  "version": "v1",
+  "books": [
+    {
+      "key": "crime_and_punishment",
+      "label": "Преступление и наказание",
+      "bookId": "cmnzv1j7m0002tw6i1lwxn78n",
+      "contentVersionId": "cv_2ee5c1229328459ca2e43bb6"
+    },
+    {
+      "key": "harry_potter_2",
+      "label": "Гарри Поттер и Тайная комната",
+      "bookId": "cmnzx2dtf0002tm4h4d1zv2g6",
+      "contentVersionId": "cmnzx2dtw000mtm4hx1s8pxi8"
+    }
+  ]
+}

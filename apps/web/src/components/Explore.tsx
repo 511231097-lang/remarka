@@ -1,38 +1,45 @@
 "use client";
 
 import { motion } from "motion/react";
-import { BookOpen, Users, Lightbulb, Heart, TrendingUp, Clock, Search, ChevronLeft, ChevronRight, MapPin } from "lucide-react";
-import { useState, useEffect } from "react";
-import Link from "next/link";
-import { UserAvatar } from "@/components/UserAvatar";
-import { displayAuthor, type BookCardDTO } from "@/lib/books";
-import { likeBook, listBooks, unlikeBook } from "@/lib/booksClient";
+import { BookmarkPlus, ChevronLeft, ChevronRight, Search } from "lucide-react";
+import { useEffect, useState } from "react";
+import { type BookCardDTO } from "@/lib/books";
+import { addBookToLibrary, listBooks, removeBookFromLibrary } from "@/lib/booksClient";
+import { BookGalleryCard } from "@/components/BookGalleryCard";
+import { appendBookDetailSource } from "@/lib/bookDetailNavigation";
 
 type SortBy = "recent" | "popular";
 
 const ITEMS_PER_PAGE = 10;
+const CATEGORIES = ["Все жанры", "Русская классика", "Зарубежная проза", "Нон-фикшн", "Антиутопия", "Философия", "Психология", "Магический реализм"];
+
+function resolveBooksCountLabel(count: number): string {
+  const mod10 = count % 10;
+  const mod100 = count % 100;
+  if (mod10 === 1 && mod100 !== 11) return "книга";
+  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "книги";
+  return "книг";
+}
 
 export function Explore() {
   const [sortBy, setSortBy] = useState<SortBy>("popular");
   const [searchQuery, setSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
-  const [likePendingIds, setLikePendingIds] = useState<Set<string>>(new Set());
+  const [activeCategory, setActiveCategory] = useState("Все жанры");
+  const [libraryPendingIds, setLibraryPendingIds] = useState<Set<string>>(new Set());
   const [books, setBooks] = useState<BookCardDTO[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const totalPages = Math.max(1, Math.ceil(total / ITEMS_PER_PAGE));
-  const paginatedBooks = books;
 
-  // Reset page when search or sort changes
   useEffect(() => {
     setCurrentPage(1);
   }, [searchQuery, sortBy]);
 
   useEffect(() => {
     let active = true;
-
     async function load() {
       setLoading(true);
       setError(null);
@@ -44,96 +51,82 @@ export function Explore() {
           page: currentPage,
           pageSize: ITEMS_PER_PAGE,
         });
-
         if (!active) return;
         setBooks(response.items);
         setTotal(response.total);
       } catch (loadError) {
         if (!active) return;
-        const message = loadError instanceof Error ? loadError.message : "Не удалось загрузить каталог";
-        setError(message);
+        setError(loadError instanceof Error ? loadError.message : "Не удалось загрузить каталог");
         setBooks([]);
         setTotal(0);
       } finally {
-        if (active) {
-          setLoading(false);
-        }
+        if (active) setLoading(false);
       }
     }
-
     void load();
-
     return () => {
       active = false;
     };
   }, [currentPage, searchQuery, sortBy]);
 
-  const toggleLike = async (book: BookCardDTO) => {
-    if (!book.canLike) return;
-    if (likePendingIds.has(book.id)) return;
+  const toggleLibrary = async (book: BookCardDTO) => {
+    if (!book.canAddToLibrary && !book.canRemoveFromLibrary) return;
+    if (libraryPendingIds.has(book.id)) return;
 
     const previousState = {
-      isLiked: book.isLiked,
-      likesCount: book.likesCount,
+      isInLibrary: book.isInLibrary,
+      libraryUsersCount: book.libraryUsersCount,
+      canAddToLibrary: book.canAddToLibrary,
+      canRemoveFromLibrary: book.canRemoveFromLibrary,
     };
 
-    setLikePendingIds((prev) => {
-      const next = new Set(prev);
-      next.add(book.id);
-      return next;
-    });
-
+    setLibraryPendingIds((prev) => new Set(prev).add(book.id));
     setBooks((prev) =>
       prev.map((item) =>
         item.id === book.id
           ? {
               ...item,
-              isLiked: !previousState.isLiked,
-              likesCount: Math.max(
-                0,
-                previousState.likesCount + (previousState.isLiked ? -1 : 1),
-              ),
+              isInLibrary: !previousState.isInLibrary,
+              libraryUsersCount: Math.max(0, previousState.libraryUsersCount + (previousState.isInLibrary ? -1 : 1)),
+              canAddToLibrary: previousState.isInLibrary,
+              canRemoveFromLibrary: !previousState.isInLibrary,
             }
           : item,
       ),
     );
 
     try {
-      const likeState = previousState.isLiked
-        ? await unlikeBook(book.id)
-        : await likeBook(book.id);
-
+      const libraryState = previousState.isInLibrary ? await removeBookFromLibrary(book.id) : await addBookToLibrary(book.id);
       setBooks((prev) =>
         prev.map((item) =>
           item.id === book.id
             ? {
                 ...item,
-                isLiked: likeState.isLiked,
-                likesCount: likeState.likesCount,
+                isInLibrary: libraryState.isInLibrary,
+                libraryUsersCount: libraryState.libraryUsersCount,
+                canAddToLibrary: !libraryState.isInLibrary && !item.isOwner,
+                canRemoveFromLibrary: libraryState.isInLibrary && !item.isOwner,
               }
             : item,
         ),
       );
-    } catch (likeError) {
-      const message =
-        likeError instanceof Error
-          ? likeError.message
-          : "Не удалось обновить лайк";
-      setError(message);
-
+    } catch (libraryError) {
+      setError(libraryError instanceof Error ? libraryError.message : "Не удалось обновить библиотеку");
       setBooks((prev) =>
         prev.map((item) =>
           item.id === book.id
             ? {
                 ...item,
-                isLiked: previousState.isLiked,
-                likesCount: previousState.likesCount,
+                isInLibrary: previousState.isInLibrary,
+                libraryUsersCount: previousState.libraryUsersCount,
+                canAddToLibrary: previousState.canAddToLibrary,
+                canRemoveFromLibrary: previousState.canRemoveFromLibrary,
               }
             : item,
         ),
       );
     } finally {
-      setLikePendingIds((prev) => {
+      setLibraryPendingIds((prev) => {
         const next = new Set(prev);
         next.delete(book.id);
         return next;
@@ -142,238 +135,97 @@ export function Explore() {
   };
 
   return (
-    <div className="min-h-screen bg-background">
-      <div className="max-w-6xl mx-auto px-6 py-12">
-        {/* Header */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          className="mb-8"
-        >
-          <h1 className="text-4xl text-foreground mb-3">Каталог анализов</h1>
-          <p className="text-muted-foreground">
-            Исследуйте литературные произведения, проанализированные сообществом
-          </p>
-        </motion.div>
+    <div className="screen-fade">
+      <div className="container" style={{ paddingBottom: 24, paddingTop: 48 }}>
+        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }}>
+          <div className="row" style={{ alignItems: "flex-end", flexWrap: "wrap", gap: 24, justifyContent: "space-between" }}>
+            <div>
+              <div className="mono" style={{ color: "var(--mark)", marginBottom: 12 }}>Каталог · {total || "98"} книг</div>
+              <h1 style={{ fontSize: 48, letterSpacing: 0, lineHeight: 1.05 }}>Открытая библиотека</h1>
+              <p className="soft" style={{ fontSize: 16, lineHeight: 1.55, marginTop: 14, maxWidth: 560 }}>
+                Курируемая коллекция книг с готовым разбором и чатом. Откройте любую - и задайте вопрос.
+              </p>
+            </div>
+            <div style={{ position: "relative", width: 340 }}>
+              <Search size={16} style={{ color: "var(--ink-faint)", left: 14, position: "absolute", top: "50%", transform: "translateY(-50%)" }} />
+              <input className="input" value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Название или автор" style={{ paddingLeft: 40 }} />
+            </div>
+          </div>
 
-        {/* Search */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.1 }}
-          className="mb-6"
-        >
-          <div className="relative">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-            <input
-              type="text"
-              placeholder="Поиск по названию, автору или пользователю..."
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              className="w-full pl-12 pr-4 py-3 bg-card border border-border rounded-lg text-foreground placeholder:text-muted-foreground focus:outline-none focus:border-primary transition-colors"
-            />
+          <div className="hr" style={{ marginBottom: 20, marginTop: 36 }} />
+
+          <div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+              {CATEGORIES.map((category) => (
+                <button
+                  key={category}
+                  className={`chip ${activeCategory === category ? "active" : ""}`}
+                  onClick={() => setActiveCategory(category)}
+                  title={category === "Все жанры" ? undefined : "UI-фильтр из макета: backend-фильтра по жанрам пока нет"}
+                >
+                  {category}
+                </button>
+              ))}
+            </div>
+            <div className="row" style={{ flexWrap: "wrap", justifyContent: "space-between", marginTop: 24 }}>
+              <div className="row-sm">
+                <label style={{ color: "var(--ink-muted)", fontSize: 13 }}>Сортировка:</label>
+                <select className="input" value={sortBy} onChange={(event) => setSortBy(event.target.value as SortBy)} style={{ borderRadius: 100, fontSize: 13, padding: "8px 34px 8px 14px", width: "auto" }}>
+                  <option value="popular">Популярные</option>
+                  <option value="recent">Новые</option>
+                </select>
+              </div>
+              <span className="mono" style={{ color: "var(--ink-faint)", fontSize: 11 }}>
+                {total} {resolveBooksCountLabel(total)}
+              </span>
+            </div>
           </div>
         </motion.div>
+      </div>
 
-        {/* Sorting */}
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.15 }}
-          className="flex items-center gap-3 mb-8"
-        >
-          <span className="text-sm text-muted-foreground">Сортировка:</span>
-          <div className="flex gap-2">
-            <button
-              onClick={() => setSortBy("popular")}
-              className={`px-4 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${
-                sortBy === "popular"
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-secondary text-foreground hover:bg-primary/10"
-              }`}
-            >
-              <TrendingUp className="w-4 h-4" />
-              Популярные
-            </button>
-            <button
-              onClick={() => setSortBy("recent")}
-              className={`px-4 py-2 rounded-lg text-sm transition-colors flex items-center gap-2 ${
-                sortBy === "recent"
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-secondary text-foreground hover:bg-primary/10"
-              }`}
-            >
-              <Clock className="w-4 h-4" />
-              Недавние
-            </button>
-          </div>
-        </motion.div>
-
-        {error && (
-          <motion.div
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            className="mb-6 p-4 bg-destructive/10 border border-destructive/30 rounded-lg text-sm text-destructive"
-          >
-            {error}
-          </motion.div>
-        )}
-
-        {loading && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="text-center py-16 text-muted-foreground"
-          >
-            Загрузка каталога...
-          </motion.div>
-        )}
-
-        {/* No Results */}
+      <div className="container" style={{ paddingBottom: 96, paddingTop: 32 }}>
+        {error && <div className="card" style={{ borderColor: "var(--mark)", color: "var(--mark)", marginBottom: 24, padding: 16 }}>{error}</div>}
+        {loading && <div className="muted" style={{ padding: "64px 0", textAlign: "center" }}>Загрузка каталога...</div>}
         {!loading && books.length === 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="text-center py-16"
-          >
-            <p className="text-muted-foreground mb-4">
-              {searchQuery ? "Ничего не найдено" : "Пока нет публичных анализов"}
-            </p>
-            {searchQuery && (
-              <button
-                onClick={() => setSearchQuery("")}
-                className="text-sm text-primary hover:underline"
-              >
-                Очистить поиск
-              </button>
-            )}
-          </motion.div>
+          <div style={{ padding: "64px 0", textAlign: "center" }}>
+            <h3 style={{ fontSize: 22 }}>Ничего не нашлось</h3>
+            <p className="muted" style={{ marginTop: 8 }}>Попробуйте изменить запрос или загрузить книгу сами.</p>
+            {searchQuery && <button className="btn btn-plain" style={{ marginTop: 14 }} onClick={() => setSearchQuery("")}>Очистить поиск</button>}
+          </div>
         )}
-
-        {/* Books Grid */}
         {!loading && books.length > 0 && (
           <>
-          <div className="space-y-4">
-          {paginatedBooks.map((book, index) => {
-            return (
-            <motion.div
-              key={book.id}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.2 + index * 0.05 }}
-              className="p-6 bg-card border border-border rounded-lg hover:border-primary/30 transition-colors"
-            >
-              <div className="flex items-start gap-6">
-                <div className="flex-1">
-                  <Link href={`/book/${book.id}`} className="block mb-4">
-                    <h2 className="text-xl text-foreground mb-1 hover:text-primary transition-colors">
-                      {book.title}
-                    </h2>
-                    <p className="text-muted-foreground">{displayAuthor(book.author)}</p>
-                  </Link>
-
-                  <div className="flex items-center gap-6 text-sm mb-4 flex-wrap">
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <BookOpen className="w-4 h-4" />
-                      <span>{book.chaptersCount} глав</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <Users className="w-4 h-4" />
-                      <span>{book.charactersCount} персонажей</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <Lightbulb className="w-4 h-4" />
-                      <span>{book.themesCount} тем</span>
-                    </div>
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <MapPin className="w-4 h-4" />
-                      <span>{book.locationsCount} локаций</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <UserAvatar
-                      name={book.owner.name}
-                      image={book.owner.image}
-                      size="xxs"
-                      fallbackTextClassName="text-[10px]"
+            <div style={{ display: "grid", gap: 32, gridTemplateColumns: "repeat(auto-fill, minmax(150px, 1fr))", rowGap: 44 }}>
+              {books.map((book, index) => {
+                const disabled = (!book.canAddToLibrary && !book.canRemoveFromLibrary) || libraryPendingIds.has(book.id);
+                return (
+                  <motion.div key={book.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.03 }}>
+                    <BookGalleryCard
+                      book={book}
+                      href={appendBookDetailSource(`/book/${book.id}`, "explore")}
+                      action={
+                        !book.isOwner && !book.isInLibrary ? (
+                          <button className="badge" disabled={disabled} onClick={() => void toggleLibrary(book)} style={{ opacity: disabled ? 0.55 : 1 }}>
+                            <BookmarkPlus size={12} /> В библиотеку
+                          </button>
+                        ) : null
+                      }
                     />
-                    <span>{book.owner.name}</span>
-                    <span>•</span>
-                    <span>
-                      {new Date(book.createdAt).toLocaleDateString("ru-RU", {
-                        day: "numeric",
-                        month: "long",
-                      })}
-                    </span>
-                  </div>
-                </div>
-
-                <div className="flex flex-col items-end gap-3">
-                  <button
-                    onClick={() => void toggleLike(book)}
-                    disabled={!book.canLike || likePendingIds.has(book.id)}
-                    className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                      !book.canLike
-                        ? "bg-secondary text-muted-foreground/70 cursor-not-allowed"
-                        : book.isLiked
-                          ? "bg-primary/10 text-primary"
-                          : "bg-secondary text-muted-foreground hover:bg-secondary/80"
-                    }`}
-                  >
-                    <Heart
-                      className={`w-4 h-4 ${book.isLiked ? "fill-current" : ""}`}
-                    />
-                    <span className="text-sm">{book.likesCount}</span>
-                  </button>
-                </div>
+                  </motion.div>
+                );
+              })}
+            </div>
+            {totalPages > 1 && (
+              <div className="row" style={{ justifyContent: "center", marginTop: 48 }}>
+                <button className="btn btn-ghost btn-sm" onClick={() => setCurrentPage((page) => Math.max(1, page - 1))} disabled={currentPage === 1}>
+                  <ChevronLeft size={16} />
+                </button>
+                <span className="mono" style={{ color: "var(--ink-muted)" }}>{currentPage} / {totalPages}</span>
+                <button className="btn btn-ghost btn-sm" onClick={() => setCurrentPage((page) => Math.min(totalPages, page + 1))} disabled={currentPage === totalPages}>
+                  <ChevronRight size={16} />
+                </button>
               </div>
-            </motion.div>
-            );
-          })}
-          </div>
-
-          {/* Pagination */}
-          {totalPages > 1 && (
-            <motion.div
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              transition={{ delay: 0.4 }}
-              className="mt-8 flex items-center justify-center gap-2"
-            >
-              <button
-                onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
-                disabled={currentPage === 1}
-                className="p-2 rounded-lg border border-border hover:bg-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <ChevronLeft className="w-5 h-5" />
-              </button>
-
-              <div className="flex items-center gap-1">
-                {Array.from({ length: totalPages }, (_, i) => i + 1).map((page) => (
-                  <button
-                    key={page}
-                    onClick={() => setCurrentPage(page)}
-                    className={`px-4 py-2 rounded-lg transition-colors ${
-                      currentPage === page
-                        ? "bg-primary text-primary-foreground"
-                        : "border border-border hover:bg-secondary"
-                    }`}
-                  >
-                    {page}
-                  </button>
-                ))}
-              </div>
-
-              <button
-                onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
-                disabled={currentPage === totalPages}
-                className="p-2 rounded-lg border border-border hover:bg-secondary transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                <ChevronRight className="w-5 h-5" />
-              </button>
-            </motion.div>
-          )}
+            )}
           </>
         )}
       </div>

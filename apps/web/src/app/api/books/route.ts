@@ -1,7 +1,15 @@
-import { LocalBlobStore, S3BlobStore, type BlobStore, prisma } from "@remarka/db";
+import { randomUUID } from "node:crypto";
+import {
+  LocalBlobStore,
+  S3BlobStore,
+  createBookTextCorpusBlobStoreFromEnv,
+  enqueueOutboxEvent,
+  putBookTextCorpus,
+  type BlobStore,
+  prisma,
+} from "@remarka/db";
 import {
   BookImportError,
-  buildPlainTextFromParsedChapter,
   detectBookFormatFromFileName,
   ensureParsedBookHasChapters,
   inferBookTitleFromFileName,
@@ -12,16 +20,62 @@ import {
 import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
-import { toBookCardDTO, toBookCoreDTO } from "@/lib/books";
+import { enrichBookCardsWithGoogleCovers } from "@/lib/bookCoverResolver";
+import { toBookCardDTO, toBookCoreDTO, type BookCardDTO } from "@/lib/books";
 
 const DEFAULT_PAGE_SIZE = 10;
 const MAX_PAGE_SIZE = 50;
-const DEFAULT_IMPORT_MAX_FILE_BYTES = 25 * 1024 * 1024;
+const DEFAULT_IMPORT_MAX_FILE_BYTES = 50 * 1024 * 1024;
 const DEFAULT_IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES = 50 * 1024 * 1024;
 const DEFAULT_LOCAL_BLOB_ROOT = "/tmp/remarka-imports";
 const DEFAULT_BOOKS_S3_REGION = "us-east-1";
 const DEFAULT_BOOKS_S3_KEY_PREFIX = "remarka/books";
-const PREVIEW_MAX_CHARS = 160;
+const COVER_RESOLVE_TIMEOUT_MS = 6000;
+
+async function resolveInitialBookCoverUrl(params: {
+  title: string;
+  author: string | null;
+  ownerId: string;
+}): Promise<string | null> {
+  const normalizedTitle = String(params.title || "").trim();
+  if (!normalizedTitle) return null;
+
+  const probeCard: BookCardDTO = {
+    id: `tmp:${normalizedTitle}:${params.author || ""}`,
+    title: normalizedTitle,
+    author: params.author || null,
+    coverUrl: null,
+    isPublic: true,
+    createdAt: new Date().toISOString(),
+    owner: {
+      id: params.ownerId,
+      name: params.ownerId,
+      image: null,
+    },
+    status: "ready",
+    chaptersCount: 0,
+    charactersCount: 0,
+    themesCount: 0,
+    locationsCount: 0,
+    libraryUsersCount: 0,
+    isInLibrary: false,
+    canAddToLibrary: false,
+    canRemoveFromLibrary: false,
+    isOwner: false,
+  };
+
+  try {
+    const resolved = await Promise.race([
+      enrichBookCardsWithGoogleCovers([probeCard]),
+      new Promise<BookCardDTO[]>((resolve) => setTimeout(() => resolve([probeCard]), COVER_RESOLVE_TIMEOUT_MS)),
+    ]);
+
+    const candidate = resolved[0]?.coverUrl;
+    return candidate ? String(candidate) : null;
+  } catch {
+    return null;
+  }
+}
 
 function parsePositiveInt(value: string | null, fallback: number): number {
   const parsed = Number.parseInt(String(value || ""), 10);
@@ -50,9 +104,9 @@ function resolveUploadFormat(fileName: string): BookFormat | null {
   return null;
 }
 
-function parseScope(value: string | null): "explore" | "library" | "favorites" {
+function parseScope(value: string | null): "explore" | "library" {
   if (value === "library") return "library";
-  if (value === "favorites") return "favorites";
+  if (value === "favorites") return "library";
   return "explore";
 }
 
@@ -60,74 +114,41 @@ function parseSort(value: string | null): "recent" | "popular" {
   return value === "popular" ? "popular" : "recent";
 }
 
-function parseIsPublic(value: FormDataEntryValue | null): boolean {
-  const normalized = String(value || "").trim().toLowerCase();
-  if (!normalized) return true;
-  if (["1", "true", "yes", "on"].includes(normalized)) return true;
-  if (["0", "false", "no", "off"].includes(normalized)) return false;
-  return true;
-}
-
 function resolveMimeType(format: BookFormat, fileType: string): string {
   const normalized = String(fileType || "").trim();
   if (normalized) return normalized;
   if (format === "fb2") return "application/x-fictionbook+xml";
+  if (format === "epub") return "application/epub+zip";
+  if (format === "pdf") return "application/pdf";
   return "application/zip";
-}
-
-function normalizePreviewText(value: string): string {
-  return String(value || "")
-    .replace(/\r\n?/g, "\n")
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .join(" ")
-    .replace(/[\t ]+/g, " ")
-    .trim();
-}
-
-function trimPreviewText(value: string, maxChars: number): string {
-  const normalized = normalizePreviewText(value);
-  if (!normalized) return "";
-  if (normalized.length <= maxChars) return normalized;
-
-  let candidate = normalized.slice(0, maxChars).trimEnd();
-  if (!candidate) return "";
-
-  const lastSpace = candidate.lastIndexOf(" ");
-  if (lastSpace >= Math.floor(maxChars * 0.6)) {
-    candidate = candidate.slice(0, lastSpace).trimEnd();
-  }
-
-  if (!candidate) {
-    candidate = normalized.slice(0, maxChars).trimEnd();
-  }
-
-  return `${candidate}…`;
-}
-
-function inlineTextFromChapterBlock(block: ParsedChapter["blocks"][number]): string {
-  return normalizePreviewText(block.inlines.map((part) => part.text).join(""));
-}
-
-function resolveChapterPreview(chapter: ParsedChapter): string | null {
-  const firstParagraph = chapter.blocks.find((block) => {
-    if (block.type !== "paragraph") return false;
-    return Boolean(inlineTextFromChapterBlock(block));
-  });
-
-  if (firstParagraph) {
-    const preview = trimPreviewText(inlineTextFromChapterBlock(firstParagraph), PREVIEW_MAX_CHARS);
-    return preview || null;
-  }
-
-  const fallback = trimPreviewText(buildPlainTextFromParsedChapter(chapter), PREVIEW_MAX_CHARS);
-  return fallback || null;
 }
 
 function resolveChapterTitle(chapter: ParsedChapter, orderIndex: number): string {
   const title = String(chapter.title || "").trim();
   return title || `Глава ${orderIndex}`;
+}
+
+function normalizeWhitespace(value: string): string {
+  return String(value || "")
+    .replace(/\r\n?/g, "\n")
+    .replace(/[ \t]+\n/g, "\n")
+    .trim();
+}
+
+function resolveChapterRawText(chapter: ParsedChapter): string {
+  const blocks = Array.isArray(chapter.blocks) ? chapter.blocks : [];
+  const chunks = blocks
+    .map((block) => {
+      const inlines = Array.isArray(block?.inlines) ? block.inlines : [];
+      return inlines.map((inline) => String(inline?.text || "")).join("").trim();
+    })
+    .filter(Boolean);
+
+  return normalizeWhitespace(chunks.join("\n\n"));
+}
+
+function createOpaqueId(): string {
+  return `c${randomUUID().replace(/-/g, "").slice(0, 24)}`;
 }
 
 function resolveLocalBooksBlobRoot(): string {
@@ -173,13 +194,14 @@ function resolveBooksBlobStore(): BlobStore {
 }
 
 export async function GET(request: Request) {
+  const { searchParams } = new URL(request.url);
+  const scope = parseScope(searchParams.get("scope"));
   const authUser = await resolveAuthUser();
-  if (!authUser) {
+  if (scope === "library" && !authUser) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const { searchParams } = new URL(request.url);
-  const scope = parseScope(searchParams.get("scope"));
+  const viewerUserId = authUser?.id || "__anonymous__";
   const sort = parseSort(searchParams.get("sort"));
   const q = String(searchParams.get("q") || "").trim();
 
@@ -188,12 +210,12 @@ export async function GET(request: Request) {
   const skip = (page - 1) * pageSize;
 
   const andFilters: Prisma.BookWhereInput[] = [];
+  andFilters.push({ analysisStatus: "completed" });
+
   if (scope === "library") {
-    andFilters.push({ ownerUserId: authUser.id });
-  } else if (scope === "favorites") {
-    andFilters.push({ isPublic: true });
-    andFilters.push({ ownerUserId: { not: authUser.id } });
-    andFilters.push({ likes: { some: { userId: authUser.id } } });
+    andFilters.push({
+      OR: [{ ownerUserId: authUser!.id }, { likes: { some: { userId: authUser!.id } } }],
+    });
   } else {
     andFilters.push({ isPublic: true });
   }
@@ -237,7 +259,7 @@ export async function GET(request: Request) {
         },
         likes: {
           where: {
-            userId: authUser.id,
+            userId: viewerUserId,
           },
           select: {
             bookId: true,
@@ -246,14 +268,19 @@ export async function GET(request: Request) {
         _count: {
           select: {
             likes: true,
+            bookCharacters: true,
+            bookThemes: true,
+            bookLocations: true,
           },
         },
       },
     }),
   ]);
 
+  const cards = rows.map((row) => toBookCardDTO(row, authUser?.id || null));
+
   return NextResponse.json({
-    items: rows.map((row) => toBookCardDTO(row, authUser.id)),
+    items: cards,
     page,
     pageSize,
     total,
@@ -283,7 +310,7 @@ export async function POST(request: Request) {
 
   const format = resolveUploadFormat(fileEntry.name);
   if (!format) {
-    return NextResponse.json({ error: "Unsupported format. Use FB2 or FB2 ZIP." }, { status: 415 });
+    return NextResponse.json({ error: "Unsupported format. Use FB2, FB2 ZIP, EPUB or PDF." }, { status: 415 });
   }
 
   const bytes = new Uint8Array(await fileEntry.arrayBuffer());
@@ -294,7 +321,11 @@ export async function POST(request: Request) {
 
   let parsedTitle: string | null = null;
   let parsedAuthor: string | null = null;
-  let chaptersToCreate: Array<{ orderIndex: number; title: string; previewText: string | null }> = [];
+  let parsedSummary: string | null = null;
+  const preparedBookId = createOpaqueId();
+  const dualWriteRawText = parseBooleanEnv(process.env.BOOK_TEXT_CORPUS_DUAL_WRITE_ENABLED, true);
+  let chaptersToCreate: Array<{ id: string; orderIndex: number; title: string; summary: string | null; rawText: string }> =
+    [];
 
   try {
     const parsed = await parseBook({
@@ -307,13 +338,16 @@ export async function POST(request: Request) {
     const normalizedBook = ensureParsedBookHasChapters(parsed);
     parsedTitle = String(normalizedBook.metadata.title || "").trim() || null;
     parsedAuthor = String(normalizedBook.metadata.author || "").trim() || null;
+    parsedSummary = String(normalizedBook.metadata.annotation || "").trim() || null;
 
     chaptersToCreate = normalizedBook.chapters.map((chapter, index) => {
       const orderIndex = index + 1;
       return {
+        id: createOpaqueId(),
         orderIndex,
         title: resolveChapterTitle(chapter, orderIndex),
-        previewText: resolveChapterPreview(chapter),
+        summary: null,
+        rawText: resolveChapterRawText(chapter),
       };
     });
   } catch (error) {
@@ -321,7 +355,8 @@ export async function POST(request: Request) {
       return NextResponse.json({ error: error.message, code: error.code }, { status: 422 });
     }
 
-    return NextResponse.json({ error: "Failed to parse FB2 file" }, { status: 422 });
+    console.error("Book import failed", error);
+    return NextResponse.json({ error: "Failed to parse book file" }, { status: 422 });
   }
 
   let blob: Awaited<ReturnType<BlobStore["put"]>>;
@@ -335,36 +370,136 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Failed to store uploaded file" }, { status: 500 });
   }
 
-  const created = await prisma.book.create({
-    data: {
-      ownerUserId: authUser.id,
-      title: parsedTitle || inferBookTitleFromFileName(fileEntry.name) || "Без названия",
-      author: parsedAuthor,
-      chapterCount: chaptersToCreate.length,
-      isPublic: parseIsPublic(formData.get("isPublic")),
-      fileName: fileEntry.name,
-      mimeType: resolveMimeType(format, fileEntry.type),
-      sizeBytes: blob.sizeBytes,
-      storageProvider: blob.provider,
-      storageKey: blob.storageKey,
-      fileSha256: blob.sha256,
-      chapters: {
-        create: chaptersToCreate,
-      },
-    },
-    include: {
-      owner: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          image: true,
-        },
-      },
-    },
+  const resolvedBookTitle = parsedTitle || inferBookTitleFromFileName(fileEntry.name) || "Без названия";
+  const resolvedCoverUrl = await resolveInitialBookCoverUrl({
+    title: resolvedBookTitle,
+    author: parsedAuthor,
+    ownerId: authUser.id,
   });
+
+  let textCorpusBlobStore: BlobStore;
+  let textCorpusBlob: Awaited<ReturnType<typeof putBookTextCorpus>>;
+  try {
+    textCorpusBlobStore = createBookTextCorpusBlobStoreFromEnv();
+    textCorpusBlob = await putBookTextCorpus({
+      store: textCorpusBlobStore,
+      bookId: preparedBookId,
+      chapters: chaptersToCreate.map((chapter) => ({
+        chapterId: chapter.id,
+        orderIndex: chapter.orderIndex,
+        title: chapter.title,
+        rawText: chapter.rawText,
+      })),
+    });
+  } catch {
+    return NextResponse.json({ error: "Failed to store parsed text corpus" }, { status: 500 });
+  }
+
+  const created = await (async () => {
+    try {
+      return await prisma.$transaction(async (tx): Promise<
+        Prisma.BookGetPayload<{
+          include: {
+            owner: {
+              select: {
+                id: true;
+                name: true;
+                email: true;
+                image: true;
+              };
+            };
+          };
+        }>
+      > => {
+        const createdBook = await tx.book.create({
+          data: {
+            id: preparedBookId,
+            ownerUserId: authUser.id,
+            title: resolvedBookTitle,
+            author: parsedAuthor,
+            coverUrl: resolvedCoverUrl,
+            summary: parsedSummary,
+            chapterCount: chaptersToCreate.length,
+            isPublic: false,
+            analysisState: "queued",
+            analysisStatus: "queued",
+            analysisError: null,
+            analysisTotalBlocks: 0,
+            analysisCheckedBlocks: 0,
+            analysisPromptTokens: 0,
+            analysisCompletionTokens: 0,
+            analysisTotalTokens: 0,
+            analysisChapterStatsJson: [],
+            analysisRequestedAt: new Date(),
+            analysisStartedAt: null,
+            analysisFinishedAt: null,
+            analysisCompletedAt: null,
+            fileName: fileEntry.name,
+            mimeType: resolveMimeType(format, fileEntry.type),
+            sizeBytes: blob.sizeBytes,
+            storageProvider: blob.provider,
+            storageKey: blob.storageKey,
+            fileSha256: blob.sha256,
+            textCorpusStorageProvider: textCorpusBlob.provider,
+            textCorpusStorageKey: textCorpusBlob.storageKey,
+            textCorpusSizeBytes: textCorpusBlob.sizeBytes,
+            textCorpusSha256: textCorpusBlob.sha256,
+            textCorpusCompression: textCorpusBlob.compression,
+            textCorpusSchemaVersion: textCorpusBlob.schemaVersion,
+            chapters: {
+              create: chaptersToCreate.map((chapter) => ({
+                id: chapter.id,
+                orderIndex: chapter.orderIndex,
+                title: chapter.title,
+                summary: chapter.summary,
+                rawText: dualWriteRawText ? chapter.rawText : null,
+              })),
+            },
+          },
+          include: {
+            owner: {
+              select: {
+                id: true,
+                name: true,
+                email: true,
+                image: true,
+              },
+            },
+          },
+        });
+
+        await enqueueOutboxEvent({
+          client: tx,
+          aggregateType: "book",
+          aggregateId: createdBook.id,
+          eventType: "book.npz-analysis.requested",
+          payloadJson: {
+            bookId: createdBook.id,
+            ownerUserId: createdBook.ownerUserId,
+            requestedAt: new Date().toISOString(),
+            requestId: randomUUID(),
+            triggerSource: "auto_upload",
+            source: "auto_upload",
+          },
+        });
+
+        return createdBook;
+      });
+    } catch (error) {
+      try {
+        await textCorpusBlobStore.delete(textCorpusBlob.storageKey);
+      } catch {
+        // keep upload flow resilient; orphan cleanup can run later if needed
+      }
+      throw error;
+    }
+  })();
 
   const dto = toBookCoreDTO(created);
   dto.canManage = true;
+  console.info("[book-analysis-queued]", {
+    bookId: created.id,
+    chapterCount: created.chapterCount,
+  });
   return NextResponse.json(dto, { status: 201 });
 }

@@ -1,0 +1,48 @@
+[Unit]
+Description=Remarka Worker (pg-boss queue runner)
+Documentation=https://github.com/<owner>/remarka
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=remarka
+Group=remarka
+WorkingDirectory=/srv/remarka/current
+
+# The worker has no build step (apps/worker/package.json `start` script is
+# `tsx --env-file=.env src/index.ts`). We invoke tsx directly via Node's
+# loader so we don't depend on package.json scripts and the env file is
+# supplied by systemd's EnvironmentFile.
+ExecStart=/usr/bin/node --import tsx /srv/remarka/current/apps/worker/src/index.ts
+
+EnvironmentFile=/srv/remarka/shared/env/worker.env
+Environment=NODE_ENV=production
+
+Restart=always
+RestartSec=5s
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Worker server: 8 GiB RAM. Analysis bursts can spike — leave 2 GiB for OS.
+MemoryMax=6G
+TasksMax=512
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=remarka-worker
+
+# Hardening.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/srv/remarka /tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

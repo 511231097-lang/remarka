@@ -3,7 +3,9 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
   DeleteObjectCommand,
+  DeleteObjectsCommand,
   GetObjectCommand,
+  ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
   type GetObjectCommandOutput,
@@ -26,6 +28,7 @@ export interface BlobStore {
   put(input: BlobPutInput): Promise<BlobPutResult>;
   get(storageKey: string): Promise<Uint8Array>;
   delete(storageKey: string): Promise<void>;
+  deletePrefix(prefix: string): Promise<void>;
 }
 
 function sanitizeFileName(fileName: string): string {
@@ -140,6 +143,12 @@ export class LocalBlobStore implements BlobStore {
     const absolutePath = this.resolveAbsolute(storageKey);
     await fs.rm(absolutePath, { force: true });
   }
+
+  async deletePrefix(prefix: string): Promise<void> {
+    const safePrefix = toRelativeSafeKey(prefix);
+    const absolutePath = this.resolveAbsolute(path.posix.join(safePrefix, "__prefix__placeholder__"));
+    await fs.rm(path.dirname(absolutePath), { recursive: true, force: true });
+  }
 }
 
 export class S3BlobStore implements BlobStore {
@@ -230,5 +239,42 @@ export class S3BlobStore implements BlobStore {
         Key: key,
       })
     );
+  }
+
+  async deletePrefix(prefix: string): Promise<void> {
+    const safePrefix = toRelativeSafeKey(prefix);
+    const resolvedPrefix = this.toStorageKey(safePrefix);
+    let continuationToken: string | undefined;
+
+    while (true) {
+      const response = await this.client.send(
+        new ListObjectsV2Command({
+          Bucket: this.bucket,
+          Prefix: resolvedPrefix,
+          ContinuationToken: continuationToken,
+        })
+      );
+
+      const keys = (response.Contents || [])
+        .map((item) => String(item.Key || "").trim())
+        .filter(Boolean);
+
+      if (keys.length > 0) {
+        await this.client.send(
+          new DeleteObjectsCommand({
+            Bucket: this.bucket,
+            Delete: {
+              Objects: keys.map((key) => ({ Key: key })),
+              Quiet: true,
+            },
+          })
+        );
+      }
+
+      if (!response.IsTruncated || !response.NextContinuationToken) {
+        break;
+      }
+      continuationToken = response.NextContinuationToken;
+    }
   }
 }

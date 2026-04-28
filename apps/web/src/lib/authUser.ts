@@ -1,5 +1,6 @@
 import { prisma } from "@remarka/db";
 import { getServerSession } from "next-auth";
+import type { UserRole } from "@prisma/client";
 import { authOptions } from "@/auth";
 
 export interface AuthUser {
@@ -7,6 +8,7 @@ export interface AuthUser {
   name: string | null;
   email: string | null;
   image: string | null;
+  role: UserRole;
 }
 
 export async function resolveAuthUser(): Promise<AuthUser | null> {
@@ -21,6 +23,7 @@ export async function resolveAuthUser(): Promise<AuthUser | null> {
       name: true,
       email: true,
       image: true,
+      role: true,
     },
   });
 

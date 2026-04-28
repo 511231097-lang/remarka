@@ -6,6 +6,7 @@ type Theme = "light" | "dark";
 
 interface ThemeContextType {
   theme: Theme;
+  setTheme: (theme: Theme) => void;
   toggleTheme: () => void;
 }
 
@@ -13,9 +14,9 @@ const ThemeContext = createContext<ThemeContextType | undefined>(undefined);
 
 function resolveInitialTheme(): Theme {
   if (typeof window === "undefined") return "light";
-  const saved = window.localStorage.getItem("theme");
+  const saved = window.localStorage.getItem("remarka-theme") || window.localStorage.getItem("theme");
   if (saved === "light" || saved === "dark") return saved;
-  return window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light";
+  return "light";
 }
 
 export function ThemeProvider({ children }: { children: ReactNode }) {
@@ -27,17 +28,19 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     const root = document.documentElement;
+    root.setAttribute("data-theme", theme);
     if (theme === "dark") {
       root.classList.add("dark");
     } else {
       root.classList.remove("dark");
     }
-    window.localStorage.setItem("theme", theme);
+    window.localStorage.setItem("remarka-theme", theme);
   }, [theme]);
 
   const value = useMemo<ThemeContextType>(
     () => ({
       theme,
+      setTheme,
       toggleTheme: () => {
         setTheme((prev) => (prev === "light" ? "dark" : "light"));
       },

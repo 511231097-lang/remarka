@@ -1,0 +1,166 @@
+{
+  "version": "v1",
+  "generatedAt": "2026-04-21T17:39:49.087Z",
+  "configPath": "/home/west/Documents/myb/remarka/evals/chat-regression.singlebook.smoke.json",
+  "name": "chat-regression-singlebook-smoke",
+  "runAnalysis": false,
+  "thresholds": {
+    "costIncreasePct": 0.25,
+    "p95LatencyIncreasePct": 0.35,
+    "groundedProxyDropPp": 0.1
+  },
+  "chatTools": [
+    "search_paragraphs_hybrid",
+    "search_scenes",
+    "get_scene_context",
+    "get_paragraph_slice"
+  ],
+  "books": [
+    {
+      "bookId": "cf612551b844e457fb1d00948",
+      "label": "Так говорил Заратустра A [cmo7nixlc00idp809th7jtmu1]",
+      "analysis": {
+        "requested": false,
+        "state": "skipped",
+        "runId": "cmo7m8i601sm8kx92low99l5r",
+        "chatModel": "gemini-3.1-flash-lite-preview",
+        "embeddingModel": "gemini-embedding-001",
+        "llmPromptTokens": 505485,
+        "llmCompletionTokens": 112056,
+        "llmTotalTokens": 617541,
+        "embeddingInputTokens": 236287,
+        "llmCostUsd": 0.29445525,
+        "embeddingCostUsd": 0.03544305,
+        "totalCostUsd": 0.3298983,
+        "totalElapsedMs": 113842,
+        "llmLatencyMs": 491689,
+        "embeddingLatencyMs": 178900,
+        "llmCalls": 227,
+        "embeddingCalls": 12,
+        "startedAt": "2026-04-20T19:56:37.743Z",
+        "completedAt": "2026-04-20T19:58:31.585Z",
+        "error": null
+      },
+      "aggregate": {
+        "questions": 1,
+        "totalCostUsd": 0.0280224,
+        "totalLatencyMs": 61316,
+        "avgLatencyMs": 61316,
+        "p95LatencyMs": 61316,
+        "totalInputTokens": 7494,
+        "totalOutputTokens": 1086,
+        "totalTokens": 8580,
+        "totalEmbeddingInputTokens": 16,
+        "citationsRate": 1,
+        "toolUseRate": 1,
+        "fallbackRate": 0,
+        "groundedProxyRate": 1,
+        "stepMetrics": [
+          {
+            "step": "main",
+            "calls": 1,
+            "totalLatencyMs": 60272,
+            "avgLatencyMs": 60272,
+            "inputTokens": 7187,
+            "outputTokens": 1075,
+            "totalTokens": 8262,
+            "totalCostUsd": 0.027274
+          },
+          {
+            "step": "planner",
+            "calls": 1,
+            "totalLatencyMs": 1039,
+            "avgLatencyMs": 1039,
+            "inputTokens": 307,
+            "outputTokens": 11,
+            "totalTokens": 318,
+            "totalCostUsd": 0.00009325
+          }
+        ]
+      },
+      "questions": [
+        {
+          "question": "Как связаны сцена с канатоходцем в прологе, образ «последнего человека» и идея сверхчеловека, и почему именно через эту связку задается исходное напряжение всей книги?",
+          "answer": "В прологе «Так говорил Заратустра» эти три образа сплетаются в единую метафору, которая задает главный философский и драматический конфликт всей книги:\n\n1. **Сверхчеловек и метафора каната:** Заратустра приходит на базарную площадь, где толпа ждет выступления канатоходца. Он использует эту ситуацию для проповеди, провозглашая: *«Человек — это канат, натянутый между животным и сверхчеловеком, — канат над пропастью»*. Сверхчеловек здесь — это высшая цель, смысл земли, требующий от человека преодоления самого себя и готовности к гибели ради перехода на «другой берег».\n\n2. **«Последний человек» как антипод:** Видя, что толпа не понимает его и смеется, Заратустра решает сыграть на их гордости и описывает самое презренное существо — «последнего человека». Это измельчавший, самодовольный обыватель, который ищет лишь комфорта, тепла и мелких удовольствий, не способный на великую тоску или творчество (*«Что такое звезда? — так вопрошает последний человек и моргает»*). \n\n3. **Сцена с канатоходцем:** Вместо того чтобы ужаснуться образу «последнего человека», толпа с восторгом требует: *«Дай нам этого последнего человека, о Заратустра... И мы подарим тебе сверхчеловека!»* В этот момент предельного непонимания начинается реальное выступление канатоходца. Из башни выскакивает пестрый скоморох, перепрыгивает через канатоходца, и тот срывается в пропасть. Умирая, канатоходец боится ада, но Заратустра утешает его, говоря, что тот *«сделал опасность своим призванием»*, и в этом нет ничего презренного.\n\n**Почему это задает исходное напряжение:**\n* **Конфликт идеала и реальности:** Сцена демонстрирует абсолютную пропасть между устремлениями Заратустры (Сверхчеловек) и желаниями толпы (Последний человек). \n* **Опасность пути:** Падение канатоходца буквально воплощает метафору Заратустры — путь преодоления человека смертельно опасен («опасно прохождение, опасно быть в пути»).\n* **Смена стратегии:** Именно после этого провала и смерти канатоходца (которого Заратустра берется похоронить) философ осознает свою главную ошибку. Он понимает, что не должен обращаться к толпе. Ему нужны не «мертвецы» и не «стадо», а живые созидатели и попутчики. Это определяет весь дальнейший сюжет книги — поиск Заратустрой тех, кто способен его услышать.",
+          "answerPreview": "В прологе «Так говорил Заратустра» эти три образа сплетаются в единую метафору, которая задает главный философский и драматический конфликт всей книги: 1. **Сверхчеловек и метафора каната:** Заратустра приходит на базарную площадь, где толп",
+          "totalLatencyMs": 61316,
+          "modelInputTokens": 7494,
+          "modelOutputTokens": 1086,
+          "modelTotalTokens": 8580,
+          "embeddingInputTokens": 16,
+          "chatCostUsd": 0.02802,
+          "embeddingCostUsd": 0.0000024,
+          "totalCostUsd": 0.0280224,
+          "citationCount": 1,
+          "toolRunCount": 4,
+          "fallbackUsed": false,
+          "fallbackKind": null,
+          "chatModel": "gemini-3.1-pro-preview",
+          "embeddingModel": "gemini-embedding-001",
+          "llmSteps": [
+            {
+              "step": "planner",
+              "model": "gemini-3.1-flash-lite-preview",
+              "latencyMs": 1039,
+              "inputTokens": 307,
+              "outputTokens": 11,
+              "totalTokens": 318,
+              "chatCostUsd": 0.00009325
+            },
+            {
+              "step": "main",
+              "model": "gemini-3.1-pro-preview",
+              "latencyMs": 60272,
+              "inputTokens": 7187,
+              "outputTokens": 1075,
+              "totalTokens": 8262,
+              "chatCostUsd": 0.027274
+            }
+          ],
+          "quality": {
+            "hasCitations": true,
+            "usedTools": true,
+            "groundedProxy": true
+          }
+        }
+      ]
+    }
+  ],
+  "overall": {
+    "questions": 1,
+    "totalCostUsd": 0.0280224,
+    "totalLatencyMs": 61316,
+    "avgLatencyMs": 61316,
+    "p95LatencyMs": 61316,
+    "totalInputTokens": 7494,
+    "totalOutputTokens": 1086,
+    "totalTokens": 8580,
+    "totalEmbeddingInputTokens": 16,
+    "citationsRate": 1,
+    "toolUseRate": 1,
+    "fallbackRate": 0,
+    "groundedProxyRate": 1,
+    "stepMetrics": [
+      {
+        "step": "main",
+        "calls": 1,
+        "totalLatencyMs": 60272,
+        "avgLatencyMs": 60272,
+        "inputTokens": 7187,
+        "outputTokens": 1075,
+        "totalTokens": 8262,
+        "totalCostUsd": 0.027274
+      },
+      {
+        "step": "planner",
+        "calls": 1,
+        "totalLatencyMs": 1039,
+        "avgLatencyMs": 1039,
+        "inputTokens": 307,
+        "outputTokens": 11,
+        "totalTokens": 318,
+        "totalCostUsd": 0.00009325
+      }
+    ]
+  }
+}

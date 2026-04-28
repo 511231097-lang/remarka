@@ -7,6 +7,12 @@ coverage
 .env
 .env.local
 .env.docker
+.env.eval
+.claude/scheduled_tasks.lock
+.claude/.session*
 apps/web/.env.local
 apps/worker/.env
 packages/db/.env
+evals/corpus-inputs/
+.codex
+.pgdata-local/

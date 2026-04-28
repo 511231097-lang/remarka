@@ -1,21 +1,11 @@
 import { redirect } from "next/navigation";
-import { getServerSession } from "next-auth";
-import { Layout } from "@/components/Layout";
-import { authOptions } from "@/auth";
+import { resolveAuthUser } from "@/lib/authUser";
 
 export default async function ProtectedLayout({ children }: { children: React.ReactNode }) {
-  const session = await getServerSession(authOptions);
-
-  if (!session?.user) {
+  const authUser = await resolveAuthUser();
+  if (!authUser) {
     redirect("/signin");
   }
 
-  const userName = session.user.name?.trim() || session.user.email || "Пользователь";
-  const userImage = session.user.image || null;
-
-  return (
-    <Layout userName={userName} userImage={userImage}>
-      {children}
-    </Layout>
-  );
+  return <>{children}</>;
 }

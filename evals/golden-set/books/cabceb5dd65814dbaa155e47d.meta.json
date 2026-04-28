@@ -1,0 +1,14 @@
+{
+  "bookId": "cabceb5dd65814dbaa155e47d",
+  "title": "Гарри Поттер и Тайная комната",
+  "author": "Джоанн Кэтлин Роулинг",
+  "fileName": "Гарри Поттер и Тайная комната.fb2",
+  "analysisRunId": "cmoemi78g0003oy90pa3ls4d9",
+  "analysisCompletedAt": "2026-04-25T17:40:37.490Z",
+  "analysisConfigHash": "cec0e938b08013b40b5cefec1184516fd4f6295b761c51afb21d5fa3c07aede5",
+  "chapterCount": 18,
+  "paragraphCount": 3294,
+  "paragraphEmbeddingCount": 3294,
+  "sceneCount": 506,
+  "notes": "Selected as the latest completed Harry Potter 2 analysis with persisted BookParagraph rows."
+}

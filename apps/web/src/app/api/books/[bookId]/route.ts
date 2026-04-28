@@ -1,4 +1,4 @@
-import { LocalBlobStore, S3BlobStore, prisma } from "@remarka/db";
+import { LocalBlobStore, S3BlobStore, createArtifactBlobStoreFromEnv, prisma } from "@remarka/db";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
 import { toBookCoreDTO } from "@/lib/books";
@@ -70,6 +70,14 @@ async function deleteBookBlob(params: { storageProvider: string; storageKey: str
   }
 }
 
+async function deleteArtifactPayloadsForBook(bookId: string): Promise<void> {
+  const store = createArtifactBlobStoreFromEnv();
+  await Promise.allSettled([
+    store.deletePrefix(`analysis-runs/${bookId}`),
+    store.deletePrefix(`chat-runs/${bookId}`),
+  ]);
+}
+
 async function resolveBook(context: RouteContext) {
   const params = await context.params;
   const bookId = String(params.bookId || "").trim();
@@ -112,54 +120,12 @@ export async function GET(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
 
-  const dto = toBookCoreDTO(book);
-  dto.canManage = book.ownerUserId === authUser.id;
-  return NextResponse.json(dto);
-}
-
-export async function PATCH(request: Request, context: RouteContext) {
-  const authUser = await resolveAuthUser();
-  if (!authUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-
-  const resolved = await resolveBook(context);
-  if (resolved.error) return resolved.error;
-  const { book, bookId } = resolved;
-
-  if (book.ownerUserId !== authUser.id) {
+  if (book.analysisStatus !== "completed") {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
 
-  let payload: unknown;
-  try {
-    payload = await request.json();
-  } catch {
-    return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
-  }
-
-  const isPublic = (payload as { isPublic?: unknown })?.isPublic;
-  if (typeof isPublic !== "boolean") {
-    return NextResponse.json({ error: "isPublic must be a boolean" }, { status: 400 });
-  }
-
-  const updated = await prisma.book.update({
-    where: { id: bookId },
-    data: { isPublic },
-    include: {
-      owner: {
-        select: {
-          id: true,
-          name: true,
-          email: true,
-          image: true,
-        },
-      },
-    },
-  });
-
-  const dto = toBookCoreDTO(updated);
-  dto.canManage = true;
+  const dto = toBookCoreDTO(book);
+  dto.canManage = book.ownerUserId === authUser.id;
   return NextResponse.json(dto);
 }
 
@@ -188,6 +154,12 @@ export async function DELETE(_request: Request, context: RouteContext) {
     });
   } catch {
     // Blob cleanup failures should not block successful book deletion.
+  }
+
+  try {
+    await deleteArtifactPayloadsForBook(bookId);
+  } catch {
+    // Artifact payload cleanup failures should not block successful book deletion.
   }
 
   return new NextResponse(null, { status: 204 });
