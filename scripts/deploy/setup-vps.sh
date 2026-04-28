@@ -5,7 +5,7 @@
 #   sudo ./setup-vps.sh web
 #   sudo ./setup-vps.sh worker
 #
-# Sets up Node 20, system user, directory layout, firewall, systemd units.
+# Sets up Node 22, system user, directory layout, firewall, systemd units.
 # Re-runnable: each step checks current state before changing anything.
 
 set -euo pipefail
@@ -46,10 +46,10 @@ apt-get install -y --no-install-recommends \
   unzip
 
 # ---------------------------------------------------------------------------
-log "2/8 Installing Node.js 20.x LTS (NodeSource)"
+log "2/8 Installing Node.js 22.x LTS (NodeSource)"
 # ---------------------------------------------------------------------------
-if ! command -v node >/dev/null 2>&1 || ! node -v | grep -q '^v20\.'; then
-  curl -fsSL https://deb.nodesource.com/setup_20.x | bash -
+if ! command -v node >/dev/null 2>&1 || ! node -v | grep -q '^v22\.'; then
+  curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
   apt-get install -y nodejs
 else
   echo "Node $(node -v) already installed."
