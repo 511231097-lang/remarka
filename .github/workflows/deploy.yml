@@ -29,10 +29,10 @@ jobs:
       release_id: ${{ steps.release.outputs.id }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Node 20
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v5
         with:
           node-version: "20"
           cache: npm
@@ -94,12 +94,18 @@ jobs:
             ./ _bundle/
 
       - name: Upload bundle artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: remarka-bundle-${{ steps.release.outputs.id }}
           path: _bundle
           retention-days: 7
           if-no-files-found: error
+          # CRITICAL: by default upload-artifact@v4 ignores hidden files/dirs
+          # (anything starting with a dot). Without this flag the .next/
+          # standalone build is silently dropped, and the deployed server.js
+          # goes missing on disk. See:
+          # https://github.com/actions/upload-artifact#hidden-files
+          include-hidden-files: true
 
   deploy-web:
     name: Deploy web
@@ -115,7 +121,7 @@ jobs:
       APP_HOME: /srv/remarka
     steps:
       - name: Download bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: remarka-bundle-${{ needs.build.outputs.release_id }}
           path: _bundle
@@ -184,7 +190,7 @@ jobs:
       APP_HOME: /srv/remarka
     steps:
       - name: Download bundle
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v5
         with:
           name: remarka-bundle-${{ needs.build.outputs.release_id }}
           path: _bundle
