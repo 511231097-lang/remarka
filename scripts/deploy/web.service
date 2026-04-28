@@ -1,0 +1,50 @@
+[Unit]
+Description=Remarka Web (Next.js standalone)
+Documentation=https://github.com/<owner>/remarka
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=remarka
+Group=remarka
+WorkingDirectory=/srv/remarka/current/apps/web
+
+# Standalone build output. Next.js places the entrypoint at
+# .next/standalone/apps/web/server.js inside a monorepo workspace.
+# If you switch to a non-standalone build, point ExecStart at `next start` instead.
+ExecStart=/usr/bin/node /srv/remarka/current/apps/web/.next/standalone/apps/web/server.js
+
+EnvironmentFile=/srv/remarka/shared/env/web.env
+Environment=NODE_ENV=production
+Environment=HOSTNAME=127.0.0.1
+Environment=PORT=3000
+
+Restart=always
+RestartSec=5s
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+# Resource limits (server has 4 GiB; reserve 1 GiB for OS + nginx).
+MemoryMax=3G
+TasksMax=512
+
+# Logs go to journald — collect via `journalctl -u remarka-web -f`.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=remarka-web
+
+# Hardening.
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true
+ReadWritePaths=/srv/remarka /tmp
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

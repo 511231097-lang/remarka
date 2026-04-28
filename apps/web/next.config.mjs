@@ -1,5 +1,10 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
+  // Standalone output produces .next/standalone/ which contains a self-contained
+  // server bundle plus only the runtime node_modules actually used. Required by
+  // our production deploy (systemd unit runs apps/web/.next/standalone/apps/web/server.js).
+  output: "standalone",
+  // Keep transpilePackages so monorepo workspace deps are inlined into the build.
   transpilePackages: ["@remarka/contracts", "@remarka/db"],
   experimental: {
     serverActions: {
