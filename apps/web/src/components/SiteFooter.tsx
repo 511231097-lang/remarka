@@ -10,7 +10,11 @@ export function SiteFooter() {
           <Link href="/" className="logo" style={{ fontSize: 20 }}>
             ремарка<span className="dot">.</span>
           </Link>
-          <div className="footer-tag">AI-чат с книгами.<br />Разбираем тексты и отвечаем на сложные вопросы.</div>
+          <div className="footer-tag">
+            AI-чат с книгами.
+            <br />
+            Разбираем тексты и отвечаем на сложные вопросы.
+          </div>
         </div>
 
         <div className="footer-col">
@@ -34,15 +38,21 @@ export function SiteFooter() {
           <div className="footer-title">Контакты</div>
           <div className="footer-line">ИП Иванов И. И.</div>
           <div className="footer-line">ОГРНИП 000000000000000</div>
-          <div className="footer-line">Адрес для корреспонденции:<br />г. Москва, а/я 000</div>
+          <div className="footer-line">
+            Адрес для корреспонденции:
+            <br />
+            г. Москва, а/я 000
+          </div>
           <a href="mailto:hello@remarka.app">hello@remarka.app</a>
-          <a href="mailto:abuse@remarka.app">abuse@remarka.app - жалобы</a>
+          <a href="mailto:abuse@remarka.app">abuse@remarka.app — жалобы</a>
         </div>
       </div>
 
       <div className="container footer-bottom">
         <div className="mono footer-mini">© {year} ремарка</div>
-        <div className="mono footer-mini">Сервис анализирует тексты, но не предоставляет лицензии на произведения.</div>
+        <div className="mono footer-mini">
+          Сервис анализирует тексты, но не предоставляет лицензии на произведения.
+        </div>
       </div>
     </footer>
   );

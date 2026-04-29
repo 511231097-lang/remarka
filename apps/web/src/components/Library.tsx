@@ -10,6 +10,15 @@ import { listBooks, removeBookFromLibrary } from "@/lib/booksClient";
 import { BookPreviewStage } from "@/components/BookGalleryCard";
 import { appendBookDetailSource } from "@/lib/bookDetailNavigation";
 
+interface AnalyzingBook {
+  id: string;
+  title: string;
+  author: string;
+  progress: number;
+  eta?: string;
+  format?: string;
+}
+
 function resolveBooksCountLabel(count: number): string {
   const mod10 = count % 10;
   const mod100 = count % 100;
@@ -47,7 +56,10 @@ export function Library() {
   }, []);
 
   const isPlus = currentUser.plan.type === "plus";
-  const analyzingList: Array<{ id: string; title: string; author: string; progress: number; eta?: string }> = [];
+  // Backend listings only return books with analysisStatus="completed", so the
+  // analyzing list is always empty in the current API. The design renders an
+  // "in progress" section when these become available.
+  const analyzingList: AnalyzingBook[] = [];
   const total = myBooks.length + (isPlus ? analyzingList.length : 0);
 
   async function handleRemove(book: BookCardDTO) {
@@ -79,9 +91,9 @@ export function Library() {
               <div className="mono" style={{ color: "var(--mark)", marginBottom: 12 }}>
                 Моя библиотека · {total} {resolveBooksCountLabel(total)}
               </div>
-              <h1 style={{ fontSize: 48, letterSpacing: 0, lineHeight: 1.05 }}>Ваша полка</h1>
+              <h1 style={{ fontSize: 48, letterSpacing: "-0.02em", lineHeight: 1.05 }}>Ваша полка</h1>
               <p className="soft" style={{ fontSize: 16, lineHeight: 1.55, marginTop: 14, maxWidth: 560 }}>
-                Все книги, которые вы сохранили{isPlus ? " или загрузили" : ""}. Задавайте вопрос сразу по всей полке - или по одной книге.
+                Все книги, которые вы сохранили{isPlus ? " или загрузили" : ""}. Задавайте вопрос сразу по всей полке — или по одной книге.
               </p>
             </div>
             <div className="row-sm library-actions">
@@ -106,7 +118,7 @@ export function Library() {
             <div className="upsell-icon"><Sparkles size={18} /></div>
             <div className="upsell-copy">
               <div className="upsell-title">Загружайте свои книги на тарифе Плюс</div>
-              <div className="upsell-subtitle">EPUB, FB2, PDF - и полный AI-разбор по каждой. Каталог и чат остаются бесплатными.</div>
+              <div className="upsell-subtitle">EPUB, FB2, PDF — и полный AI-разбор по каждой. Каталог и чат остаются бесплатными.</div>
             </div>
             <Link className="btn btn-mark btn-sm" href="/plans">Перейти на Плюс</Link>
           </div>
@@ -115,7 +127,7 @@ export function Library() {
         <div className="hr" style={{ marginBottom: 32, marginTop: 36 }} />
 
         {error ? <div className="card" style={{ borderColor: "var(--mark)", color: "var(--mark)", marginBottom: 24, padding: 16 }}>{error}</div> : null}
-        {loading ? <div className="muted" style={{ padding: "64px 0", textAlign: "center" }}>Загрузка библиотеки...</div> : null}
+        {loading ? <div className="muted" style={{ padding: "64px 0", textAlign: "center" }}>Загрузка библиотеки…</div> : null}
 
         {!loading && total === 0 ? (
           <EmptyLibrary isPlus={isPlus} />
@@ -127,35 +139,39 @@ export function Library() {
               <>
                 <div className="row" style={{ justifyContent: "space-between", marginBottom: 20 }}>
                   <div className="mono" style={{ color: "var(--bronze)" }}>Анализируется · {analyzingList.length}</div>
-                  <div className="mono" style={{ color: "var(--ink-faint)" }}>Обычно 1-3 минуты</div>
+                  <div className="mono" style={{ color: "var(--ink-faint)" }}>Обычно 1–3 минуты</div>
                 </div>
                 <div className="library-grid">
                   {analyzingList.map((book) => (
-                    <AnalyzingCard key={book.id} title={book.title} author={book.author} progress={book.progress} eta={book.eta} />
+                    <AnalyzingCard key={book.id} book={book} />
                   ))}
                 </div>
                 <div className="hr" style={{ margin: "48px 0 32px" }} />
               </>
             ) : null}
-            <div className="mono" style={{ color: "var(--ink-muted)", marginBottom: 20 }}>
-              Готовы к чтению · {myBooks.length}
-            </div>
-            <div className="library-grid">
-              {myBooks.map((book, index) => (
-                <motion.div
-                  key={book.id}
-                  initial={{ opacity: 0, y: 12 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  transition={{ delay: index * 0.03 }}
-                >
-                  <LibraryCard
-                    book={book}
-                    removing={removingIds.has(book.id)}
-                    onRemove={() => void handleRemove(book)}
-                  />
-                </motion.div>
-              ))}
-            </div>
+            {myBooks.length > 0 ? (
+              <>
+                <div className="mono" style={{ color: "var(--ink-muted)", marginBottom: 20 }}>
+                  Готовы к чтению · {myBooks.length}
+                </div>
+                <div className="library-grid">
+                  {myBooks.map((book, index) => (
+                    <motion.div
+                      key={book.id}
+                      initial={{ opacity: 0, y: 12 }}
+                      animate={{ opacity: 1, y: 0 }}
+                      transition={{ delay: index * 0.03 }}
+                    >
+                      <LibraryCard
+                        book={book}
+                        removing={removingIds.has(book.id)}
+                        onRemove={() => void handleRemove(book)}
+                      />
+                    </motion.div>
+                  ))}
+                </div>
+              </>
+            ) : null}
           </>
         ) : null}
       </div>
@@ -277,7 +293,7 @@ function LibraryCard({ book, removing, onRemove }: { book: BookCardDTO; removing
         <BookPreviewStage book={book} />
       </Link>
       <div className="meta">
-        <Link className="t" href={bookHref}>{book.title}</Link>
+        <Link className="t" href={bookHref} style={{ cursor: "pointer" }}>{book.title}</Link>
         <div className="a">{book.author || "Автор не указан"}</div>
       </div>
       <div className="row-sm" style={{ marginTop: 10 }}>
@@ -300,16 +316,18 @@ function LibraryCard({ book, removing, onRemove }: { book: BookCardDTO; removing
   );
 }
 
-function AnalyzingCard({ title, author, progress = 0, eta = "~2 мин" }: { title: string; author: string; progress?: number; eta?: string }) {
+function AnalyzingCard({ book }: { book: AnalyzingBook }) {
   const stages = [
     { max: 25, label: "Извлечение текста" },
     { max: 55, label: "Разбивка на фрагменты" },
     { max: 85, label: "Индексация для поиска" },
     { max: 100, label: "Сборка разбора" },
   ];
-  const safeProgress = Math.max(0, Math.min(100, progress));
+  const safeProgress = Math.max(0, Math.min(100, book.progress ?? 0));
   const stage = stages.find((item) => safeProgress <= item.max) || stages[stages.length - 1];
-  const previewBook = { id: `analyzing:${title}`, title, author };
+  const previewBook = { id: `analyzing:${book.id}`, title: book.title, author: book.author };
+  const eta = book.eta || "~2 мин";
+  const format = book.format || "EPUB";
 
   return (
     <div className="book-card" style={{ cursor: "default" }}>
@@ -327,13 +345,13 @@ function AnalyzingCard({ title, author, progress = 0, eta = "~2 мин" }: { tit
             <div style={{ background: "var(--paper-2)", borderRadius: 100, height: 3, overflow: "hidden" }}>
               <div style={{ background: "var(--bronze)", height: "100%", transition: "width .3s", width: `${safeProgress}%` }} />
             </div>
-            <div style={{ color: "var(--ink-muted)", fontSize: 10, marginTop: 6 }}>{stage.label}...</div>
+            <div style={{ color: "var(--ink-muted)", fontSize: 10, marginTop: 6 }}>{stage.label}…</div>
           </div>
         </div>
       </div>
       <div className="meta">
-        <div className="t">{title}</div>
-        <div className="a">{author} · EPUB</div>
+        <div className="t">{book.title}</div>
+        <div className="a">{book.author} · {format}</div>
       </div>
     </div>
   );
@@ -346,10 +364,10 @@ function EmptyLibrary({ isPlus }: { isPlus: boolean }) {
       <h3 style={{ fontSize: 28, marginTop: 16 }}>Полка пока пуста</h3>
       <p className="soft" style={{ fontSize: 15, lineHeight: 1.55, margin: "10px auto 0", maxWidth: 420 }}>
         {isPlus
-          ? "Добавьте книгу из каталога или загрузите собственную - в EPUB, FB2 или PDF."
+          ? "Добавьте книгу из каталога или загрузите собственную — в EPUB, FB2 или PDF."
           : "Добавьте книгу из каталога. Загрузка своих книг откроется на тарифе Плюс."}
       </p>
-      <div className="row" style={{ justifyContent: "center", marginTop: 28 }}>
+      <div className="row empty-actions" style={{ justifyContent: "center", marginTop: 28 }}>
         <Link className="btn btn-ghost" href="/explore"><LibraryIcon size={16} /> В каталог</Link>
         {isPlus ? (
           <Link className="btn btn-mark" href="/upload"><Upload size={16} /> Загрузить</Link>
@@ -359,11 +377,11 @@ function EmptyLibrary({ isPlus }: { isPlus: boolean }) {
       </div>
       <style jsx>{`
         @media (max-width: 520px) {
-          .row {
+          .empty-actions {
             align-items: stretch;
             flex-direction: column;
           }
-          .row :global(.btn) {
+          .empty-actions :global(.btn) {
             justify-content: center;
             width: 100%;
           }

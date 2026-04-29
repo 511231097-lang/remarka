@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ArrowLeft, BookOpenText, MessageSquareText } from "lucide-react";
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import {
   appendBookDetailSource,
   resolveBookDetailBackTarget,
@@ -18,10 +18,24 @@ interface BookDetailHeaderProps {
   action?: ReactNode;
 }
 
-function resolveTabClass(isActive: boolean): string {
-  return isActive
-    ? "bg-primary text-primary-foreground shadow-[0_10px_24px_rgba(124,94,71,0.22)]"
-    : "text-muted-foreground hover:bg-secondary hover:text-foreground";
+const TAB_BASE_STYLE: CSSProperties = {
+  alignItems: "center",
+  borderRadius: 999,
+  display: "inline-flex",
+  fontFamily: "inherit",
+  fontSize: 14,
+  gap: 8,
+  padding: "8px 16px",
+  textDecoration: "none",
+  transition: "all .15s",
+};
+
+function resolveTabStyle(isActive: boolean): CSSProperties {
+  return {
+    ...TAB_BASE_STYLE,
+    background: isActive ? "var(--ink)" : "transparent",
+    color: isActive ? "var(--paper)" : "var(--ink-muted)",
+  };
 }
 
 export function BookDetailHeader({
@@ -40,32 +54,63 @@ export function BookDetailHeader({
   );
 
   return (
-    <div className="mb-8 flex flex-col gap-5">
-      <div className="flex items-center justify-between gap-4">
+    <div
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 20,
+        marginBottom: 32,
+      }}
+    >
+      <div className="row" style={{ alignItems: "center", justifyContent: "space-between" }}>
         <Link
           href={backTarget.href}
-          className="inline-flex items-center gap-2 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          className="lnk"
+          style={{
+            alignItems: "center",
+            color: "var(--ink-muted)",
+            display: "inline-flex",
+            fontSize: 14,
+            gap: 8,
+            textDecoration: "none",
+          }}
         >
-          <ArrowLeft className="h-4 w-4" />
+          <ArrowLeft size={16} />
           {backTarget.label}
         </Link>
 
-        {action ? <div className="flex items-center gap-2">{action}</div> : null}
+        {action ? <div className="row-sm" style={{ alignItems: "center" }}>{action}</div> : null}
       </div>
 
-      <div className="inline-flex w-fit items-center gap-1 rounded-full border border-border/80 bg-card/75 p-1 shadow-[0_12px_24px_rgba(42,37,32,0.04)]">
+      <div
+        role="tablist"
+        style={{
+          alignItems: "center",
+          background: "var(--paper-2)",
+          border: "1px solid var(--rule)",
+          borderRadius: 999,
+          display: "inline-flex",
+          gap: 4,
+          padding: 4,
+          width: "fit-content",
+        }}
+      >
         <Link
           href={overviewHref}
-          className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm transition-colors ${resolveTabClass(activeTab === "overview")}`}
+          role="tab"
+          aria-selected={activeTab === "overview"}
+          style={resolveTabStyle(activeTab === "overview")}
         >
-          <BookOpenText className="h-4 w-4" />
+          <BookOpenText size={14} />
           Обзор
         </Link>
         <Link
           href={chatHref}
-          className={`inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm transition-colors ${resolveTabClass(activeTab === "chat")}`}
+          role="tab"
+          aria-selected={activeTab === "chat"}
+          style={resolveTabStyle(activeTab === "chat")}
         >
-          <MessageSquareText className="h-4 w-4" />
+          <MessageSquareText size={14} />
           Чат
         </Link>
       </div>

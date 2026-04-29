@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Sparkles } from "lucide-react";
+import { Moon, Sparkles, Sun } from "lucide-react";
 import type { UserRole } from "@prisma/client";
+import { useTheme } from "@/lib/ThemeContext";
 
 interface SiteHeaderProps {
   userName?: string | null;
@@ -27,6 +28,7 @@ export function SiteHeader({
   userRole = null,
 }: SiteHeaderProps) {
   const pathname = usePathname();
+  const { theme, toggleTheme } = useTheme();
   const normalizedUserName = userName?.trim() || null;
   const isAuthenticated = Boolean(normalizedUserName);
   const active = normalizePath(pathname || "");
@@ -37,7 +39,9 @@ export function SiteHeader({
     { k: "library", t: "Мои книги", href: "/library" },
     { k: "pricing", t: "Тарифы", href: "/plans" },
     { k: "copyright", t: "Правообладателям", href: "/legal/copyright" },
-    ...(isAuthenticated && userRole === "admin" ? [{ k: "admin", t: "Админка", href: "/admin/dashboard" }] : []),
+    ...(isAuthenticated && userRole === "admin"
+      ? [{ k: "admin", t: "Админка", href: "/admin/dashboard" }]
+      : []),
   ];
 
   return (
@@ -49,15 +53,30 @@ export function SiteHeader({
 
         <nav className="nav-links" aria-label="Основная навигация">
           {items.map((item) => (
-            <Link key={item.k} href={item.href} className={`nav-link ${active === item.k ? "active" : ""}`}>
+            <Link
+              key={item.k}
+              href={item.href}
+              className={`nav-link ${active === item.k ? "active" : ""}`}
+            >
               {item.t}
             </Link>
           ))}
 
-          <div className="hidden w-4 sm:block" />
+          <div style={{ width: 16 }} />
+
+          <button
+            type="button"
+            className="btn-plain"
+            onClick={toggleTheme}
+            title={theme === "light" ? "Тёмная тема" : "Светлая тема"}
+            aria-label={theme === "light" ? "Включить тёмную тему" : "Включить светлую тему"}
+            style={{ padding: 8, borderRadius: "var(--r-sm)" }}
+          >
+            {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
+          </button>
 
           {isAuthenticated ? (
-            <div className="row-sm">
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
               <Link href="/plans" className="plan-pill plus" title="Тариф Плюс">
                 <Sparkles size={14} /> Плюс
               </Link>
