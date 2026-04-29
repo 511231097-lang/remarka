@@ -183,11 +183,4 @@ const SUGGESTED_PROMPTS_BOOK = [
   "Какую роль играет Маргарита в сюжетной линии Мастера?",
 ];
 
-const SUGGESTED_PROMPTS_LIB = [
-  "В каких книгах моей библиотеки главный герой совершает преступление?",
-  "Что Толстой и Достоевский говорят о вере по-разному?",
-  "Найди общие мотивы одиночества в моих книгах",
-  "Какие книги похожи по настроению на «Мастера и Маргариту»?",
-];
-
-window.REMARKA = { BOOKS, CATEGORIES, SUGGESTED_PROMPTS_BOOK, SUGGESTED_PROMPTS_LIB };
+window.REMARKA = { BOOKS, CATEGORIES, SUGGESTED_PROMPTS_BOOK };

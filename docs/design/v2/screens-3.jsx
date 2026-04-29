@@ -17,7 +17,7 @@ function ScreenLibrary({ go, owned, removeBook, onChat, analyzing, plan = "free"
             <div className="mono" style={{ color: "var(--mark)", marginBottom: 12 }}>Моя библиотека · {total} {declension(total, ["книга", "книги", "книг"])}</div>
             <h1 style={{ fontSize: 48, letterSpacing: "-0.02em", lineHeight: 1.05 }}>Ваша полка</h1>
             <p className="soft" style={{ fontSize: 16, marginTop: 14, maxWidth: 560, lineHeight: 1.55 }}>
-              Все книги, которые вы сохранили{isPlus ? " или загрузили" : ""}. Задавайте вопрос сразу по всей полке — или по одной книге.
+              Все книги, которые вы сохранили{isPlus ? " или загрузили" : ""}. Откройте любую — и задайте вопрос по одной книге.
             </p>
           </div>
           <div className="row-sm">
@@ -54,7 +54,7 @@ function ScreenLibrary({ go, owned, removeBook, onChat, analyzing, plan = "free"
                   <div className="mono" style={{ color: "var(--bronze)" }}>Анализируется · {analyzingList.length}</div>
                   <div className="mono" style={{ color: "var(--ink-faint)" }}>Обычно 1–3 минуты</div>
                 </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 32, rowGap: 44 }}>
+                <div className="library-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 32, rowGap: 44 }}>
                   {analyzingList.map((b) => <AnalyzingCard key={b.id} book={b}/>)}
                 </div>
                 <div className="hr" style={{ margin: "48px 0 32px" }}/>
@@ -64,7 +64,7 @@ function ScreenLibrary({ go, owned, removeBook, onChat, analyzing, plan = "free"
             {myBooks.length > 0 && (
               <>
                 <div className="mono" style={{ color: "var(--ink-muted)", marginBottom: 20 }}>Готовы к чтению · {myBooks.length}</div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 32, rowGap: 44 }}>
+                <div className="library-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 32, rowGap: 44 }}>
                   {myBooks.map((b) => (
                     <LibraryCard key={b.id} book={b} onOpen={() => go("book", b.id)} onChat={() => onChat(b.id)} onRemove={() => removeBook(b.id)}/>
                   ))}
@@ -167,21 +167,17 @@ function declension(n, forms) {
   return forms[2];
 }
 
-// ===== Chat with whole library (DEPRECATED — см. screens-chat.jsx) =====
-const LIB_DIALOG_UNUSED = [
-  { r: "user", t: "В каких моих книгах герой сомневается в себе до последней страницы?" },
-  {
-    r: "ai",
-    t: "В вашей полке такой мотив звучит острее всего у Достоевского и Толстого. Раскольников до финала убеждает себя, что убийство было «испытанием сильного», — и лишь в эпилоге признаёт, что сломан именно собственной совестью, а не наказанием. Анна Каренина идёт от колебаний между долгом и страстью к полной потере ориентиров — её монологи на вокзале это фиксируют.",
-    multi: [
-      { bookId: "crime", cites: [{ ch: "Эпилог, гл. 2", p: 638 }, { ch: "Часть 6, гл. 8", p: 552 }] },
-      { bookId: "anna", cites: [{ ch: "Часть 7, гл. 28", p: 768 }] },
-    ],
-  },
-];
+// ===== Chat with whole library — REMOVED. См. screens-chat.jsx (только по одной книге) =====
+function ScreenChatLib_DEPRECATED({ go, owned, onBook }) {
+  return null;
+}
 
-function ScreenChatLib({ go, owned, onBook }) {
-  const [msgs, setMsgs] = useS3(LIB_DIALOG);
+// eslint-disable-next-line
+function _LIB_OLD_UNUSED_NEVER_RENDERED({ go, owned, onBook }) {
+  return null;
+  // legacy code removed — chat is per-book only now
+  /* eslint-disable */
+  const [msgs, setMsgs] = useS3([]);
   const [draft, setDraft] = useS3("");
   const [typing, setTyping] = useS3(false);
   const scrollRef = useR3(null);
@@ -446,7 +442,7 @@ function ScreenUpload({ go }) {
               </p>
               <div className="row" style={{ justifyContent: "center", marginTop: 28 }}>
                 <button className="btn btn-ghost" onClick={() => go("library")}><Icon.Library/> В библиотеку</button>
-                <button className="btn btn-mark" onClick={() => go("chat-lib")}><Icon.Chat/> Открыть чат</button>
+                <button className="btn btn-mark" onClick={() => go("library")}><Icon.Chat/> К книгам</button>
               </div>
             </div>
           )}
@@ -564,7 +560,7 @@ function ScreenProfile({ go, onSignOut, tweaks, setTweak, plan = "free", onUpgra
                 <div>
                   <div style={{ fontSize: 14, color: "var(--ink)" }}>Что откроет Плюс</div>
                   <div className="soft" style={{ fontSize: 13, lineHeight: 1.55, marginTop: 4 }}>
-                    Загрузку книг в EPUB, FB2, PDF · персональный AI-разбор каждой · чат по смешанной полке.
+                    Загрузку книг в EPUB, FB2, PDF · персональный AI-разбор каждой · чат с любой из ваших книг.
                   </div>
                 </div>
               </div>
@@ -604,4 +600,4 @@ function Row({ label, sub, children }) {
   );
 }
 
-Object.assign(window, { ScreenLibrary, ScreenChatLib, ScreenUpload, ScreenProfile });
+Object.assign(window, { ScreenLibrary, ScreenUpload, ScreenProfile });

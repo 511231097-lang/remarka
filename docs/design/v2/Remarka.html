@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com"/>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
-<link rel="stylesheet" href="styles.css"/>
+<link rel="stylesheet" href="styles.css?v=mobile3"/>
 <script>
   // Применяем тему как можно раньше
   try {
@@ -29,14 +29,15 @@
 <script type="text/babel" src="screens-2.jsx"></script>
 <script type="text/babel" src="screens-3.jsx"></script>
 <script type="text/babel" src="screens-chat.jsx"></script>
+<script type="text/babel" src="reader.jsx"></script>
 <script type="text/babel" src="legal-chrome.jsx"></script>
 <script type="text/babel" src="legal-pages.jsx"></script>
 <script type="text/babel" src="screens-pricing.jsx"></script>
 <script type="text/babel">
 
 const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
-  "theme": "light",
-  "plan": "free"
+  "theme": "dark",
+  "plan": "plus"
 }/*EDITMODE-END*/;
 
 const { useState, useEffect, useRef } = React;
@@ -55,6 +56,8 @@ function App() {
   const [cookiePrefs, setCookiePrefs] = useState({ analytics: true, perso: true });
   const [owned, setOwned] = useState(() => new Set(["crime", "anna"]));
   const [paywall, setPaywall] = useState(null); // {feature}|null
+  const [reader, setReader] = useState(null); // {bookId, cite}|null
+  const openReader = (bookId, cite) => setReader({ bookId, cite });
 
   const plan = tweaks.plan || "free";
   const isPlus = plan === "plus";
@@ -89,13 +92,13 @@ function App() {
             { ch: "Глава 22", p: 247, q: "— Вы должны будете исполнить роль королевы..." },
           ] },
       ] },
-    { id: "s2", title: "Мотивы одиночества", scope: "library", createdAt: now - 2 * 86400_000,
+    { id: "s2", title: "Преступление и наказание", scope: "book", bookId: "crime", createdAt: now - 2 * 86400_000,
       messages: [
-        { r: "user", t: "В каких моих книгах герой сомневается в себе до последней страницы?" },
-        { r: "ai", t: "В вашей полке такой мотив звучит острее всего у Достоевского и Толстого. Раскольников до финала убеждает себя, что убийство было «испытанием сильного», — и лишь в эпилоге признаёт, что сломан именно собственной совестью.",
-          multi: [
-            { bookId: "crime", cites: [{ ch: "Эпилог, гл. 2", p: 638 }, { ch: "Часть 6, гл. 8", p: 552 }] },
-            { bookId: "anna", cites: [{ ch: "Часть 7, гл. 28", p: 768 }] },
+        { r: "user", t: "До какого момента Раскольников верит в свою теорию?" },
+        { r: "ai", t: "До самого эпилога Раскольников убеждает себя, что убийство было «испытанием сильного», — и лишь в эпилоге признаёт, что сломан именно собственной совестью.",
+          cites: [
+            { ch: "Часть 6, гл. 8", p: 552, q: "— Я не старушонку убил, я себя убил..." },
+            { ch: "Эпилог, гл. 2", p: 638, q: "Их воскресила любовь..." },
           ] },
       ] },
     { id: "s3", title: "Анна Каренина", scope: "book", bookId: "anna", createdAt: now - 9 * 86400_000, messages: [] },
@@ -163,36 +166,23 @@ function App() {
   };
 
   const onActive = (id) => setActiveSessionId(id);
-  const declLocal = (n, forms) => {
-    const a = Math.abs(n) % 100, b = a % 10;
-    if (a > 10 && a < 20) return forms[2];
-    if (b > 1 && b < 5) return forms[1];
-    if (b === 1) return forms[0];
-    return forms[2];
-  };
-  const onCreate = (scope, arg) => {
-    const s = scope || "library";
+  const onCreate = (arg) => {
     const id = uid();
-    let title, bookId, bookIds;
-    if (s === "book") {
-      const book = window.REMARKA.BOOKS.find((b) => b.id === (arg || [...owned][0]));
-      title = book?.title || "Новый чат";
-      bookId = book?.id;
-    } else if (s === "selection") {
-      const ids = Array.isArray(arg) ? arg : [];
-      title = `Подборка · ${ids.length} ${declLocal(ids.length, ["книга", "книги", "книг"])}`;
-      bookIds = ids;
-    } else {
-      title = "Новый чат по библиотеке";
-    }
-    setSessions((list) => [{ id, title, scope: s, bookId, bookIds, createdAt: Date.now(), messages: [] }, ...list]);
+    const bookId = arg || [...owned][0];
+    const book = window.REMARKA.BOOKS.find((b) => b.id === bookId);
+    const title = book?.title || "Новый чат";
+    setSessions((list) => [{ id, title, scope: "book", bookId: book?.id, createdAt: Date.now(), messages: [] }, ...list]);
     setActiveSessionId(id);
   };
   const onDelete = (id) => {
     setSessions((list) => {
       const next = list.filter((s) => s.id !== id);
       if (id === activeSessionId) setActiveSessionId(next[0]?.id || null);
-      if (next.length === 0) return [{ id: uid(), title: "Новый чат по библиотеке", scope: "library", createdAt: Date.now(), messages: [] }];
+      if (next.length === 0) {
+        const firstBook = [...owned][0] || "master";
+        const book = window.REMARKA.BOOKS.find((b) => b.id === firstBook);
+        return [{ id: uid(), title: book?.title || "Новый чат", scope: "book", bookId: firstBook, createdAt: Date.now(), messages: [] }];
+      }
       return next;
     });
   };
@@ -203,16 +193,10 @@ function App() {
     setSessions((list) => list.map((s) => s.id === id ? { ...s, messages: [...s.messages, msg] } : s));
   };
 
-  // Хак для смены scope пустого чата
+  // Смена книги в пустом чате
   useEffect(() => {
-    window.__remarkaUpdateScope = (id, scope, arg) => {
-      setSessions((list) => list.map((s) => {
-        if (s.id !== id) return s;
-        const next = { ...s, scope, bookId: undefined, bookIds: undefined };
-        if (scope === "book") next.bookId = arg;
-        else if (scope === "selection") next.bookIds = Array.isArray(arg) ? arg : [];
-        return next;
-      }));
+    window.__remarkaUpdateScope = (id, bookId) => {
+      setSessions((list) => list.map((s) => s.id === id ? { ...s, bookId } : s));
     };
   }, []);
 
@@ -260,7 +244,8 @@ function App() {
         {route.name === "chat" && <ScreenChat go={go} owned={owned}
           sessions={sessions} activeId={activeSessionId}
           onActive={onActive} onCreate={onCreate} onDelete={onDelete} onRename={onRename} onAppend={onAppend}
-          onBook={(id) => go("book", id)}/>}
+          onBook={(id) => go("book", id)}
+          openReader={openReader}/>}
         {route.name === "upload" && <ScreenUpload go={go}/>}
         {route.name === "pricing" && <ScreenPricing go={go} plan={plan} onUpgrade={upgradeToPlus} onDowngrade={() => setPlan("free")}/>}
         {route.name === "profile" && <ScreenProfile go={go} onSignOut={() => { setAuthed(false); setRoute({ name: "landing" }); }} tweaks={tweaks} setTweak={tweakApi} plan={plan} onUpgrade={() => setRoute({ name: "pricing" })} onDowngrade={() => setPlan("free")}/>}
@@ -270,6 +255,8 @@ function App() {
       </div>
 
       {authModal && <AuthModalV2 onClose={() => { setAuthModal(false); setPendingAction(null); }} onSuccess={onAuthSuccess} go={go}/>}
+
+      <Reader open={!!reader} bookId={reader?.bookId} cite={reader?.cite} onClose={() => setReader(null)}/>
 
       {paywall && <PaywallModal
         feature={paywall.feature}

@@ -8,7 +8,7 @@ function ScreenLanding({ go, onSignIn }) {
     <div className="screen-fade">
       {/* Hero */}
       <div className="container" style={{ paddingTop: 64, paddingBottom: 64 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 64, alignItems: "center" }}>
+        <div className="landing-main-hero" style={{ display: "grid", gridTemplateColumns: "1.2fr 1fr", gap: 64, alignItems: "center" }}>
           <div>
             <div className="mono" style={{ color: "var(--mark)", marginBottom: 24 }}>№ 001 · AI-чтение</div>
             <h1 style={{ fontSize: 68, lineHeight: 1.02, letterSpacing: "-0.025em", textWrap: "balance" }}>
@@ -17,9 +17,9 @@ function ScreenLanding({ go, onSignIn }) {
             </h1>
             <p className="soft" style={{ fontSize: 18, lineHeight: 1.55, marginTop: 28, maxWidth: 520, textWrap: "pretty" }}>
               Ремарка читает книгу за вас — и остаётся рядом, чтобы ответить на сложные вопросы,
-              найти цитату, сравнить героев и свести всю вашу библиотеку в один диалог.
+              найти цитату и показать, откуда пришёл ответ. Один разговор — одна книга, без перемешивания.
             </p>
-            <div className="row" style={{ marginTop: 36 }}>
+            <div className="row hero-cta" style={{ marginTop: 36 }}>
               <button className="btn btn-mark btn-lg" onClick={() => go("catalog")}>
                 Открыть каталог <Icon.Arrow/>
               </button>
@@ -48,12 +48,12 @@ function ScreenLanding({ go, onSignIn }) {
       <div className="hr"/>
       <div className="container" style={{ paddingTop: 72, paddingBottom: 72 }}>
         <SectionHead eyebrow="Как это устроено" title="Четыре разворота"/>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 32 }}>
+        <div className="principles-grid" style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 32 }}>
           {[
             { n: "i", t: "Каталог", d: "Сто книг — от Достоевского до Канемана. Открываете страницу книги и сразу видите анализ.", action: () => go("catalog"), al: "В каталог" },
             { n: "ii", t: "Анализ-витрина", d: "Описание, ключевая идея, герои, события — на одной странице, как авторский разбор.", action: () => go("book"), al: "Пример разбора" },
             { n: "iii", t: "Диалог с книгой", d: "AI-эксперт отвечает с цитатами и ссылками на страницы — ни слова без источника.", action: () => go("chat-book"), al: "Открыть чат" },
-            { n: "iv", t: "Вся библиотека", d: "Загрузите свои книги и задавайте вопросы сразу по всей полке.", action: () => go("library"), al: "Мои книги" },
+            { n: "iv", t: "Своя полка", d: "Загружайте свои книги — каждая получает собственный разбор и чат.", action: () => go("library"), al: "Мои книги" },
           ].map((it) => (
             <div key={it.n} className="stack-sm" style={{ paddingRight: 24 }}>
               <div className="mono" style={{ color: "var(--mark)", fontSize: 10 }}>{it.n}</div>
@@ -70,7 +70,7 @@ function ScreenLanding({ go, onSignIn }) {
       {/* Пример чата */}
       <div style={{ background: "var(--paper-2)", borderTop: "1px solid var(--rule)", borderBottom: "1px solid var(--rule)" }}>
         <div className="container" style={{ paddingTop: 80, paddingBottom: 80 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1.1fr", gap: 64, alignItems: "center" }}>
+          <div className="landing-hero" style={{ display: "grid", gridTemplateColumns: "1fr 1.1fr", gap: 64, alignItems: "center" }}>
             <div>
               <div className="mono" style={{ color: "var(--mark)", marginBottom: 16 }}>Пример</div>
               <h2 style={{ fontSize: 40, letterSpacing: "-0.02em", lineHeight: 1.1, textWrap: "balance" }}>
@@ -93,7 +93,7 @@ function ScreenLanding({ go, onSignIn }) {
       <div className="container" style={{ paddingTop: 80, paddingBottom: 80 }}>
         <SectionHead eyebrow="В каталоге" title="Свежие разборы"
           right={<button className="btn btn-ghost btn-sm" onClick={() => go("catalog")}>Все книги <Icon.Arrow/></button>}/>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 24 }}>
+        <div className="catalog-grid" style={{ display: "grid", gridTemplateColumns: "repeat(6, 1fr)", gap: 24 }}>
           {window.REMARKA.BOOKS.slice(0, 6).map((b) => (
             <BookCard key={b.id} book={b} onClick={() => go("book", b.id)}/>
           ))}
@@ -278,7 +278,7 @@ function ScreenCatalog({ go, addBook, owned }) {
             </button>
           </div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 32, rowGap: 44 }}>
+          <div className="catalog-grid" style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 32, rowGap: 44 }}>
             {books.map((b) => (
               <BookCard key={b.id} book={b} owned={owned.has(b.id)} onClick={() => go("book", b.id)}/>
             ))}

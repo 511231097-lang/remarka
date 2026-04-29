@@ -1,23 +1,61 @@
-// remarka — единый чат с сессиями
+// remarka — единый чат с сессиями (только по одной книге)
 
 const { useState: useSC, useEffect: useEC, useRef: useRC, useMemo: useMC } = React;
 
-// Сессии чата — источник правды в App, сюда приходят через пропсы
-// session: { id, title, scope: 'book'|'library'|'selection', bookId?, bookIds?: string[], messages: [], createdAt }
+// session: { id, title, scope: 'book', bookId, messages: [], createdAt }
 
-function ScreenChat({ go, owned, sessions, activeId, onActive, onCreate, onDelete, onRename, onAppend, onBook }) {
+function ScreenChat({ go, owned, sessions, activeId, onActive, onCreate, onDelete, onRename, onAppend, onBook, openReader }) {
   const session = sessions.find((s) => s.id === activeId) || sessions[0];
   const [draft, setDraft] = useSC("");
   const [typing, setTyping] = useSC(false);
-  const [activeCite, setActiveCite] = useSC(null);
   const [search, setSearch] = useSC("");
   const [renaming, setRenaming] = useSC(null);
+  const [sessionsOpen, setSessionsOpen] = useSC(false);
+  // Фокус правой панели: 'info' | 'cites'
+  const [panelFocus, setPanelFocus] = useSC("info");
+  // Подсветка одной цитаты в панели после клика на бейдж в чате
+  const [flashCite, setFlashCite] = useSC(null); // { msgIdx, citeIdx }
   const scrollRef = useRC(null);
 
   const myBooks = window.REMARKA.BOOKS.filter((b) => owned.has(b.id));
 
   useEC(() => { scrollRef.current?.scrollTo({ top: 999999, behavior: "smooth" }); }, [session?.messages?.length, typing]);
-  useEC(() => { setActiveCite(null); setDraft(""); }, [activeId]);
+  useEC(() => { setDraft(""); setSessionsOpen(false); setPanelFocus("info"); setFlashCite(null); }, [activeId]);
+
+  // Цитаты текущей книги, сгруппированные ПО ВОПРОСУ
+  const citesByQuestion = useMC(() => {
+    const messages = session?.messages || [];
+    const questionFor = (idx) => {
+      for (let k = idx - 1; k >= 0; k--) if (messages[k]?.r === "user") return { t: messages[k].t, msgIdx: k };
+      return { t: "Без вопроса", msgIdx: null };
+    };
+    const groups = new Map();
+    messages.forEach((m, i) => {
+      if (m.r !== "ai" || !m.cites?.length) return;
+      const q = questionFor(i);
+      const key = q.msgIdx ?? -1;
+      if (!groups.has(key)) groups.set(key, { q: q.t, qMsgIdx: q.msgIdx, msgIdx: i, items: [] });
+      m.cites.forEach((c, ci) => groups.get(key).items.push({ c, msgIdx: i, citeIdx: ci }));
+    });
+    return Array.from(groups.values()).sort((a, b) => a.msgIdx - b.msgIdx);
+  }, [session]);
+  const totalCites = citesByQuestion.reduce((n, g) => n + g.items.length, 0);
+
+  // Скролл к сообщению в чате
+  const scrollToMsg = (msgIdx) => {
+    const el = scrollRef.current?.querySelector(`[data-msg-idx="${msgIdx}"]`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("msg-flash");
+    setTimeout(() => el.classList.remove("msg-flash"), 1400);
+  };
+
+  // Клик на бейдж цитаты под ответом — переключаем фокус на цитаты + флэш
+  const focusCiteInPanel = (msgIdx, citeIdx) => {
+    setPanelFocus("cites");
+    setFlashCite({ msgIdx, citeIdx });
+    setTimeout(() => setFlashCite(null), 1600);
+  };
 
   const filteredSessions = useMC(() => {
     if (!search) return sessions;
@@ -29,10 +67,7 @@ function ScreenChat({ go, owned, sessions, activeId, onActive, onCreate, onDelet
     return <div style={{ padding: 48, textAlign: "center" }}>Нет активной сессии</div>;
   }
 
-  const scopeBook = session.scope === "book" ? window.REMARKA.BOOKS.find((b) => b.id === session.bookId) : null;
-  const scopeSelection = session.scope === "selection"
-    ? (session.bookIds || []).map((id) => window.REMARKA.BOOKS.find((b) => b.id === id)).filter(Boolean)
-    : null;
+  const scopeBook = window.REMARKA.BOOKS.find((b) => b.id === session.bookId);
 
   const send = (text) => {
     const t = (text ?? draft).trim();
@@ -42,37 +77,14 @@ function ScreenChat({ go, owned, sessions, activeId, onActive, onCreate, onDelet
     setTyping(true);
     setTimeout(() => {
       setTyping(false);
-      // Генерируем ответ в зависимости от scope
-      if (session.scope === "book") {
-        onAppend(session.id, {
-          r: "ai",
-          t: "Воланд не случайно выбирает Москву 1930-х: это общество, которое отменило и религию, и само понятие зла как метафизической категории. Его появление — проверка: если ни Бога, ни дьявола нет, откуда тогда всё происходящее? Булгаков переворачивает атеистический тезис, заставляя героев столкнуться с реальностью того, в существование чего они отказались верить.",
-          cites: [
-            { ch: "Глава 1", p: 12, q: "— Вы — атеисты?! — ...ответил Берлиоз, вежливо улыбнувшись." },
-            { ch: "Глава 3", p: 37, q: "Имейте в виду, что Иисус существовал." },
-          ],
-        });
-      } else if (session.scope === "selection") {
-        const ids = session.bookIds || [];
-        const picks = ids.slice(0, 3).map((id) => ({
-          bookId: id,
-          cites: [{ ch: "Часть 1, гл. 3", p: 42 + (id.length * 7) % 200 }],
-        }));
-        onAppend(session.id, {
-          r: "ai",
-          t: `В выбранных книгах (${picks.length}) тема звучит по-разному. Общий мотив — разлад между внутренним опытом и внешней ролью: герои знают больше, чем могут позволить себе сказать. Разница — в том, чем они за это платят.`,
-          multi: picks,
-        });
-      } else {
-        onAppend(session.id, {
-          r: "ai",
-          t: "В ваших книгах тема одиночества звучит очень по-разному. У Толстого это одиночество в толпе — Анна среди гостей и мужа, который её не видит. У Достоевского — добровольная изоляция идеи: Раскольников отгораживается от матери и сестры, чтобы «додумать» теорию до конца.",
-          multi: [
-            { bookId: "anna", cites: [{ ch: "Часть 1, гл. 30", p: 98 }] },
-            { bookId: "crime", cites: [{ ch: "Часть 3, гл. 5", p: 236 }] },
-          ],
-        });
-      }
+      onAppend(session.id, {
+        r: "ai",
+        t: "Воланд не случайно выбирает Москву 1930-х: это общество, которое отменило и религию, и само понятие зла как метафизической категории. Его появление — проверка: если ни Бога, ни дьявола нет, откуда тогда всё происходящее? Булгаков переворачивает атеистический тезис, заставляя героев столкнуться с реальностью того, в существование чего они отказались верить.",
+        cites: [
+          { ch: "Глава 1", p: 12, q: "— Вы — атеисты?! — ...ответил Берлиоз, вежливо улыбнувшись." },
+          { ch: "Глава 3", p: 37, q: "Имейте в виду, что Иисус существовал." },
+        ],
+      });
     }, 1300);
   };
 
@@ -89,18 +101,18 @@ function ScreenChat({ go, owned, sessions, activeId, onActive, onCreate, onDelet
     return groups;
   }, [filteredSessions]);
 
-  const suggested = session.scope === "book"
-    ? window.REMARKA.SUGGESTED_PROMPTS_BOOK
-    : window.REMARKA.SUGGESTED_PROMPTS_LIB;
+  const suggested = window.REMARKA.SUGGESTED_PROMPTS_BOOK;
 
   return (
-    <div className="screen-fade" style={{ display: "grid", gridTemplateColumns: "288px 1fr 340px", height: "calc(100vh - 64px)", borderTop: "1px solid var(--rule)" }}>
+    <div className="screen-fade chat-shell" style={{ display: "grid", gridTemplateColumns: "288px 1fr 340px", height: "calc(100vh - 64px)", borderTop: "1px solid var(--rule)" }}>
       {/* Левая панель — сессии */}
-      <div style={{ borderRight: "1px solid var(--rule)", background: "var(--paper-2)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+      {sessionsOpen && <div className="chat-sessions-backdrop" onClick={() => setSessionsOpen(false)}/>}
+      <div className={`chat-sessions ${sessionsOpen ? "open" : ""}`} style={{ borderRight: "1px solid var(--rule)", background: "var(--paper-2)", display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <button className="chat-sessions-close" onClick={() => setSessionsOpen(false)} aria-label="Закрыть">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        </button>
         <div style={{ padding: "18px 18px 12px" }}>
-          <button className="btn btn-mark btn-block" onClick={onCreate}>
-            <Icon.Plus/> Новый чат
-          </button>
+          <BookPicker myBooks={myBooks} onPick={(id) => onCreate(id)} go={go}/>
         </div>
         <div style={{ padding: "0 18px 12px" }}>
           <div style={{ position: "relative" }}>
@@ -141,74 +153,56 @@ function ScreenChat({ go, owned, sessions, activeId, onActive, onCreate, onDelet
 
       {/* Центр — диалог */}
       <div style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
-        <div style={{ padding: "14px 32px", borderBottom: "1px solid var(--rule)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 }}>
+        <div className="chat-header" style={{ padding: "14px 32px", borderBottom: "1px solid var(--rule)", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 }}>
           <div className="row-sm" style={{ minWidth: 0 }}>
+            <button className="chat-mobile-sessions-btn" onClick={() => setSessionsOpen(true)} aria-label="Сессии">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="18" y2="18"/></svg>
+              Чаты
+            </button>
             {scopeBook ? (
               <>
                 <div style={{ width: 28, flexShrink: 0 }}><BookCover book={scopeBook} size="sm"/></div>
                 <div style={{ minWidth: 0 }}>
                   <div style={{ fontFamily: "var(--f-serif)", fontSize: 15, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.title}</div>
-                  <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 2 }}>По книге · {scopeBook.author}</div>
-                </div>
-              </>
-            ) : scopeSelection ? (
-              <>
-                <div style={{ position: "relative", width: 40, height: 28, flexShrink: 0 }}>
-                  {scopeSelection.slice(0, 3).map((b, i) => (
-                    <div key={b.id} style={{ position: "absolute", left: i * 7, top: 0, width: 20, zIndex: 3 - i }}>
-                      <BookCover book={b} size="sm"/>
-                    </div>
-                  ))}
-                </div>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontFamily: "var(--f-serif)", fontSize: 15, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{session.title}</div>
-                  <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 2 }}>Подборка · {scopeSelection.length} {decl(scopeSelection.length, ["книга", "книги", "книг"])}</div>
+                  <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 2 }}>{scopeBook.author}</div>
                 </div>
               </>
             ) : (
-              <>
-                <div style={{ width: 28, height: 28, borderRadius: 6, background: "var(--mark-soft)", color: "var(--mark)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <Icon.Library/>
-                </div>
-                <div>
-                  <div style={{ fontFamily: "var(--f-serif)", fontSize: 15, lineHeight: 1.2 }}>{session.title}</div>
-                  <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 2 }}>По всей библиотеке · {myBooks.length} {decl(myBooks.length, ["книга", "книги", "книг"])}</div>
-                </div>
-              </>
+              <div className="mono" style={{ color: "var(--ink-muted)" }}>Книга не выбрана</div>
             )}
           </div>
           <div className="row-sm">
-            <ScopePicker session={session} myBooks={myBooks} onChangeScope={(scope, arg) => {
-              // Переключаем scope текущего пустого чата, либо создаём новый
-              const titleFor = (sc, a) => {
-                if (sc === "book") return window.REMARKA.BOOKS.find(b => b.id === a)?.title || "Новый чат";
-                if (sc === "selection") return `Подборка · ${(a || []).length} ${decl((a || []).length, ["книга","книги","книг"])}`;
-                return "Новый чат по библиотеке";
-              };
-              if (session.messages.length === 0) {
-                onRename(session.id, titleFor(scope, arg));
-                window.__remarkaUpdateScope?.(session.id, scope, arg);
-              } else {
-                onCreate(scope, arg);
-              }
-            }}/>
-            <button className="btn btn-plain btn-sm" title="Сохранить"><Icon.Bookmark/></button>
+            <button
+              className={`btn btn-plain btn-sm ${panelFocus === "cites" ? "is-active" : ""}`}
+              title="Цитаты из разговора"
+              aria-label="Цитаты из разговора"
+              disabled={totalCites === 0}
+              style={{ opacity: totalCites === 0 ? 0.5 : 1 }}
+              onClick={() => {
+                if (totalCites === 0) return;
+                setPanelFocus(panelFocus === "cites" ? "info" : "cites");
+              }}>
+              <Icon.Quote/>
+              {totalCites > 0 && <span style={{ marginLeft: 6, fontSize: 11, color: "var(--ink-muted)" }}>{totalCites}</span>}
+            </button>
           </div>
         </div>
 
-        <div ref={scrollRef} style={{ flex: 1, overflow: "auto", padding: "32px 48px" }}>
+        <div ref={scrollRef} className="chat-messages" style={{ flex: 1, overflow: "auto", padding: "32px 48px" }}>
           <div style={{ maxWidth: 760, margin: "0 auto" }} className="stack-xl">
             {session.messages.length === 0 ? (
-              <ChatWelcome session={session} scopeBook={scopeBook} scopeSelection={scopeSelection} myBooks={myBooks}/>
+              <ChatWelcome scopeBook={scopeBook}/>
             ) : (
               session.messages.map((m, i) => (
                 m.r === "user" ? (
-                  <div key={i} style={{ textAlign: "right" }}>
+                  <div key={i} data-msg-idx={i} className="msg-row" style={{ textAlign: "right" }}>
                     <div className="mono" style={{ color: "var(--ink-faint)", marginBottom: 6 }}>Вы</div>
                     <div style={{ display: "inline-block", maxWidth: "85%", padding: "14px 18px", background: "var(--ink)", color: "var(--paper)", borderRadius: "var(--r-lg)", borderTopRightRadius: 4, fontSize: 15, textAlign: "left", lineHeight: 1.5 }}>{m.t}</div>
                   </div>
                 ) : (
-                  m.multi ? <LibMsg key={i} m={m} onBook={onBook}/> : <MsgBubble key={i} m={m} onCite={setActiveCite}/>
+                  <div key={i} data-msg-idx={i} className="msg-row">
+                    <MsgBubble m={m} onCite={(c, ci) => focusCiteInPanel(i, ci)}/>
+                  </div>
                 )
               ))
             )}
@@ -216,7 +210,7 @@ function ScreenChat({ go, owned, sessions, activeId, onActive, onCreate, onDelet
           </div>
         </div>
 
-        <div style={{ padding: "20px 48px 28px" }}>
+        <div className="chat-composer-wrap" style={{ padding: "20px 48px 28px" }}>
           <div style={{ maxWidth: 760, margin: "0 auto" }}>
             {session.messages.length < 2 && (
               <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 14 }}>
@@ -230,11 +224,7 @@ function ScreenChat({ go, owned, sessions, activeId, onActive, onCreate, onDelet
             <div style={{ background: "var(--cream)", border: "1px solid var(--rule)", borderRadius: "var(--r-lg)", padding: "14px 18px", boxShadow: "var(--shadow-sm)" }}>
               <textarea className="textarea" rows={2} value={draft} onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); } }}
-                placeholder={
-                  session.scope === "book" ? `Спросите о «${scopeBook?.title}»…` :
-                  session.scope === "selection" ? `Спросите по подборке (${scopeSelection?.length || 0} книг)…` :
-                  "Спросите что-нибудь по вашей библиотеке…"
-                }
+                placeholder={scopeBook ? `Спросите о «${scopeBook.title}»…` : "Спросите о книге…"}
                 style={{ border: "none", background: "transparent", padding: 0, boxShadow: "none" }}/>
               <div className="row" style={{ justifyContent: "space-between", marginTop: 10 }}>
                 <div className="mono" style={{ color: "var(--ink-faint)" }}>↵ отправить · ⇧↵ перенос</div>
@@ -247,29 +237,62 @@ function ScreenChat({ go, owned, sessions, activeId, onActive, onCreate, onDelet
         </div>
       </div>
 
-      {/* Правая панель — контекст */}
-      <div style={{ borderLeft: "1px solid var(--rule)", background: "var(--paper-2)", overflow: "auto" }}>
-        {activeCite ? (
-          <div style={{ padding: 28 }}>
-            <div className="mono" style={{ color: "var(--mark)", marginBottom: 10 }}>Источник</div>
-            <div style={{ fontFamily: "var(--f-serif)", fontSize: 18 }}>{activeCite.ch}</div>
-            <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 4 }}>Страница {activeCite.p}</div>
-            <div style={{ marginTop: 20, padding: 18, background: "var(--cream)", border: "1px solid var(--rule)", borderRadius: "var(--r)", fontFamily: "var(--f-serif)", fontSize: 15, lineHeight: 1.65 }}>
-              <span style={{ color: "var(--mark)", fontSize: 28, lineHeight: 0, position: "relative", top: 10, marginRight: 4 }}>«</span>
-              {activeCite.q}
-              <span style={{ color: "var(--mark)", fontSize: 28, lineHeight: 0, position: "relative", top: 10, marginLeft: 2 }}>»</span>
-            </div>
-            <button className="btn btn-ghost btn-sm btn-block" style={{ marginTop: 16 }}>
-              <Icon.Book/> Открыть в книге
-            </button>
-            <button className="btn btn-plain btn-sm btn-block" style={{ marginTop: 8 }} onClick={() => setActiveCite(null)}>
-              Скрыть
-            </button>
-          </div>
-        ) : (
-          <ContextPanel session={session} scopeBook={scopeBook} scopeSelection={scopeSelection} myBooks={myBooks} onBook={onBook} go={go}/>
-        )}
+      {/* Правая панель — контекст книги */}
+      <div className="chat-context" style={{ borderLeft: "1px solid var(--rule)", background: "var(--paper-2)", overflow: "auto" }}>
+        <ContextPanel
+          book={scopeBook}
+          citesByQuestion={citesByQuestion}
+          totalCites={totalCites}
+          focus={panelFocus}
+          setFocus={setPanelFocus}
+          flashCite={flashCite}
+          onScrollToMsg={scrollToMsg}
+          openReader={openReader}
+          onBook={onBook}
+        />
       </div>
+    </div>
+  );
+}
+
+function BookPicker({ myBooks, onPick, go }) {
+  const [open, setOpen] = useSC(false);
+  const wrapRef = useRC(null);
+  useEC(() => {
+    const h = (e) => { if (open && wrapRef.current && !wrapRef.current.contains(e.target)) setOpen(false); };
+    document.addEventListener("mousedown", h);
+    return () => document.removeEventListener("mousedown", h);
+  }, [open]);
+
+  if (myBooks.length === 0) {
+    return (
+      <button className="btn btn-mark btn-block" onClick={() => go("catalog")}>
+        <Icon.Plus/> Добавить книгу
+      </button>
+    );
+  }
+
+  return (
+    <div style={{ position: "relative" }} ref={wrapRef}>
+      <button className="btn btn-mark btn-block" onClick={() => setOpen((v) => !v)}>
+        <Icon.Plus/> Новый чат
+      </button>
+      {open && (
+        <div style={{ position: "absolute", left: 0, right: 0, top: "calc(100% + 6px)", background: "var(--cream)", border: "1px solid var(--rule)", borderRadius: "var(--r-lg)", boxShadow: "var(--shadow-lg)", zIndex: 50, padding: 8, maxHeight: 320, overflow: "auto" }}>
+          <div className="mono" style={{ color: "var(--ink-faint)", padding: "6px 10px" }}>Выберите книгу</div>
+          {myBooks.map((b) => (
+            <button key={b.id} className="scope-item" onClick={() => { onPick(b.id); setOpen(false); }}
+              style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "8px 10px", borderRadius: "var(--r-sm)", fontSize: 13, color: "var(--ink)", textAlign: "left", cursor: "pointer" }}>
+              <div style={{ width: 22, flexShrink: 0 }}><BookCover book={b} size="sm"/></div>
+              <div style={{ minWidth: 0, overflow: "hidden" }}>
+                <div style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.title}</div>
+                <div style={{ fontSize: 11, color: "var(--ink-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.author}</div>
+              </div>
+            </button>
+          ))}
+          <style>{`.scope-item:hover { background: var(--paper-2); }`}</style>
+        </div>
+      )}
     </div>
   );
 }
@@ -279,27 +302,15 @@ function SessionItem({ s, active, renaming, onClick, onStartRename, onRename, on
   const inputRef = useRC(null);
   useEC(() => { if (renaming) { setVal(s.title); inputRef.current?.focus(); inputRef.current?.select(); } }, [renaming]);
 
-  const book = s.scope === "book" ? window.REMARKA.BOOKS.find((b) => b.id === s.bookId) : null;
-  const selBooks = s.scope === "selection" ? (s.bookIds || []).map((id) => window.REMARKA.BOOKS.find((b) => b.id === id)).filter(Boolean) : null;
-  const subtitle = s.scope === "book" ? (book?.author || "Книга")
-    : s.scope === "selection" ? `Подборка · ${selBooks?.length || 0} ${decl(selBooks?.length || 0, ["книга", "книги", "книг"])}`
-    : "Вся библиотека";
+  const book = window.REMARKA.BOOKS.find((b) => b.id === s.bookId);
+  const subtitle = book?.author || "Книга";
 
   return (
     <div className={`session-item ${active ? "active" : ""}`} onClick={onClick}>
       <div className="si-icon">
         {book ? <BookCover book={book} size="sm"/> :
-          selBooks ? (
-            <div style={{ position: "relative", width: 32, height: "100%", minHeight: 40 }}>
-              {selBooks.slice(0, 3).map((b, i) => (
-                <div key={b.id} style={{ position: "absolute", left: i * 4, top: i * 2, width: 22, zIndex: 3 - i, boxShadow: "0 1px 3px rgba(0,0,0,.15)" }}>
-                  <BookCover book={b} size="sm"/>
-                </div>
-              ))}
-            </div>
-          ) :
           <div style={{ width: "100%", aspectRatio: "2/3", background: "var(--ink)", color: "var(--paper)", borderRadius: 3, display: "flex", alignItems: "center", justifyContent: "center" }}>
-            <Icon.Library/>
+            <Icon.Book/>
           </div>}
       </div>
       <div className="si-main">
@@ -344,194 +355,110 @@ function SessionItem({ s, active, renaming, onClick, onStartRename, onRename, on
   );
 }
 
-function ScopePicker({ session, myBooks, onChangeScope }) {
-  const [open, setOpen] = useSC(false);
-  const [mode, setMode] = useSC("root"); // root | selection
-  const initialSel = session.scope === "selection" ? new Set(session.bookIds || []) : new Set();
-  const [sel, setSel] = useSC(initialSel);
-  const wrapRef = useRC(null);
-  useEC(() => {
-    const h = (e) => { if (open && wrapRef.current && !wrapRef.current.contains(e.target)) { setOpen(false); setMode("root"); } };
-    document.addEventListener("mousedown", h);
-    return () => document.removeEventListener("mousedown", h);
-  }, [open]);
-  useEC(() => {
-    if (open) setSel(session.scope === "selection" ? new Set(session.bookIds || []) : new Set());
-  }, [open]);
-
-  const toggle = (id) => setSel((s) => { const n = new Set(s); n.has(id) ? n.delete(id) : n.add(id); return n; });
-
-  return (
-    <div style={{ position: "relative" }} ref={wrapRef}>
-      <button className="btn btn-ghost btn-sm" onClick={() => { setOpen((v) => !v); setMode("root"); }}>
-        <Icon.Filter/> Область
-      </button>
-      {open && mode === "root" && (
-        <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", width: 280, background: "var(--cream)", border: "1px solid var(--rule)", borderRadius: "var(--r-lg)", boxShadow: "var(--shadow-lg)", zIndex: 50, padding: 8 }}>
-          <div className="mono" style={{ color: "var(--ink-faint)", padding: "6px 10px" }}>Переключить контекст</div>
-          <button className="scope-item" onClick={() => { onChangeScope("library"); setOpen(false); }}>
-            <Icon.Library/>
-            <div style={{ minWidth: 0 }}>
-              <div>Вся библиотека</div>
-              <div className="si-hint">{myBooks.length} {decl(myBooks.length, ["книга", "книги", "книг"])}</div>
-            </div>
-          </button>
-          <button className="scope-item" onClick={() => setMode("selection")}>
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M4 7h12v10H4z"/><path d="M8 4h12v10"/></svg>
-            <div style={{ minWidth: 0 }}>
-              <div>Подборка книг…</div>
-              <div className="si-hint">Выберите несколько</div>
-            </div>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ marginLeft: "auto", color: "var(--ink-faint)" }}><path d="m9 18 6-6-6-6"/></svg>
-          </button>
-          <div className="hr" style={{ margin: "6px 0" }}/>
-          <div className="mono" style={{ color: "var(--ink-faint)", padding: "6px 10px" }}>Одна книга</div>
-          <div style={{ maxHeight: 220, overflow: "auto" }}>
-            {myBooks.map((b) => (
-              <button key={b.id} className="scope-item" onClick={() => { onChangeScope("book", b.id); setOpen(false); }}>
-                <div style={{ width: 20, flexShrink: 0 }}><BookCover book={b} size="sm"/></div>
-                <div style={{ minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.title}</div>
-              </button>
-            ))}
-          </div>
-          <style>{`.scope-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: var(--r-sm); font-size: 13px; color: var(--ink); text-align: left; cursor: pointer; } .scope-item:hover { background: var(--paper-2); } .si-hint { font-size: 11px; color: var(--ink-muted); margin-top: 1px; }`}</style>
-        </div>
-      )}
-      {open && mode === "selection" && (
-        <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", width: 320, background: "var(--cream)", border: "1px solid var(--rule)", borderRadius: "var(--r-lg)", boxShadow: "var(--shadow-lg)", zIndex: 50, overflow: "hidden", display: "flex", flexDirection: "column", maxHeight: 420 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 12px", borderBottom: "1px solid var(--rule)" }}>
-            <button onClick={() => setMode("root")} style={{ display: "flex", alignItems: "center", color: "var(--ink-muted)", padding: 4 }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-            </button>
-            <div style={{ fontSize: 13, fontWeight: 500 }}>Подборка книг</div>
-            <div className="mono" style={{ color: "var(--ink-muted)", marginLeft: "auto", fontSize: 10 }}>выбрано {sel.size}</div>
-          </div>
-          <div style={{ overflow: "auto", padding: 6, flex: 1 }}>
-            {myBooks.map((b) => {
-              const checked = sel.has(b.id);
-              return (
-                <label key={b.id} className="scope-item" style={{ cursor: "pointer", padding: "8px 10px" }}>
-                  <div style={{ width: 16, height: 16, borderRadius: 3, border: "1.5px solid " + (checked ? "var(--mark)" : "var(--rule-strong)"), background: checked ? "var(--mark)" : "transparent", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                    {checked && <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12"/></svg>}
-                  </div>
-                  <input type="checkbox" checked={checked} onChange={() => toggle(b.id)} style={{ position: "absolute", opacity: 0, pointerEvents: "none" }}/>
-                  <div style={{ width: 22, flexShrink: 0 }}><BookCover book={b} size="sm"/></div>
-                  <div style={{ minWidth: 0, overflow: "hidden" }} onClick={() => toggle(b.id)}>
-                    <div style={{ fontSize: 13, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.title}</div>
-                    <div style={{ fontSize: 11, color: "var(--ink-muted)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.author}</div>
-                  </div>
-                </label>
-              );
-            })}
-          </div>
-          <div style={{ padding: 10, borderTop: "1px solid var(--rule)", display: "flex", gap: 8 }}>
-            <button className="btn btn-ghost btn-sm" onClick={() => setSel(new Set(myBooks.map(b => b.id)))} style={{ flex: 1 }}>Все</button>
-            <button className="btn btn-ghost btn-sm" onClick={() => setSel(new Set())} style={{ flex: 1 }}>Сбросить</button>
-            <button className="btn btn-mark btn-sm" disabled={sel.size < 2} onClick={() => { onChangeScope("selection", [...sel]); setOpen(false); setMode("root"); }} style={{ flex: 1.5 }}>Применить</button>
-          </div>
-          <style>{`.scope-item { display: flex; align-items: center; gap: 10px; width: 100%; padding: 8px 10px; border-radius: var(--r-sm); font-size: 13px; color: var(--ink); text-align: left; cursor: pointer; position: relative; } .scope-item:hover { background: var(--paper-2); }`}</style>
-        </div>
-      )}
-    </div>
-  );
-}
-
-function ChatWelcome({ session, scopeBook, scopeSelection, myBooks }) {
-  if (scopeBook) {
+function ChatWelcome({ scopeBook }) {
+  if (!scopeBook) {
     return (
       <div style={{ textAlign: "center", paddingTop: 40 }}>
-        <div style={{ width: 120, margin: "0 auto" }}><BookCover book={scopeBook} size="md"/></div>
-        <h2 style={{ fontSize: 28, marginTop: 24, letterSpacing: "-0.015em" }}>{scopeBook.title}</h2>
-        <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 6 }}>{scopeBook.author} · {scopeBook.pages} стр.</div>
-        <p className="soft" style={{ fontSize: 15, marginTop: 20, maxWidth: 460, margin: "20px auto 0", lineHeight: 1.6 }}>
-          Спросите о сюжете, героях, мотивах или стиле. Ремарка ответит с цитатой и точной страницей.
-        </p>
-      </div>
-    );
-  }
-  if (scopeSelection) {
-    return (
-      <div style={{ textAlign: "center", paddingTop: 40 }}>
-        <div style={{ display: "inline-flex" }}>
-          {scopeSelection.slice(0, 4).map((b, i) => (
-            <div key={b.id} style={{ width: 84, marginLeft: i ? -22 : 0, transform: `rotate(${(i - (scopeSelection.length - 1) / 2) * 5}deg)`, zIndex: 10 - i }}>
-              <BookCover book={b} size="sm"/>
-            </div>
-          ))}
-        </div>
-        <h2 style={{ fontSize: 28, marginTop: 28, letterSpacing: "-0.015em" }}>Разговор по подборке</h2>
-        <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 6 }}>{scopeSelection.length} {decl(scopeSelection.length, ["книга", "книги", "книг"])}</div>
-        <p className="soft" style={{ fontSize: 15, marginTop: 20, maxWidth: 480, margin: "20px auto 0", lineHeight: 1.6 }}>
-          Сравните героев, мотивы и стиль избранных книг. Ответы будут со ссылками на каждую из них.
-        </p>
+        <h2 style={{ fontSize: 24 }}>Книга не выбрана</h2>
+        <p className="soft" style={{ fontSize: 15, marginTop: 14 }}>Выберите книгу из вашей полки слева.</p>
       </div>
     );
   }
   return (
     <div style={{ textAlign: "center", paddingTop: 40 }}>
-      <div style={{ display: "inline-flex", gap: -10 }}>
-        {myBooks.slice(0, 4).map((b, i) => (
-          <div key={b.id} style={{ width: 72, marginLeft: i ? -18 : 0, transform: `rotate(${(i - 1.5) * 4}deg)`, zIndex: 10 - i }}>
-            <BookCover book={b} size="sm"/>
-          </div>
-        ))}
-      </div>
-      <h2 style={{ fontSize: 28, marginTop: 24, letterSpacing: "-0.015em" }}>Разговор по всей полке</h2>
-      <p className="soft" style={{ fontSize: 15, marginTop: 14, maxWidth: 460, margin: "14px auto 0", lineHeight: 1.6 }}>
-        Задайте вопрос — AI сам найдёт, в каких книгах искать, и укажет источники.
+      <div style={{ width: 120, margin: "0 auto" }}><BookCover book={scopeBook} size="md"/></div>
+      <h2 style={{ fontSize: 28, marginTop: 24, letterSpacing: "-0.015em" }}>{scopeBook.title}</h2>
+      <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 6 }}>{scopeBook.author} · {scopeBook.pages} стр.</div>
+      <p className="soft" style={{ fontSize: 15, marginTop: 20, maxWidth: 460, margin: "20px auto 0", lineHeight: 1.6 }}>
+        Спросите о сюжете, героях, мотивах или стиле. Ремарка ответит с цитатой и точной страницей.
       </p>
     </div>
   );
 }
 
-function ContextPanel({ session, scopeBook, scopeSelection, myBooks, onBook, go }) {
-  if (scopeBook) {
+function ContextPanel({ book, citesByQuestion, totalCites, focus, setFocus, flashCite, onScrollToMsg, openReader, onBook }) {
+  if (!book) {
     return (
-      <div style={{ padding: 28 }}>
-        <div className="mono" style={{ color: "var(--mark)", marginBottom: 14 }}>Контекст разговора</div>
-        <div style={{ width: 140, margin: "0 auto" }}><BookCover book={scopeBook} size="md"/></div>
-        <div style={{ textAlign: "center", marginTop: 16 }}>
-          <div style={{ fontFamily: "var(--f-serif)", fontSize: 17, lineHeight: 1.25 }}>{scopeBook.title}</div>
-          <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 6 }}>{scopeBook.author}</div>
-        </div>
-        <div className="hr" style={{ margin: "20px 0" }}/>
-        <button className="btn btn-ghost btn-sm btn-block" onClick={() => go("book", scopeBook.id)}>
-          <Icon.Book/> Открыть разбор
-        </button>
-        <div className="mono" style={{ color: "var(--ink-faint)", marginTop: 24, marginBottom: 10 }}>Подсказка</div>
-        <p className="soft" style={{ fontSize: 13, lineHeight: 1.55 }}>
-          Нажмите на цитату под ответом — здесь откроется точное место в книге.
-        </p>
+      <div style={{ padding: "24px 22px" }}>
+        <div className="soft" style={{ fontSize: 13 }}>Книга не выбрана.</div>
       </div>
     );
   }
-  const contextBooks = scopeSelection || myBooks;
-  const isSelection = !!scopeSelection;
+
   return (
-    <div style={{ padding: 24 }}>
-      <div className="mono" style={{ color: "var(--mark)", marginBottom: 14 }}>
-        {isSelection ? "Подборка" : "В разговоре"} · {contextBooks.length} {decl(contextBooks.length, ["книга", "книги", "книг"])}
+    <div style={{ padding: "24px 22px 32px" }}>
+      <div className="row" style={{ justifyContent: "space-between", alignItems: "baseline", marginBottom: 14 }}>
+        <div className="mono" style={{ color: "var(--mark)" }}>Контекст разговора</div>
       </div>
-      <div className="stack-sm">
-        {contextBooks.map((b) => (
-          <div key={b.id} className="row" style={{ padding: 10, borderRadius: "var(--r)", background: "var(--cream)", border: "1px solid var(--rule)", cursor: "pointer" }} onClick={() => onBook(b.id)}>
-            <div style={{ width: 34, flexShrink: 0 }}><BookCover book={b} size="sm"/></div>
-            <div style={{ minWidth: 0 }}>
-              <div style={{ fontFamily: "var(--f-serif)", fontSize: 13, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{b.title}</div>
-              <div style={{ fontSize: 10, color: "var(--ink-muted)", marginTop: 2 }}>{b.author}</div>
-            </div>
-          </div>
-        ))}
+
+      {/* Шапка-карточка книги */}
+      <div style={{ display: "grid", gridTemplateColumns: "56px 1fr", gap: 14, padding: "14px", background: "var(--cream)", border: "1px solid var(--rule)", borderRadius: "var(--r)", marginBottom: 18 }}>
+        <div><BookCover book={book} size="sm"/></div>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ fontFamily: "var(--f-serif)", fontSize: 15, lineHeight: 1.25 }}>{book.title}</div>
+          <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 4 }}>{book.author}</div>
+          <button className="btn btn-plain btn-sm" style={{ paddingLeft: 0, marginTop: 8 }} onClick={() => onBook(book.id)}>
+            <Icon.Book/> Открыть разбор
+          </button>
+        </div>
       </div>
-      <div className="hr" style={{ margin: "20px 0" }}/>
-      {isSelection ? (
-        <p className="soft" style={{ fontSize: 13, lineHeight: 1.55 }}>
-          Ремарка будет искать ответы только в этих книгах — удобно для сравнительного анализа.
-        </p>
-      ) : (
-        <button className="btn btn-ghost btn-sm btn-block" onClick={() => go("upload")}>
-          <Icon.Plus/> Добавить книгу
+
+      {/* Табы */}
+      <div className="ctx-tabs" role="tablist" style={{ marginBottom: 14 }}>
+        <button className={`ctx-tab ${focus === "info" ? "is-active" : ""}`} onClick={() => setFocus("info")} role="tab" aria-selected={focus === "info"}>
+          О книге
         </button>
+        <button className={`ctx-tab ${focus === "cites" ? "is-active" : ""}`} onClick={() => setFocus("cites")} role="tab" aria-selected={focus === "cites"}
+          disabled={totalCites === 0} style={{ opacity: totalCites === 0 ? 0.5 : 1 }}>
+          Цитаты {totalCites > 0 && <span className="ctx-tab-count">{totalCites}</span>}
+        </button>
+      </div>
+
+      {focus === "info" || totalCites === 0 ? (
+        <div className="ctx-info">
+          {book.year && <div className="mono ctx-info-line"><span>Год</span><b>{book.year}</b></div>}
+          {book.pages && <div className="mono ctx-info-line"><span>Объём</span><b>{book.pages} стр.</b></div>}
+          {book.tags && book.tags.length > 0 && (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 10 }}>
+              {book.tags.slice(0, 6).map((t) => (
+                <span key={t} className="badge" style={{ fontSize: 10 }}>{t}</span>
+              ))}
+            </div>
+          )}
+          {totalCites === 0 && (
+            <div className="soft" style={{ fontSize: 12, lineHeight: 1.5, marginTop: 18 }}>
+              Цитаты появятся здесь, когда Ремарка ответит на ваш вопрос.
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="ctx-cites">
+          {citesByQuestion.map((qg, qi) => (
+            <div key={qi} className="ctx-q-group">
+              <button className="ctx-q-head" onClick={() => qg.qMsgIdx != null && onScrollToMsg(qg.qMsgIdx)} title={qg.q} disabled={qg.qMsgIdx == null}>
+                <span className="ctx-q-text">{qg.q}</span>
+                <svg className="ctx-q-jump" width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M5 12h14M13 5l7 7-7 7"/>
+                </svg>
+              </button>
+              <div className="ctx-q-cites">
+                {qg.items.map((it, ii) => {
+                  const isFlash = flashCite && flashCite.msgIdx === it.msgIdx && flashCite.citeIdx === it.citeIdx;
+                  return (
+                    <button
+                      key={ii}
+                      className={`ctx-cite-card ${isFlash ? "is-flash" : ""}`}
+                      onClick={() => openReader?.(book.id, it.c)}
+                      title={it.c.q ? `${it.c.ch} · стр. ${it.c.p} — ${it.c.q}` : `${it.c.ch} · стр. ${it.c.p}`}>
+                      <span className="mono ctx-cite-ref">стр. {it.c.p}</span>
+                      {it.c.q && <span className="ctx-cite-q">{it.c.q}</span>}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );
@@ -549,46 +476,10 @@ function MsgBubble({ m, onCite }) {
         {m.cites && (
           <div style={{ marginTop: 14, display: "flex", gap: 8, flexWrap: "wrap" }}>
             {m.cites.map((c, i) => (
-              <button key={i} className="badge" onClick={() => onCite(c)} style={{ cursor: "pointer" }}>
+              <button key={i} className="badge" onClick={() => onCite(c, i)} style={{ cursor: "pointer" }}>
                 <Icon.Quote/> {c.ch} · стр. {c.p}
               </button>
             ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-}
-
-function LibMsg({ m, onBook }) {
-  return (
-    <div style={{ display: "grid", gridTemplateColumns: "36px 1fr", gap: 16 }}>
-      <div style={{ width: 36, height: 36, borderRadius: "50%", background: "var(--mark-soft)", color: "var(--mark)", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <Icon.Sparkle/>
-      </div>
-      <div>
-        <div className="mono" style={{ color: "var(--mark)", marginBottom: 8 }}>Ремарка · по библиотеке</div>
-        <div style={{ fontFamily: "var(--f-serif)", fontSize: 17, lineHeight: 1.6, color: "var(--ink)" }}>{m.t}</div>
-        {m.multi && (
-          <div className="stack-sm" style={{ marginTop: 16 }}>
-            {m.multi.map((item, i) => {
-              const book = window.REMARKA.BOOKS.find((b) => b.id === item.bookId);
-              if (!book) return null;
-              return (
-                <div key={i} style={{ display: "grid", gridTemplateColumns: "48px 1fr", gap: 14, padding: 14, background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: "var(--r)", cursor: "pointer" }} onClick={() => onBook(book.id)}>
-                  <div style={{ width: 48 }}><BookCover book={book} size="sm"/></div>
-                  <div>
-                    <div style={{ fontFamily: "var(--f-serif)", fontSize: 15 }}>{book.title}</div>
-                    <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 4 }}>{book.author}</div>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
-                      {item.cites.map((c, j) => (
-                        <span key={j} className="badge"><Icon.Quote/> {c.ch} · стр. {c.p}</span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
           </div>
         )}
       </div>

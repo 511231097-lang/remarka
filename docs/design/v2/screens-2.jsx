@@ -11,15 +11,15 @@ function ScreenBook({ bookId, go, addBook, owned, onChat }) {
       {/* Шапка страницы */}
       <div style={{ background: "var(--paper-2)", borderBottom: "1px solid var(--rule)" }}>
         <div className="container" style={{ paddingTop: 48, paddingBottom: 48 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 48, alignItems: "flex-start" }}>
-            <div style={{ width: 260 }}>
+          <div className="book-hero" style={{ display: "grid", gridTemplateColumns: "260px 1fr", gap: 48, alignItems: "flex-start" }}>
+            <div className="book-hero-cover" style={{ width: 260 }}>
               <BookCover book={book} size="lg"/>
             </div>
             <div>
               <div className="mono" style={{ color: "var(--mark)", marginBottom: 16 }}>
                 {book.tag} · {book.year} · {book.pages} стр.
               </div>
-              <h1 style={{ fontSize: 52, letterSpacing: "-0.02em", lineHeight: 1.02, textWrap: "balance" }}>{book.title}</h1>
+              <h1 className="book-hero-title" style={{ fontSize: 52, letterSpacing: "-0.02em", lineHeight: 1.02, textWrap: "balance" }}>{book.title}</h1>
               <div style={{ fontFamily: "var(--f-serif)", fontStyle: "italic", fontSize: 20, color: "var(--ink-soft)", marginTop: 12 }}>
                 {book.author}
               </div>
@@ -184,9 +184,9 @@ function ScreenChatBook({ bookId, go }) {
   };
 
   return (
-    <div className="screen-fade" style={{ display: "grid", gridTemplateColumns: "280px 1fr 360px", height: "calc(100vh - 64px)", borderTop: "1px solid var(--rule)" }}>
+    <div className="screen-fade book-layout" style={{ display: "grid", gridTemplateColumns: "280px 1fr 360px", height: "calc(100vh - 64px)", borderTop: "1px solid var(--rule)" }}>
       {/* Левая колонка — книга */}
-      <div style={{ borderRight: "1px solid var(--rule)", padding: 28, background: "var(--paper-2)", overflow: "auto" }}>
+      <div className="book-cover-col" style={{ borderRight: "1px solid var(--rule)", padding: 28, background: "var(--paper-2)", overflow: "auto" }}>
         <div style={{ width: 160, margin: "0 auto" }}>
           <BookCover book={book} size="md"/>
         </div>

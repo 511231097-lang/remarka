@@ -11,17 +11,17 @@ function ScreenPricing({ go, plan, onUpgrade, onDowngrade }) {
     { t: "Чат с любой книгой из каталога", on: true },
     { t: "Разбор-витрина на странице книги", on: true },
     { t: "Добавление книг из каталога в «Мои книги»", on: true },
-    { t: "Чат по всей библиотеке — до 10 книг", on: true },
+    { t: "Цитаты и ссылки на страницы в каждом ответе", on: true },
     { t: "Загрузка своих книг (EPUB · FB2 · PDF)", on: false },
     { t: "Персональный анализ загруженных книг", on: false },
-    { t: "Разговор со смешанной полкой (свои + каталог)", on: false },
+    { t: "Чат с собственными книгами", on: false },
   ];
 
   const plusFeatures = [
     { t: "Всё из бесплатного тарифа", on: true },
     { t: "Загрузка своих книг в любом формате", on: true },
     { t: "Глубокий анализ загруженных книг", on: true },
-    { t: "Чат по смешанной библиотеке без ограничений", on: true },
+    { t: "Чат с каждой загруженной книгой", on: true },
     { t: "До 200 книг в личной полке", on: true },
     { t: "Экспорт разбора и цитат в Markdown", on: true },
     { t: "Приоритетная обработка — ~1 мин на книгу", on: true },
@@ -45,7 +45,7 @@ function ScreenPricing({ go, plan, onUpgrade, onDowngrade }) {
 
       {/* Тарифы */}
       <div className="container" style={{ paddingTop: 48, paddingBottom: 96 }}>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 28, maxWidth: 960, margin: "0 auto" }}>
+        <div className="pricing-grid" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 28, maxWidth: 960, margin: "0 auto" }}>
 
           {/* FREE */}
           <div className="card" style={{ padding: 36, position: "relative", background: "var(--cream)" }}>
@@ -142,7 +142,7 @@ function ScreenPricing({ go, plan, onUpgrade, onDowngrade }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 0 }}>
             {[
               { q: "Можно ли пользоваться бесплатно всегда?",
-                a: "Да. Бесплатный тариф — бессрочный. Каталог из 98 книг, чат с каждой из них и общий чат по вашей полке из каталога доступны без ограничений по времени." },
+                a: "Да. Бесплатный тариф — бессрочный. Каталог из 98 книг и чат с каждой из них из каталога доступны без ограничений по времени." },
               { q: "Что происходит с загруженными книгами, если отменить Плюс?",
                 a: "Книги остаются в вашей библиотеке и доступны для чтения и экспорта цитат. Чат по ним ставится на паузу до следующей подписки. Никто кроме вас эти файлы не видит." },
               { q: "Используются ли мои книги для обучения моделей?",
@@ -256,7 +256,7 @@ function PaywallModal({ onClose, onUpgrade, onSeePlans, feature = "upload" }) {
           {[
             "Загрузка своих книг в EPUB · FB2 · PDF",
             "Персональный AI-разбор каждой книги",
-            "Чат по смешанной полке: свои + каталог",
+            "Отдельный чат с каждой вашей книгой",
           ].map((t, i) => (
             <li key={i} style={{ display: "flex", gap: 10, fontSize: 13.5, color: "var(--ink)", alignItems: "center" }}>
               <div style={{ width: 16, height: 16, borderRadius: "50%", background: "var(--mark)", color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>

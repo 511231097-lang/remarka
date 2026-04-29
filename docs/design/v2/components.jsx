@@ -60,6 +60,9 @@ function Navbar({ route, go, authed, plan = "free", onSignIn, onProfile }) {
     { k: "legal:copyright", t: "Правообладателям" },
   ];
   const isPlus = plan === "plus";
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const goAndClose = (k, arg) => { setDrawerOpen(false); if (arg !== undefined) go(k, arg); else go(k); };
+
   return (
     <div className="navbar">
       <div className="container navbar-inner">
@@ -95,7 +98,52 @@ function Navbar({ route, go, authed, plan = "free", onSignIn, onProfile }) {
             <button className="btn btn-ghost btn-sm" onClick={onSignIn}>Войти</button>
           )}
         </div>
+
+        <button className="nav-burger" onClick={() => setDrawerOpen(true)} aria-label="Меню">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><line x1="4" x2="20" y1="6" y2="6"/><line x1="4" x2="20" y1="12" y2="12"/><line x1="4" x2="20" y1="18" y2="18"/></svg>
+        </button>
       </div>
+
+      {ReactDOM.createPortal(
+      <div className={`mobile-drawer ${drawerOpen ? "open" : ""}`} onClick={(e) => { if (e.target === e.currentTarget) setDrawerOpen(false); }}>
+        <div className="mobile-drawer-panel">
+          <button className="mobile-drawer-close" onClick={() => setDrawerOpen(false)} aria-label="Закрыть">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M18 6 6 18M6 6l12 12"/></svg>
+          </button>
+          {authed && (
+            <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 4px 18px", borderBottom: "1px solid var(--rule)", marginBottom: 10 }}>
+              <button className="avatar" onClick={() => goAndClose("profile")} style={{ margin: 0 }}>А</button>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 14, fontWeight: 500 }}>Мой аккаунт</div>
+                <div style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 2 }}>Тариф · {isPlus ? "Плюс" : "Читатель"}</div>
+              </div>
+            </div>
+          )}
+          {items.map((it) => {
+            const isLegal = it.k.startsWith("legal:");
+            const legalKey = isLegal ? it.k.slice(6) : null;
+            const active = isLegal ? (route === "legal-copyright" || route === `legal:${legalKey}`) : route === it.k;
+            return (
+              <button key={it.k}
+                className={`m-link ${active ? "active" : ""}`}
+                onClick={() => isLegal ? goAndClose("legal", legalKey) : goAndClose(it.k)}>
+                {it.t}
+              </button>
+            );
+          })}
+          <button className={`m-link ${route === "chat" ? "active" : ""}`} onClick={() => goAndClose("chat")}>Чат</button>
+          {!isPlus && (
+            <button className="m-link" style={{ color: "var(--mark)", fontWeight: 500 }} onClick={() => goAndClose("pricing")}>
+              <Icon.Sparkle/> Перейти на Плюс
+            </button>
+          )}
+          <div style={{ flex: 1 }}/>
+          {!authed && (
+            <button className="btn btn-primary" onClick={() => { setDrawerOpen(false); onSignIn(); }} style={{ marginTop: 14 }}>Войти</button>
+          )}
+        </div>
+      </div>,
+      document.body)}
     </div>
   );
 }
