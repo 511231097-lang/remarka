@@ -736,16 +736,19 @@
 }
 
 .footer-title {
-  color: var(--ink);
-  font-size: 13px;
-  font-weight: 500;
-  margin-bottom: 5px;
+  font-family: var(--f-mono);
+  font-size: 10px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--ink-faint);
+  margin-bottom: 4px;
 }
 
 .footer-col a {
-  color: var(--ink-muted);
+  font-size: 13.5px;
+  color: var(--ink-soft);
   cursor: pointer;
-  font-size: 13px;
+  transition: color 0.15s;
   line-height: 1.45;
 }
 
@@ -754,19 +757,21 @@
 }
 
 .footer-bottom {
-  align-items: center;
-  border-top: 1px solid var(--rule);
-  display: flex;
-  gap: 18px;
-  justify-content: space-between;
+  margin-top: 40px;
+  padding-top: 20px;
   padding-bottom: 20px;
-  padding-top: 18px;
+  border-top: 1px solid var(--rule-soft);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-wrap: wrap;
 }
 
 .footer-mini {
+  font-size: 11px;
   color: var(--ink-faint);
-  font-size: 9.5px;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.04em;
 }
 
 .chat-legal {

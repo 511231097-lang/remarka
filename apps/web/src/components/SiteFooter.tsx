@@ -21,6 +21,7 @@ export function SiteFooter() {
           <div className="footer-title">Продукт</div>
           <Link href="/explore">Каталог</Link>
           <Link href="/library">Мои книги</Link>
+          <Link href="/library">Чат</Link>
           <Link href="/upload">Загрузить книгу</Link>
           <Link href="/plans">Тарифы</Link>
         </div>
