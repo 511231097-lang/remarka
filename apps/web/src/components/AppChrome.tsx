@@ -25,9 +25,14 @@ export function AppChrome({
   const pathname = usePathname();
   const chatRoute = isChatPath(pathname || "");
 
+  // TEMPORARY: until the subscription model exists, treat admin users as Plus
+  // so the design's pill renders for the dev/owner. Everyone else is Free.
+  // Replace with real plan resolution from User.plan when wired up.
+  const plan: "free" | "plus" = userRole === "admin" ? "plus" : "free";
+
   return (
     <div className="page">
-      <SiteHeader userName={userName} userImage={userImage} userRole={userRole} />
+      <SiteHeader userName={userName} userImage={userImage} userRole={userRole} plan={plan} />
       <main className="grow">{children}</main>
       {!chatRoute && <SiteFooter />}
     </div>
