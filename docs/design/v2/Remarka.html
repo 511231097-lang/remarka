@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Ремарка — AI-чат с книгами</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"/>
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin/>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Source+Serif+4:ital,opsz,wght@0,8..60,400;0,8..60,500;0,8..60,600;1,8..60,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet"/>
+<link rel="stylesheet" href="styles.css"/>
+<script>
+  // Применяем тему как можно раньше
+  try {
+    const saved = localStorage.getItem("remarka-theme");
+    if (saved === "dark" || saved === "light") document.documentElement.setAttribute("data-theme", saved);
+    else document.documentElement.setAttribute("data-theme", "light");
+  } catch(e) { document.documentElement.setAttribute("data-theme", "light"); }
+</script>
+<script src="https://unpkg.com/react@18.3.1/umd/react.development.js" integrity="sha384-hD6/rw4ppMLGNu3tX5cjIb+uRZ7UkRJ6BPkLpg4hAu/6onKUg4lLsHAs9EBPT82L" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/react-dom@18.3.1/umd/react-dom.development.js" integrity="sha384-u6aeetuaXnQ38mYT8rp6sbXaQe3NL9t+IBXmnYxwkUI2Hw4bsp2Wvmx4yRQF1uAm" crossorigin="anonymous"></script>
+<script src="https://unpkg.com/@babel/standalone@7.29.0/babel.min.js" integrity="sha384-m08KidiNqLdpJqLq95G/LEi8Qvjl/xUYll3QILypMoQ65QorJ9Lvtp2RXYGBFj1y" crossorigin="anonymous"></script>
+<script src="data.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel" src="tweaks-panel.jsx"></script>
+<script type="text/babel" src="components.jsx"></script>
+<script type="text/babel" src="screens-1.jsx"></script>
+<script type="text/babel" src="screens-2.jsx"></script>
+<script type="text/babel" src="screens-3.jsx"></script>
+<script type="text/babel" src="screens-chat.jsx"></script>
+<script type="text/babel" src="legal-chrome.jsx"></script>
+<script type="text/babel" src="legal-pages.jsx"></script>
+<script type="text/babel" src="screens-pricing.jsx"></script>
+<script type="text/babel">
+
+const TWEAK_DEFAULTS = /*EDITMODE-BEGIN*/{
+  "theme": "light",
+  "plan": "free"
+}/*EDITMODE-END*/;
+
+const { useState, useEffect, useRef } = React;
+
+function uid() { return Math.random().toString(36).slice(2, 9); }
+
+function App() {
+  const [tweaks, tweakApi] = useTweaks(TWEAK_DEFAULTS);
+  const [route, setRoute] = useState({ name: "landing", bookId: "master", legalKey: "terms" });
+  const [authed, setAuthed] = useState(false);
+  const [authModal, setAuthModal] = useState(false);
+  const [pendingAction, setPendingAction] = useState(null);
+  const [cookies, setCookies] = useState(false);
+  const [cookiesVisible, setCookiesVisible] = useState(true);
+  const [cookieSettingsOpen, setCookieSettingsOpen] = useState(false);
+  const [cookiePrefs, setCookiePrefs] = useState({ analytics: true, perso: true });
+  const [owned, setOwned] = useState(() => new Set(["crime", "anna"]));
+  const [paywall, setPaywall] = useState(null); // {feature}|null
+
+  const plan = tweaks.plan || "free";
+  const isPlus = plan === "plus";
+  const setPlan = (p) => tweakApi("plan", p);
+
+  // Книги в обработке
+  const [analyzing, setAnalyzing] = useState([
+    { id: "an-1", title: "Заметки о Ясной Поляне", author: "Мой архив", progress: 68, format: "PDF · 142 стр.", eta: "~1 мин",
+      cover: { bg: "oklch(56% 0.1 140)", fg: "oklch(96% 0.02 85)" } },
+    { id: "an-2", title: "Бесы", author: "Фёдор Достоевский", progress: 22, format: "EPUB · 736 стр.", eta: "~3 мин",
+      cover: { bg: "oklch(32% 0.04 30)", fg: "oklch(92% 0.03 85)" } },
+  ]);
+
+  // Тик прогресса
+  useEffect(() => {
+    const id = setInterval(() => {
+      setAnalyzing((list) => list.map((b) => ({ ...b, progress: Math.min(100, b.progress + Math.random() * 2) })));
+    }, 800);
+    return () => clearInterval(id);
+  }, []);
+
+  // Сессии чата (единый чат: и по книге, и по библиотеке)
+  const now = Date.now();
+  const [sessions, setSessions] = useState([
+    { id: "s1", title: "Мастер и Маргарита", scope: "book", bookId: "master", createdAt: now - 3600_000,
+      messages: [
+        { r: "user", t: "Почему Маргарита согласилась стать королевой бала у Воланда?" },
+        { r: "ai", t: "Не ради почестей, а ради единственного условия — вернуть Мастера. Азазелло находит её в момент, когда она потеряла смысл жить без него, и предлагает сделку, в которой цена — она сама. Маргарита принимает это сознательно: она не жертва, а скорее соучастница, готовая пройти через любое унижение ради любви.",
+          cites: [
+            { ch: "Глава 19", p: 218, q: "«Невидима и свободна! Невидима и свободна!» — повторяла она, поднимаясь над бульваром." },
+            { ch: "Глава 20", p: 231, q: "— Я согласна на всё, — твёрдо сказала Маргарита." },
+            { ch: "Глава 22", p: 247, q: "— Вы должны будете исполнить роль королевы..." },
+          ] },
+      ] },
+    { id: "s2", title: "Мотивы одиночества", scope: "library", createdAt: now - 2 * 86400_000,
+      messages: [
+        { r: "user", t: "В каких моих книгах герой сомневается в себе до последней страницы?" },
+        { r: "ai", t: "В вашей полке такой мотив звучит острее всего у Достоевского и Толстого. Раскольников до финала убеждает себя, что убийство было «испытанием сильного», — и лишь в эпилоге признаёт, что сломан именно собственной совестью.",
+          multi: [
+            { bookId: "crime", cites: [{ ch: "Эпилог, гл. 2", p: 638 }, { ch: "Часть 6, гл. 8", p: 552 }] },
+            { bookId: "anna", cites: [{ ch: "Часть 7, гл. 28", p: 768 }] },
+          ] },
+      ] },
+    { id: "s3", title: "Анна Каренина", scope: "book", bookId: "anna", createdAt: now - 9 * 86400_000, messages: [] },
+  ]);
+  const [activeSessionId, setActiveSessionId] = useState("s1");
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-theme", tweaks.theme || "light");
+    try { localStorage.setItem("remarka-theme", tweaks.theme || "light"); } catch(e) {}
+  }, [tweaks.theme]);
+
+  useEffect(() => {
+    document.documentElement.setAttribute("data-screen-label", route.name);
+  }, [route.name]);
+
+  const go = (name, arg) => {
+    if ((name === "library" || name === "chat" || name === "upload" || name === "profile") && !authed) {
+      setPendingAction({ type: "route", name, bookId: arg });
+      setAuthModal(true);
+      return;
+    }
+    // Paywall: upload available only on Plus
+    if (name === "upload" && authed && !isPlus) {
+      setPaywall({ feature: "upload" });
+      return;
+    }
+    if (name === "legal") {
+      setRoute({ ...route, name: "legal", legalKey: arg || "terms" });
+    } else {
+      setRoute({ ...route, name, bookId: arg || route.bookId });
+    }
+    window.scrollTo({ top: 0, behavior: "instant" });
+  };
+
+  const upgradeToPlus = () => {
+    setPlan("plus");
+    // If upgraded from upload paywall, proceed to upload
+    if (paywall && paywall.feature === "upload") {
+      setPaywall(null);
+      setRoute({ name: "upload" });
+      window.scrollTo(0, 0);
+      return;
+    }
+    setPaywall(null);
+  };
+
+  const openChatForBook = (bookId) => {
+    if (!authed) {
+      setPendingAction({ type: "chat-book", bookId });
+      setAuthModal(true);
+      return;
+    }
+    // Ищем существующую сессию по книге
+    const existing = sessions.find((s) => s.scope === "book" && s.bookId === bookId);
+    if (existing) {
+      setActiveSessionId(existing.id);
+    } else {
+      const book = window.REMARKA.BOOKS.find((b) => b.id === bookId);
+      const id = uid();
+      setSessions((list) => [{ id, title: book?.title || "Новый чат", scope: "book", bookId, createdAt: Date.now(), messages: [] }, ...list]);
+      setActiveSessionId(id);
+    }
+    setRoute({ name: "chat", bookId });
+    window.scrollTo(0, 0);
+  };
+
+  const onActive = (id) => setActiveSessionId(id);
+  const declLocal = (n, forms) => {
+    const a = Math.abs(n) % 100, b = a % 10;
+    if (a > 10 && a < 20) return forms[2];
+    if (b > 1 && b < 5) return forms[1];
+    if (b === 1) return forms[0];
+    return forms[2];
+  };
+  const onCreate = (scope, arg) => {
+    const s = scope || "library";
+    const id = uid();
+    let title, bookId, bookIds;
+    if (s === "book") {
+      const book = window.REMARKA.BOOKS.find((b) => b.id === (arg || [...owned][0]));
+      title = book?.title || "Новый чат";
+      bookId = book?.id;
+    } else if (s === "selection") {
+      const ids = Array.isArray(arg) ? arg : [];
+      title = `Подборка · ${ids.length} ${declLocal(ids.length, ["книга", "книги", "книг"])}`;
+      bookIds = ids;
+    } else {
+      title = "Новый чат по библиотеке";
+    }
+    setSessions((list) => [{ id, title, scope: s, bookId, bookIds, createdAt: Date.now(), messages: [] }, ...list]);
+    setActiveSessionId(id);
+  };
+  const onDelete = (id) => {
+    setSessions((list) => {
+      const next = list.filter((s) => s.id !== id);
+      if (id === activeSessionId) setActiveSessionId(next[0]?.id || null);
+      if (next.length === 0) return [{ id: uid(), title: "Новый чат по библиотеке", scope: "library", createdAt: Date.now(), messages: [] }];
+      return next;
+    });
+  };
+  const onRename = (id, title) => {
+    setSessions((list) => list.map((s) => s.id === id ? { ...s, title } : s));
+  };
+  const onAppend = (id, msg) => {
+    setSessions((list) => list.map((s) => s.id === id ? { ...s, messages: [...s.messages, msg] } : s));
+  };
+
+  // Хак для смены scope пустого чата
+  useEffect(() => {
+    window.__remarkaUpdateScope = (id, scope, arg) => {
+      setSessions((list) => list.map((s) => {
+        if (s.id !== id) return s;
+        const next = { ...s, scope, bookId: undefined, bookIds: undefined };
+        if (scope === "book") next.bookId = arg;
+        else if (scope === "selection") next.bookIds = Array.isArray(arg) ? arg : [];
+        return next;
+      }));
+    };
+  }, []);
+
+  const addBook = (id) => {
+    if (!authed) {
+      setPendingAction({ type: "add", id });
+      setAuthModal(true);
+      return;
+    }
+    setOwned((s) => new Set([...s, id]));
+  };
+
+  const removeBook = (id) => {
+    setOwned((s) => { const n = new Set(s); n.delete(id); return n; });
+  };
+
+  const onAuthSuccess = () => {
+    setAuthed(true);
+    setAuthModal(false);
+    if (pendingAction) {
+      if (pendingAction.type === "route") {
+        setRoute({ name: pendingAction.name, bookId: pendingAction.bookId || route.bookId });
+        window.scrollTo(0, 0);
+      } else if (pendingAction.type === "add") {
+        setOwned((s) => new Set([...s, pendingAction.id]));
+      } else if (pendingAction.type === "chat-book") {
+        openChatForBook(pendingAction.bookId);
+      }
+      setPendingAction(null);
+    }
+  };
+
+  return (
+    <div className="page">
+      <Navbar route={route.name === "chat" ? "chat" : route.name} go={(n, id) => go(n, id)} authed={authed}
+        plan={plan}
+        onSignIn={() => { setPendingAction(null); setAuthModal(true); }}
+        onProfile={() => go("profile")}/>
+
+      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+        {route.name === "landing" && <ScreenLanding go={(n, id) => n === "chat-book" ? openChatForBook(id || route.bookId) : go(n, id)} onSignIn={() => setAuthModal(true)}/>}
+        {route.name === "catalog" && <ScreenCatalog go={go} addBook={addBook} owned={owned}/>}
+        {route.name === "book" && <ScreenBook bookId={route.bookId} go={go} addBook={addBook} owned={owned} onChat={openChatForBook}/>}
+        {route.name === "library" && <ScreenLibrary go={go} owned={owned} removeBook={removeBook} onChat={openChatForBook} analyzing={analyzing} plan={plan} onUpgrade={() => setRoute({ name: "pricing" })}/>}
+        {route.name === "chat" && <ScreenChat go={go} owned={owned}
+          sessions={sessions} activeId={activeSessionId}
+          onActive={onActive} onCreate={onCreate} onDelete={onDelete} onRename={onRename} onAppend={onAppend}
+          onBook={(id) => go("book", id)}/>}
+        {route.name === "upload" && <ScreenUpload go={go}/>}
+        {route.name === "pricing" && <ScreenPricing go={go} plan={plan} onUpgrade={upgradeToPlus} onDowngrade={() => setPlan("free")}/>}
+        {route.name === "profile" && <ScreenProfile go={go} onSignOut={() => { setAuthed(false); setRoute({ name: "landing" }); }} tweaks={tweaks} setTweak={tweakApi} plan={plan} onUpgrade={() => setRoute({ name: "pricing" })} onDowngrade={() => setPlan("free")}/>}
+        {route.name === "legal" && <ScreenLegal docKey={route.legalKey} go={go}/>}
+
+        {route.name !== "chat" && <SiteFooter go={go}/>}
+      </div>
+
+      {authModal && <AuthModalV2 onClose={() => { setAuthModal(false); setPendingAction(null); }} onSuccess={onAuthSuccess} go={go}/>}
+
+      {paywall && <PaywallModal
+        feature={paywall.feature}
+        onClose={() => setPaywall(null)}
+        onUpgrade={upgradeToPlus}
+        onSeePlans={() => { setPaywall(null); setRoute({ name: "pricing" }); }}/>}
+
+      {!cookies && cookiesVisible && <CookieBannerV2
+        onAcceptAll={() => { setCookies(true); setCookiesVisible(false); setCookiePrefs({ analytics: true, perso: true }); }}
+        onOnlyNecessary={() => { setCookies(true); setCookiesVisible(false); setCookiePrefs({ analytics: false, perso: false }); }}
+        onCustomize={() => setCookieSettingsOpen(true)}
+        go={go}/>}
+
+      {cookieSettingsOpen && <CookieSettings initial={cookiePrefs}
+        onClose={() => setCookieSettingsOpen(false)}
+        onSave={(prefs) => { setCookiePrefs(prefs); setCookies(true); setCookiesVisible(false); setCookieSettingsOpen(false); }}/>}
+
+      <TweaksPanel title="Tweaks">
+        <TweakSection label="Тема">
+          <TweakRadio value={tweaks.theme} onChange={(v) => tweakApi("theme", v)}
+            options={[{ value: "light", label: "Светлая" }, { value: "dark", label: "Тёмная" }]}/>
+        </TweakSection>
+        <TweakSection label="Тариф">
+          <TweakRadio value={plan} onChange={setPlan}
+            options={[{ value: "free", label: "Читатель" }, { value: "plus", label: "Плюс" }]}/>
+          <TweakButton label="Показать пейволл" onClick={() => setPaywall({ feature: "upload" })}/>
+        </TweakSection>
+        <TweakSection label="Навигация">
+          <TweakButton label="→ Лендинг" onClick={() => setRoute({ name: "landing" })}/>
+          <TweakButton label="→ Каталог" onClick={() => setRoute({ name: "catalog" })}/>
+          <TweakButton label="→ Страница книги" onClick={() => setRoute({ name: "book", bookId: "master" })}/>
+          <TweakButton label="→ Чат (единый)" onClick={() => { setAuthed(true); setRoute({ name: "chat" }); }}/>
+          <TweakButton label="→ Мои книги" onClick={() => { setAuthed(true); setRoute({ name: "library" }); }}/>
+          <TweakButton label="→ Загрузка" onClick={() => { setAuthed(true); setRoute({ name: "upload" }); }}/>
+          <TweakButton label="→ Профиль" onClick={() => { setAuthed(true); setRoute({ name: "profile" }); }}/>
+          <TweakButton label="→ Тарифы" onClick={() => setRoute({ name: "pricing" })}/>
+          <TweakButton label="→ Соглашение" onClick={() => setRoute({ name: "legal", legalKey: "terms" })}/>
+          <TweakButton label="→ Политика ПДн" onClick={() => setRoute({ name: "legal", legalKey: "privacy" })}/>
+          <TweakButton label="→ Cookies" onClick={() => setRoute({ name: "legal", legalKey: "cookies" })}/>
+          <TweakButton label="→ Условия загрузки" onClick={() => setRoute({ name: "legal", legalKey: "upload" })}/>
+          <TweakButton label="→ Жалоба правообладателя" onClick={() => setRoute({ name: "legal", legalKey: "copyright" })}/>
+        </TweakSection>
+        <TweakSection label="Демо">
+          <TweakButton label={authed ? "Выйти" : "Показать Google Sign-in"} onClick={() => authed ? setAuthed(false) : setAuthModal(true)}/>
+          <TweakButton label="Показать cookie-баннер" onClick={() => { setCookies(false); setCookiesVisible(true); }}/>
+        </TweakSection>
+      </TweaksPanel>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
