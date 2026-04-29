@@ -2,9 +2,14 @@
 
 import { motion } from "motion/react";
 import Link from "next/link";
-import { Library as LibraryIcon, MessageCircle, Sparkles, Upload, X } from "lucide-react";
+import {
+  Library as LibraryIcon,
+  MessageSquare,
+  Sparkles,
+  Upload,
+  X,
+} from "lucide-react";
 import { useEffect, useState } from "react";
-import { currentUser } from "@/lib/mockData";
 import { type BookCardDTO } from "@/lib/books";
 import { listBooks, removeBookFromLibrary } from "@/lib/booksClient";
 import { BookPreviewStage } from "@/components/BookGalleryCard";
@@ -14,17 +19,20 @@ interface AnalyzingBook {
   id: string;
   title: string;
   author: string;
+  format?: string;
   progress: number;
   eta?: string;
-  format?: string;
 }
 
-function resolveBooksCountLabel(count: number): string {
-  const mod10 = count % 10;
-  const mod100 = count % 100;
-  if (mod10 === 1 && mod100 !== 11) return "книга";
-  if (mod10 >= 2 && mod10 <= 4 && (mod100 < 12 || mod100 > 14)) return "книги";
-  return "книг";
+type Plan = "free" | "plus";
+
+function declension(n: number, forms: [string, string, string]): string {
+  const a = Math.abs(n) % 100;
+  const b = a % 10;
+  if (a > 10 && a < 20) return forms[2];
+  if (b > 1 && b < 5) return forms[1];
+  if (b === 1) return forms[0];
+  return forms[2];
 }
 
 export function Library() {
@@ -32,6 +40,12 @@ export function Library() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
+
+  // Plan handling: no plan prop yet — default to "free" (most realistic for
+  // current users). When plans get wired in, this becomes the data-driven
+  // branch. Typed as Plan (not literal) so downstream branches stay open.
+  const [plan] = useState<Plan>("free");
+  const isPlus = plan === "plus";
 
   useEffect(() => {
     let active = true;
@@ -55,12 +69,11 @@ export function Library() {
     };
   }, []);
 
-  const isPlus = currentUser.plan.type === "plus";
   // Backend listings only return books with analysisStatus="completed", so the
   // analyzing list is always empty in the current API. The design renders an
   // "in progress" section when these become available.
   const analyzingList: AnalyzingBook[] = [];
-  const total = myBooks.length + (isPlus ? analyzingList.length : 0);
+  const total = myBooks.length + analyzingList.length;
 
   async function handleRemove(book: BookCardDTO) {
     if (!book.canRemoveFromLibrary || removingIds.has(book.id)) return;
@@ -89,11 +102,11 @@ export function Library() {
           <div className="row" style={{ alignItems: "flex-end", flexWrap: "wrap", gap: 24, justifyContent: "space-between" }}>
             <div>
               <div className="mono" style={{ color: "var(--mark)", marginBottom: 12 }}>
-                Моя библиотека · {total} {resolveBooksCountLabel(total)}
+                Моя библиотека · {total} {declension(total, ["книга", "книги", "книг"])}
               </div>
               <h1 style={{ fontSize: 48, letterSpacing: "-0.02em", lineHeight: 1.05 }}>Ваша полка</h1>
               <p className="soft" style={{ fontSize: 16, lineHeight: 1.55, marginTop: 14, maxWidth: 560 }}>
-                Все книги, которые вы сохранили{isPlus ? " или загрузили" : ""}. Задавайте вопрос сразу по всей полке — или по одной книге.
+                Все книги, которые вы сохранили{isPlus ? " или загрузили" : ""}. Откройте любую — и задайте вопрос по одной книге.
               </p>
             </div>
             <div className="row-sm library-actions">
@@ -101,14 +114,13 @@ export function Library() {
                 <Upload size={16} /> Загрузить книгу
                 {!isPlus ? <span className="lock-pill">Плюс</span> : null}
               </Link>
-              <button
+              <Link
                 className="btn btn-mark"
-                disabled
-                title="UI-заглушка: общий чат по библиотеке пока не подключён к backend"
-                style={{ opacity: 0.72 }}
+                href="/library"
+                title="Чат доступен по каждой книге отдельно"
               >
-                <MessageCircle size={16} /> Открыть чат
-              </button>
+                <MessageSquare size={16} /> Открыть чат
+              </Link>
             </div>
           </div>
         </motion.div>
@@ -117,8 +129,8 @@ export function Library() {
           <div className="upsell-bar">
             <div className="upsell-icon"><Sparkles size={18} /></div>
             <div className="upsell-copy">
-              <div className="upsell-title">Загружайте свои книги на тарифе Плюс</div>
-              <div className="upsell-subtitle">EPUB, FB2, PDF — и полный AI-разбор по каждой. Каталог и чат остаются бесплатными.</div>
+              <div className="upsell-t">Загружайте свои книги на тарифе Плюс</div>
+              <div className="upsell-s">EPUB, FB2, PDF — и полный AI-разбор по каждой. Каталог и чат остаются бесплатными.</div>
             </div>
             <Link className="btn btn-mark btn-sm" href="/plans">Перейти на Плюс</Link>
           </div>
@@ -129,13 +141,11 @@ export function Library() {
         {error ? <div className="card" style={{ borderColor: "var(--mark)", color: "var(--mark)", marginBottom: 24, padding: 16 }}>{error}</div> : null}
         {loading ? <div className="muted" style={{ padding: "64px 0", textAlign: "center" }}>Загрузка библиотеки…</div> : null}
 
-        {!loading && total === 0 ? (
-          <EmptyLibrary isPlus={isPlus} />
-        ) : null}
+        {!loading && total === 0 ? <EmptyLibrary plan={plan} /> : null}
 
         {!loading && total > 0 ? (
           <>
-            {isPlus && analyzingList.length > 0 ? (
+            {analyzingList.length > 0 ? (
               <>
                 <div className="row" style={{ justifyContent: "space-between", marginBottom: 20 }}>
                   <div className="mono" style={{ color: "var(--bronze)" }}>Анализируется · {analyzingList.length}</div>
@@ -172,113 +182,12 @@ export function Library() {
                 </div>
               </>
             ) : null}
+            <style>{`@keyframes pulse { 0%, 100% { opacity: 0.4; } 50% { opacity: 1; } }`}</style>
           </>
         ) : null}
       </div>
 
       <div style={{ height: 96 }} />
-
-      <style jsx>{`
-        .library-actions {
-          align-items: center;
-          flex-wrap: wrap;
-          justify-content: flex-end;
-        }
-        .lock-pill {
-          align-items: center;
-          background: var(--mark-soft);
-          border-radius: 100px;
-          color: var(--mark);
-          display: inline-flex;
-          font-family: var(--font-mono);
-          font-size: 9.5px;
-          font-weight: 500;
-          letter-spacing: 0.06em;
-          margin-left: 8px;
-          padding: 2px 8px;
-          text-transform: uppercase;
-        }
-        .upsell-bar {
-          align-items: center;
-          background: var(--cream);
-          border: 1px solid var(--mark);
-          border-radius: var(--r-lg);
-          box-shadow: var(--shadow-sm);
-          display: flex;
-          gap: 16px;
-          margin-top: 28px;
-          padding: 16px 20px;
-        }
-        .upsell-icon {
-          align-items: center;
-          background: var(--mark-soft);
-          border-radius: 50%;
-          color: var(--mark);
-          display: flex;
-          flex-shrink: 0;
-          height: 40px;
-          justify-content: center;
-          width: 40px;
-        }
-        .upsell-copy {
-          flex: 1;
-          min-width: 0;
-        }
-        .upsell-title {
-          color: var(--ink);
-          font-family: var(--font-serif);
-          font-size: 16px;
-        }
-        .upsell-subtitle {
-          color: var(--ink-muted);
-          font-size: 13px;
-          line-height: 1.5;
-          margin-top: 3px;
-        }
-        .library-grid {
-          display: grid;
-          gap: 32px;
-          grid-template-columns: repeat(5, minmax(0, 1fr));
-          row-gap: 44px;
-        }
-        @media (max-width: 1080px) {
-          .library-grid {
-            grid-template-columns: repeat(4, minmax(0, 1fr));
-          }
-        }
-        @media (max-width: 860px) {
-          .library-grid {
-            grid-template-columns: repeat(3, minmax(0, 1fr));
-          }
-        }
-        @media (max-width: 640px) {
-          .library-actions {
-            align-items: stretch;
-            width: 100%;
-          }
-          .library-actions :global(.btn) {
-            justify-content: center;
-            width: 100%;
-          }
-          .upsell-bar {
-            align-items: flex-start;
-            flex-direction: column;
-          }
-          .library-grid {
-            grid-template-columns: repeat(2, minmax(0, 1fr));
-          }
-        }
-        @media (max-width: 420px) {
-          .library-grid {
-            grid-template-columns: 1fr;
-            max-width: 180px;
-          }
-        }
-        @keyframes pulse {
-          0%, 100% { opacity: 0.4; }
-          50% { opacity: 1; }
-        }
-      `}</style>
     </div>
   );
 }
@@ -298,7 +207,7 @@ function LibraryCard({ book, removing, onRemove }: { book: BookCardDTO; removing
       </div>
       <div className="row-sm" style={{ marginTop: 10 }}>
         <Link className="btn btn-ghost btn-sm" href={chatHref}>
-          <MessageCircle size={14} /> Чат
+          <MessageSquare size={14} /> Чат
         </Link>
         {book.canRemoveFromLibrary ? (
           <button
@@ -357,7 +266,8 @@ function AnalyzingCard({ book }: { book: AnalyzingBook }) {
   );
 }
 
-function EmptyLibrary({ isPlus }: { isPlus: boolean }) {
+function EmptyLibrary({ plan }: { plan: Plan }) {
+  const isPlus = plan === "plus";
   return (
     <div style={{ padding: "72px 0", textAlign: "center" }}>
       <div style={{ color: "var(--ink-faint)", fontFamily: "var(--font-serif)", fontSize: 52 }}>—</div>
@@ -375,18 +285,6 @@ function EmptyLibrary({ isPlus }: { isPlus: boolean }) {
           <Link className="btn btn-mark" href="/plans"><Sparkles size={16} /> Перейти на Плюс</Link>
         )}
       </div>
-      <style jsx>{`
-        @media (max-width: 520px) {
-          .empty-actions {
-            align-items: stretch;
-            flex-direction: column;
-          }
-          .empty-actions :global(.btn) {
-            justify-content: center;
-            width: 100%;
-          }
-        }
-      `}</style>
     </div>
   );
 }

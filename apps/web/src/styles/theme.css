@@ -663,6 +663,127 @@
   margin-top: 2px;
 }
 
+/* ===== Library page ===== */
+.library-actions {
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.library-grid {
+  display: grid;
+  gap: 32px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  row-gap: 44px;
+}
+
+.lock-pill {
+  align-items: center;
+  background: var(--mark-soft);
+  border-radius: 100px;
+  color: var(--mark);
+  display: inline-flex;
+  font-family: var(--font-mono);
+  font-size: 9.5px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  margin-left: 8px;
+  padding: 2px 8px;
+  text-transform: uppercase;
+}
+
+.upsell-bar {
+  align-items: center;
+  background: var(--cream);
+  border: 1px solid var(--mark);
+  border-radius: var(--r-lg);
+  box-shadow: var(--shadow-sm);
+  display: flex;
+  gap: 16px;
+  margin-top: 28px;
+  padding: 16px 20px;
+}
+
+.upsell-icon {
+  align-items: center;
+  background: var(--mark-soft);
+  border-radius: 50%;
+  color: var(--mark);
+  display: flex;
+  flex-shrink: 0;
+  height: 40px;
+  justify-content: center;
+  width: 40px;
+}
+
+.upsell-copy {
+  flex: 1;
+  min-width: 0;
+}
+
+.upsell-t {
+  color: var(--ink);
+  font-family: var(--font-serif);
+  font-size: 16px;
+}
+
+.upsell-s {
+  color: var(--ink-muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-top: 3px;
+}
+
+@keyframes library-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
+}
+
+@media (max-width: 1080px) {
+  .library-grid {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .library-grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 640px) {
+  .library-actions {
+    align-items: stretch;
+    width: 100%;
+  }
+  .library-actions .btn {
+    justify-content: center;
+    width: 100%;
+  }
+  .upsell-bar {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+  .library-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .empty-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .empty-actions .btn {
+    justify-content: center;
+    width: 100%;
+  }
+}
+
+@media (max-width: 420px) {
+  .library-grid {
+    grid-template-columns: 1fr;
+    max-width: 180px;
+  }
+}
+
 .overlay {
   align-items: center;
   background: oklch(18% 0.012 60 / 0.42);
