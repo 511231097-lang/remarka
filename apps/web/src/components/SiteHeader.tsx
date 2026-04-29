@@ -213,8 +213,12 @@ export function SiteHeader({
 
           {isAuthenticated ? (
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <Link href="/plans" className="plan-pill plus" title="Тариф Плюс">
-                <Sparkles size={14} /> Плюс
+              <Link
+                href="/plans"
+                className="btn btn-ghost btn-sm"
+                style={{ padding: "6px 12px" }}
+              >
+                Плюс
               </Link>
               <Link href="/profile" className="avatar" title="Профиль">
                 {userImage ? (
