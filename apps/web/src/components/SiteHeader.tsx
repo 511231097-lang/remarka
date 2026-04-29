@@ -4,14 +4,14 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { Menu, Moon, Sparkles, Sun, X } from "lucide-react";
+import { Menu, Sparkles, X } from "lucide-react";
 import type { UserRole } from "@prisma/client";
-import { useTheme } from "@/lib/ThemeContext";
 
 interface SiteHeaderProps {
   userName?: string | null;
   userImage?: string | null;
   userRole?: UserRole | null;
+  plan?: "free" | "plus";
 }
 
 interface NavItem {
@@ -35,9 +35,9 @@ export function SiteHeader({
   userName = null,
   userImage = null,
   userRole = null,
+  plan = "free",
 }: SiteHeaderProps) {
   const pathname = usePathname();
-  const { theme, toggleTheme } = useTheme();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [mounted, setMounted] = useState(false);
 
@@ -67,6 +67,7 @@ export function SiteHeader({
 
   const normalizedUserName = userName?.trim() || null;
   const isAuthenticated = Boolean(normalizedUserName);
+  const isPlus = plan === "plus";
   const active = normalizePath(pathname || "");
   const logoHref = isAuthenticated ? "/explore" : "/";
 
@@ -124,7 +125,7 @@ export function SiteHeader({
             <div style={{ minWidth: 0 }}>
               <div style={{ fontSize: 14, fontWeight: 500 }}>{normalizedUserName || "Мой аккаунт"}</div>
               <div style={{ fontSize: 12, color: "var(--ink-muted)", marginTop: 2 }}>
-                Тариф · Читатель
+                Тариф · {isPlus ? "Плюс" : "Читатель"}
               </div>
             </div>
           </Link>
@@ -141,28 +142,17 @@ export function SiteHeader({
           </Link>
         ))}
 
-        <button
-          type="button"
-          className="m-link"
-          onClick={() => {
-            toggleTheme();
-            setDrawerOpen(false);
-          }}
-          style={{ display: "flex", alignItems: "center", gap: 12 }}
-        >
-          {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
-          {theme === "light" ? "Тёмная тема" : "Светлая тема"}
-        </button>
-
-        <Link
-          href="/plans"
-          onClick={() => setDrawerOpen(false)}
-          className="m-link"
-          style={{ color: "var(--mark)", fontWeight: 500 }}
-        >
-          <Sparkles size={16} />
-          Перейти на Плюс
-        </Link>
+        {!isPlus && (
+          <Link
+            href="/plans"
+            onClick={() => setDrawerOpen(false)}
+            className="m-link"
+            style={{ color: "var(--mark)", fontWeight: 500 }}
+          >
+            <Sparkles size={16} />
+            Перейти на Плюс
+          </Link>
+        )}
 
         <div style={{ flex: 1 }} />
 
@@ -200,26 +190,21 @@ export function SiteHeader({
 
           <div style={{ width: 16 }} />
 
-          <button
-            type="button"
-            className="btn-plain"
-            onClick={toggleTheme}
-            title={theme === "light" ? "Тёмная тема" : "Светлая тема"}
-            aria-label={theme === "light" ? "Включить тёмную тему" : "Включить светлую тему"}
-            style={{ padding: 8, borderRadius: "var(--r-sm)" }}
-          >
-            {theme === "light" ? <Moon size={16} /> : <Sun size={16} />}
-          </button>
-
           {isAuthenticated ? (
             <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-              <Link
-                href="/plans"
-                className="btn btn-ghost btn-sm"
-                style={{ padding: "6px 12px" }}
-              >
-                Плюс
-              </Link>
+              {isPlus ? (
+                <Link href="/profile" className="plan-pill plus" title="Тариф Плюс">
+                  <Sparkles size={14} /> Плюс
+                </Link>
+              ) : (
+                <Link
+                  href="/plans"
+                  className="btn btn-ghost btn-sm"
+                  style={{ padding: "6px 12px" }}
+                >
+                  Плюс
+                </Link>
+              )}
               <Link href="/profile" className="avatar" title="Профиль">
                 {userImage ? (
                   // eslint-disable-next-line @next/next/no-img-element
