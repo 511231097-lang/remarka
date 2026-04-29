@@ -23,6 +23,8 @@ import type {
 } from "@prisma/client";
 import type { BookChatToolName } from "./bookChatTools";
 
+export type { AnalyzingBookDTO } from "./libraryAnalyzing";
+
 export interface BookOwnerDTO {
   id: string;
   name: string;

@@ -2,6 +2,7 @@
 
 import { motion } from "motion/react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   Library as LibraryIcon,
   MessageSquare,
@@ -9,20 +10,13 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useState } from "react";
-import { type BookCardDTO } from "@/lib/books";
-import { listBooks, removeBookFromLibrary } from "@/lib/booksClient";
+import { useEffect, useRef, useState } from "react";
+import { type AnalyzingBookDTO, type BookCardDTO } from "@/lib/books";
+import { listAnalyzingBooks, listBooks, removeBookFromLibrary } from "@/lib/booksClient";
 import { BookPreviewStage } from "@/components/BookGalleryCard";
 import { appendBookDetailSource } from "@/lib/bookDetailNavigation";
 
-interface AnalyzingBook {
-  id: string;
-  title: string;
-  author: string;
-  format?: string;
-  progress: number;
-  eta?: string;
-}
+const ANALYZING_POLL_INTERVAL_MS = 4000;
 
 type Plan = "free" | "plus";
 
@@ -36,10 +30,13 @@ function declension(n: number, forms: [string, string, string]): string {
 }
 
 export function Library() {
+  const router = useRouter();
   const [myBooks, setMyBooks] = useState<BookCardDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [removingIds, setRemovingIds] = useState<Set<string>>(new Set());
+  const [analyzing, setAnalyzing] = useState<AnalyzingBookDTO[]>([]);
+  const previousAnalyzingIdsRef = useRef<Set<string>>(new Set());
 
   // Plan handling: no plan prop yet — default to "free" (most realistic for
   // current users). When plans get wired in, this becomes the data-driven
@@ -69,11 +66,68 @@ export function Library() {
     };
   }, []);
 
-  // Backend listings only return books with analysisStatus="completed", so the
-  // analyzing list is always empty in the current API. The design renders an
-  // "in progress" section when these become available.
-  const analyzingList: AnalyzingBook[] = [];
-  const total = myBooks.length + analyzingList.length;
+  // Polling lifecycle:
+  //  1. On mount, fetch the analyzing list once.
+  //  2. While the list is non-empty, re-fetch every ANALYZING_POLL_INTERVAL_MS ms.
+  //  3. When a book that was previously analyzing disappears from the new list,
+  //     it has finished (success or failure). Refresh the main books list and
+  //     the route so the freshly completed book shows up under "Готовы к чтению".
+  //  4. The interval is torn down on unmount or when the list becomes empty.
+  useEffect(() => {
+    let active = true;
+    let timer: ReturnType<typeof setInterval> | null = null;
+
+    async function fetchOnce() {
+      try {
+        const items = await listAnalyzingBooks();
+        if (!active) return;
+
+        const previousIds = previousAnalyzingIdsRef.current;
+        const currentIds = new Set(items.map((item) => item.id));
+        let completedAny = false;
+        for (const id of previousIds) {
+          if (!currentIds.has(id)) {
+            completedAny = true;
+            break;
+          }
+        }
+        previousAnalyzingIdsRef.current = currentIds;
+        setAnalyzing(items);
+
+        if (completedAny) {
+          try {
+            const response = await listBooks({ scope: "library", page: 1, pageSize: 100 });
+            if (!active) return;
+            setMyBooks(response.items);
+          } catch {
+            // non-fatal; route refresh below also nudges the page
+          }
+          router.refresh();
+        }
+
+        if (items.length === 0 && timer) {
+          clearInterval(timer);
+          timer = null;
+        }
+      } catch {
+        // swallow polling errors — keep last known state visible
+      }
+    }
+
+    void fetchOnce().then(() => {
+      if (!active) return;
+      timer = setInterval(() => {
+        void fetchOnce();
+      }, ANALYZING_POLL_INTERVAL_MS);
+    });
+
+    return () => {
+      active = false;
+      if (timer) clearInterval(timer);
+    };
+  }, [router]);
+
+  const total = myBooks.length + analyzing.length;
 
   async function handleRemove(book: BookCardDTO) {
     if (!book.canRemoveFromLibrary || removingIds.has(book.id)) return;
@@ -145,14 +199,14 @@ export function Library() {
 
         {!loading && total > 0 ? (
           <>
-            {analyzingList.length > 0 ? (
+            {analyzing.length > 0 ? (
               <>
                 <div className="row" style={{ justifyContent: "space-between", marginBottom: 20 }}>
-                  <div className="mono" style={{ color: "var(--bronze)" }}>Анализируется · {analyzingList.length}</div>
+                  <div className="mono" style={{ color: "var(--bronze)" }}>Анализируется · {analyzing.length}</div>
                   <div className="mono" style={{ color: "var(--ink-faint)" }}>Обычно 1–3 минуты</div>
                 </div>
                 <div className="library-grid">
-                  {analyzingList.map((book) => (
+                  {analyzing.map((book) => (
                     <AnalyzingCard key={book.id} book={book} />
                   ))}
                 </div>
@@ -225,18 +279,14 @@ function LibraryCard({ book, removing, onRemove }: { book: BookCardDTO; removing
   );
 }
 
-function AnalyzingCard({ book }: { book: AnalyzingBook }) {
-  const stages = [
-    { max: 25, label: "Извлечение текста" },
-    { max: 55, label: "Разбивка на фрагменты" },
-    { max: 85, label: "Индексация для поиска" },
-    { max: 100, label: "Сборка разбора" },
-  ];
-  const safeProgress = Math.max(0, Math.min(100, book.progress ?? 0));
-  const stage = stages.find((item) => safeProgress <= item.max) || stages[stages.length - 1];
-  const previewBook = { id: `analyzing:${book.id}`, title: book.title, author: book.author };
-  const eta = book.eta || "~2 мин";
-  const format = book.format || "EPUB";
+function AnalyzingCard({ book }: { book: AnalyzingBookDTO }) {
+  const safeProgress = Math.max(0, Math.min(100, book.progress));
+  const previewBook = {
+    id: `analyzing:${book.id}`,
+    title: book.title,
+    author: book.author,
+  };
+  const authorLine = book.author ? `${book.author} · ${book.format}` : book.format;
 
   return (
     <div className="book-card" style={{ cursor: "default" }}>
@@ -249,18 +299,18 @@ function AnalyzingCard({ book }: { book: AnalyzingBook }) {
                 <span style={{ animation: "pulse 1.5s infinite", background: "var(--bronze)", borderRadius: "50%", display: "inline-block", height: 6, marginRight: 5, verticalAlign: "middle", width: 6 }} />
                 {safeProgress}%
               </span>
-              <span className="mono" style={{ color: "var(--ink-muted)", fontSize: 9 }}>{eta}</span>
+              <span className="mono" style={{ color: "var(--ink-muted)", fontSize: 9 }}>{book.eta}</span>
             </div>
             <div style={{ background: "var(--paper-2)", borderRadius: 100, height: 3, overflow: "hidden" }}>
               <div style={{ background: "var(--bronze)", height: "100%", transition: "width .3s", width: `${safeProgress}%` }} />
             </div>
-            <div style={{ color: "var(--ink-muted)", fontSize: 10, marginTop: 6 }}>{stage.label}…</div>
+            <div style={{ color: "var(--ink-muted)", fontSize: 10, marginTop: 6 }}>{book.stageLabel}…</div>
           </div>
         </div>
       </div>
       <div className="meta">
         <div className="t">{book.title}</div>
-        <div className="a">{book.author} · {format}</div>
+        <div className="a">{authorLine}</div>
       </div>
     </div>
   );
