@@ -72,7 +72,10 @@ function parseRefCite(href: string): RefCiteRange | null {
   const m = body.match(/^ch(\d+):(.+)$/);
   if (!m) return null;
   const chapterOrderIndex = Number.parseInt(m[1] || "0", 10);
-  if (!Number.isFinite(chapterOrderIndex)) return null;
+  // Chapter indices are 1-based in the model's ref-id format. Reject ch0 (or
+  // negatives if a hand-crafted URL slips through) — they would 400 from
+  // `/api/books/.../chapters/0` and confuse the reader modal.
+  if (!Number.isFinite(chapterOrderIndex) || chapterOrderIndex < 1) return null;
 
   const segments = String(m[2] || "").split(",").map((s) => s.trim()).filter(Boolean);
   const paragraphRanges: ParagraphRange[] = [];
@@ -80,8 +83,11 @@ function parseRefCite(href: string): RefCiteRange | null {
     const rm = segment.match(/^p(\d+)(?:-p(\d+))?$/);
     if (!rm) continue;
     const start = Number.parseInt(rm[1] || "0", 10);
+    if (!Number.isFinite(start) || start < 1) continue;
     const endRaw = rm[2] ? Number.parseInt(rm[2], 10) : NaN;
-    if (!Number.isFinite(start)) continue;
+    // Drop reversed ranges like p10-p3 — they would highlight nothing and
+    // produce a misleading "10–3" label in the reader chip.
+    if (Number.isFinite(endRaw) && endRaw < start) continue;
     paragraphRanges.push({
       start,
       end: Number.isFinite(endRaw) ? endRaw : undefined,

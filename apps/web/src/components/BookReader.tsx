@@ -261,13 +261,19 @@ export function BookReader({ open, book, cite, onClose }: BookReaderProps) {
   const goPrevChapter = useCallback(() => {
     setOrderIndex((current) => (current == null || current <= 1 ? current : current - 1));
   }, []);
+  // Upper bound for chapter navigation: prefer the freshly-fetched
+  // `chapter.totalChapters` (authoritative), but fall back to the book's
+  // `chapterCount` while the chapter is still loading or after a fetch
+  // error. Without this fallback, ArrowRight could increment unbounded
+  // and trigger repeated 404/400 fetches before the first chapter lands.
+  const maxChapter = chapter?.totalChapters ?? book?.chapterCount ?? null;
   const goNextChapter = useCallback(() => {
     setOrderIndex((current) => {
       if (current == null) return current;
-      if (chapter && current >= chapter.totalChapters) return current;
+      if (maxChapter != null && current >= maxChapter) return current;
       return current + 1;
     });
-  }, [chapter]);
+  }, [maxChapter]);
 
   const ranges = cite?.paragraphRanges ?? null;
   const fragmentCount = ranges?.length ?? 0;
@@ -327,7 +333,7 @@ export function BookReader({ open, book, cite, onClose }: BookReaderProps) {
   // Reset the fragment refs on each render so stale refs don't linger across chapters.
   fragmentRefs.current = [];
 
-  const totalChapters = chapter?.totalChapters ?? null;
+  const totalChapters = maxChapter;
   const canPrevChapter = orderIndex != null && orderIndex > 1;
   const canNextChapter = orderIndex != null && totalChapters != null && orderIndex < totalChapters;
   const showFragmentNav = (rangesForChapter?.length ?? 0) > 1;
