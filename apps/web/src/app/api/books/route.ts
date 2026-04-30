@@ -54,9 +54,6 @@ async function resolveInitialBookCoverUrl(params: {
     },
     status: "ready",
     chaptersCount: 0,
-    charactersCount: 0,
-    themesCount: 0,
-    locationsCount: 0,
     libraryUsersCount: 0,
     isInLibrary: false,
     canAddToLibrary: false,
@@ -268,9 +265,6 @@ export async function GET(request: Request) {
         _count: {
           select: {
             likes: true,
-            bookCharacters: true,
-            bookThemes: true,
-            bookLocations: true,
           },
         },
       },

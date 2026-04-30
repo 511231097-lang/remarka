@@ -7820,7 +7820,7 @@ export async function listBookChatMessages(params: {
 }): Promise<BookChatMessageDTO[]> {
   await assertThreadBelongsToBook(params);
 
-  const rows = await prisma.bookChatMessage.findMany({
+  const rows = await prisma.bookChatThreadMessage.findMany({
     where: {
       threadId: params.threadId,
     },
@@ -8232,7 +8232,7 @@ export async function streamBookChatThreadReply(params: {
     ownerUserId: params.ownerUserId,
   });
 
-  const userMessageRow = await prisma.bookChatMessage.create({
+  const userMessageRow = await prisma.bookChatThreadMessage.create({
     data: {
       threadId: params.threadId,
       role: "user",
@@ -8274,7 +8274,7 @@ export async function streamBookChatThreadReply(params: {
     },
   });
 
-  const recentModelMessagesRows = await prisma.bookChatMessage.findMany({
+  const recentModelMessagesRows = await prisma.bookChatThreadMessage.findMany({
     where: {
       threadId: params.threadId,
     },
@@ -8316,7 +8316,7 @@ export async function streamBookChatThreadReply(params: {
     onToolResult: params.onToolResult,
   });
 
-  const assistantMessageRow = await prisma.bookChatMessage.create({
+  const assistantMessageRow = await prisma.bookChatThreadMessage.create({
     data: {
       threadId: params.threadId,
       role: "assistant",
