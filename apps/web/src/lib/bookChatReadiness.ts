@@ -36,11 +36,6 @@ const CHAT_READINESS_STAGE_LABELS: Record<ChatReadinessStageKey, string> = {
 };
 
 const PENDING_STATES = new Set<BookAnalyzerStateDTO>(["queued", "running"]);
-// TODO: temporary paragraph-only chat mode while scene extraction/tools are disabled.
-// Flip BOOK_CHAT_SCENE_TOOLS_ENABLED=true to restore scene/evidence readiness as the primary gate.
-const PARAGRAPH_ONLY_CHAT_ENABLED = String(process.env.BOOK_CHAT_SCENE_TOOLS_ENABLED || "")
-  .trim()
-  .toLowerCase() !== "true";
 const EMPTY_STATUS = Object.freeze({
   state: "not_requested",
   error: null,
@@ -199,7 +194,9 @@ export function buildBookChatReadiness(
     };
   }
 
-  if (PARAGRAPH_ONLY_CHAT_ENABLED && capabilitySnapshot && canUseParagraphOnlyBookChat(capabilitySnapshot)) {
+  // Fallback when MVP path is unavailable (e.g. fresh book without
+  // canonical-graph counts) — chat works through paragraph search alone.
+  if (capabilitySnapshot && canUseParagraphOnlyBookChat(capabilitySnapshot)) {
     return {
       mode: capabilitySnapshot.analysisState === "completed" ? "fast" : "degraded",
       canChat: true,

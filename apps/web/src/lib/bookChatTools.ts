@@ -7,10 +7,19 @@ export const BOOK_CHAT_TOOL_NAMES = [
 
 export type BookChatToolName = (typeof BOOK_CHAT_TOOL_NAMES)[number];
 
-// TODO: temporary scene tools kill-switch. Flip BOOK_CHAT_SCENE_TOOLS_ENABLED=true to restore search_scenes/get_scene_context.
+// Scene tools (search_scenes, get_scene_context) drive the hybrid scene
+// search: vector probe over BookSceneEmbedding ⨝ BookAnalysisScene plus a
+// lexical pass plus Vertex Ranker. Disabled by default during the canonical-
+// graph V2 transition (commit 18d7b11), but the transition is over — V2
+// graph models were dropped in PR #15 and bookAnalysisStatus.ts now
+// synthesizes counts from BookAnalysisScene, so capabilities resolve
+// correctly without the V2 read-layer tables. Default back to enabled.
+//
+// Kill-switch: set BOOK_CHAT_SCENE_TOOLS_ENABLED=false to disable
+// (matches the original env name but with the polarity flipped).
 export const BOOK_CHAT_SCENE_TOOLS_ENABLED = String(process.env.BOOK_CHAT_SCENE_TOOLS_ENABLED || "")
   .trim()
-  .toLowerCase() === "true";
+  .toLowerCase() !== "false";
 
 export const DEFAULT_ENABLED_BOOK_CHAT_TOOLS: BookChatToolName[] = BOOK_CHAT_SCENE_TOOLS_ENABLED
   ? [...BOOK_CHAT_TOOL_NAMES]
