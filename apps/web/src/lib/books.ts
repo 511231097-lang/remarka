@@ -85,6 +85,20 @@ export interface BookChapterDTO {
   summary: string | null;
 }
 
+export interface BookChapterParagraphDTO {
+  paragraphIndex: number;
+  text: string;
+}
+
+export interface BookChapterContentDTO {
+  id: string;
+  orderIndex: number;
+  title: string;
+  rawText: string;
+  paragraphs: BookChapterParagraphDTO[];
+  totalChapters: number;
+}
+
 export interface CharacterListItemDTO {
   id: string;
   name: string;
@@ -580,7 +594,6 @@ export interface BookChatStreamRequestDTO {
   topK?: number;
   sectionKey?: LiterarySectionKeyDTO;
   entryContext?: BookChatEntryContextDTO;
-  selectedTools?: BookChatToolName[];
 }
 
 export interface BookChatStreamFinalEventDTO {

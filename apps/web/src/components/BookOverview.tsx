@@ -86,7 +86,6 @@ export function BookOverview() {
   const fallbackSource = book?.canManage ? "library" : "explore";
   const resolvedSource = source || fallbackSource;
   const chatHref = appendBookDetailSource(`/book/${bookId}/chat`, resolvedSource);
-  const backHref = resolvedSource === "library" ? "/library" : "/explore";
 
   const themes = showcase?.themes ?? [];
   const heroes = showcase?.characters ?? [];
@@ -140,7 +139,7 @@ export function BookOverview() {
                   </p>
                   <div className="book-hero-actions row" style={{ flexWrap: "wrap", marginTop: 28 }}>
                     <Link className="btn btn-mark btn-lg" href={chatHref}>
-                      <MessageCircle size={16} /> Открыть чат
+                      <MessageCircle size={16} /> Начать разговор
                     </Link>
                     {book.canManage || resolvedSource === "library" ? (
                       <button className="btn btn-ghost btn-lg" disabled style={{ opacity: 0.7 }}>
@@ -151,10 +150,7 @@ export function BookOverview() {
                         <Plus size={16} /> Добавить к себе
                       </button>
                     )}
-                    <Link className="btn btn-plain btn-lg" href={backHref}>
-                      {resolvedSource === "library" ? "К библиотеке" : "К каталогу"}
-                    </Link>
-                    {book.canManage ? <BookSettings book={book} triggerClassName="btn btn-plain btn-lg" triggerLabel="Настройки" /> : null}
+                    {book.canManage ? <BookSettings book={book} triggerClassName="btn btn-plain btn-sm" triggerLabel="Настройки" /> : null}
                   </div>
                   {themeChips.length > 0 && (
                     <div className="row" style={{ flexWrap: "wrap", gap: 8, marginTop: 28 }}>

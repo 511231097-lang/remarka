@@ -2,7 +2,7 @@
 
 import { motion } from "motion/react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import {
   Library as LibraryIcon,
   MessageSquare,
@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from "react";
 import { type AnalyzingBookDTO, type BookCardDTO } from "@/lib/books";
 import { listAnalyzingBooks, listBooks, removeBookFromLibrary } from "@/lib/booksClient";
 import { BookPreviewStage } from "@/components/BookGalleryCard";
+import { PaywallModal } from "@/components/PaywallModal";
 import { appendBookDetailSource } from "@/lib/bookDetailNavigation";
 
 const ANALYZING_POLL_INTERVAL_MS = 4000;
@@ -31,6 +32,7 @@ function declension(n: number, forms: [string, string, string]): string {
 
 export function Library() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const [myBooks, setMyBooks] = useState<BookCardDTO[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,11 +40,22 @@ export function Library() {
   const [analyzing, setAnalyzing] = useState<AnalyzingBookDTO[]>([]);
   const previousAnalyzingIdsRef = useRef<Set<string>>(new Set());
 
-  // Plan handling: no plan prop yet — default to "free" (most realistic for
-  // current users). When plans get wired in, this becomes the data-driven
-  // branch. Typed as Plan (not literal) so downstream branches stay open.
-  const [plan] = useState<Plan>("free");
+  // TEMPORARY: until the subscription model exists, treat everyone as Plus.
+  // Mirrors the AppChrome mapping — keeps upload/upsell flows testable.
+  // Replace with real `User.plan` when the billing backend is wired up.
+  const [plan] = useState<Plan>("plus");
   const isPlus = plan === "plus";
+  const [paywallOpen, setPaywallOpen] = useState(false);
+
+  // Auto-open paywall when bounced here from /upload by the server-side gate
+  // (e.g. /library?paywall=upload). Strip the query param so the modal
+  // doesn't reopen on re-renders or on close.
+  useEffect(() => {
+    if (searchParams.get("paywall") === "upload") {
+      setPaywallOpen(true);
+      router.replace("/library", { scroll: false });
+    }
+  }, [searchParams, router]);
 
   useEffect(() => {
     let active = true;
@@ -164,17 +177,20 @@ export function Library() {
               </p>
             </div>
             <div className="row-sm library-actions">
-              <Link className="btn btn-ghost" href={isPlus ? "/upload" : "/plans"}>
-                <Upload size={16} /> Загрузить книгу
-                {!isPlus ? <span className="lock-pill">Плюс</span> : null}
-              </Link>
-              <Link
-                className="btn btn-mark"
-                href="/library"
-                title="Чат доступен по каждой книге отдельно"
-              >
-                <MessageSquare size={16} /> Открыть чат
-              </Link>
+              {isPlus ? (
+                <Link className="btn btn-ghost" href="/upload">
+                  <Upload size={16} /> Загрузить книгу
+                </Link>
+              ) : (
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => setPaywallOpen(true)}
+                >
+                  <Upload size={16} /> Загрузить книгу
+                  <span className="lock-pill">Плюс</span>
+                </button>
+              )}
             </div>
           </div>
         </motion.div>
@@ -186,7 +202,13 @@ export function Library() {
               <div className="upsell-t">Загружайте свои книги на тарифе Плюс</div>
               <div className="upsell-s">EPUB, FB2, PDF — и полный AI-разбор по каждой. Каталог и чат остаются бесплатными.</div>
             </div>
-            <Link className="btn btn-mark btn-sm" href="/plans">Перейти на Плюс</Link>
+            <button
+              type="button"
+              className="btn btn-mark btn-sm"
+              onClick={() => setPaywallOpen(true)}
+            >
+              Перейти на Плюс
+            </button>
           </div>
         ) : null}
 
@@ -195,7 +217,9 @@ export function Library() {
         {error ? <div className="card" style={{ borderColor: "var(--mark)", color: "var(--mark)", marginBottom: 24, padding: 16 }}>{error}</div> : null}
         {loading ? <div className="muted" style={{ padding: "64px 0", textAlign: "center" }}>Загрузка библиотеки…</div> : null}
 
-        {!loading && total === 0 ? <EmptyLibrary plan={plan} /> : null}
+        {!loading && total === 0 ? (
+          <EmptyLibrary plan={plan} onOpenPaywall={() => setPaywallOpen(true)} />
+        ) : null}
 
         {!loading && total > 0 ? (
           <>
@@ -242,6 +266,12 @@ export function Library() {
       </div>
 
       <div style={{ height: 96 }} />
+
+      <PaywallModal
+        open={paywallOpen}
+        feature="upload"
+        onClose={() => setPaywallOpen(false)}
+      />
     </div>
   );
 }
@@ -316,7 +346,7 @@ function AnalyzingCard({ book }: { book: AnalyzingBookDTO }) {
   );
 }
 
-function EmptyLibrary({ plan }: { plan: Plan }) {
+function EmptyLibrary({ plan, onOpenPaywall }: { plan: Plan; onOpenPaywall: () => void }) {
   const isPlus = plan === "plus";
   return (
     <div style={{ padding: "72px 0", textAlign: "center" }}>
@@ -332,7 +362,9 @@ function EmptyLibrary({ plan }: { plan: Plan }) {
         {isPlus ? (
           <Link className="btn btn-mark" href="/upload"><Upload size={16} /> Загрузить</Link>
         ) : (
-          <Link className="btn btn-mark" href="/plans"><Sparkles size={16} /> Перейти на Плюс</Link>
+          <button type="button" className="btn btn-mark" onClick={onOpenPaywall}>
+            <Sparkles size={16} /> Перейти на Плюс
+          </button>
         )}
       </div>
     </div>

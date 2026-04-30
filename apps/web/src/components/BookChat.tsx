@@ -4,22 +4,22 @@ import { motion } from "motion/react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
-  Bookmark,
-  Brain,
-  ChevronRight,
-  Filter,
+  ArrowRight,
+  BookOpen,
   Library,
   MessageSquare,
-  Pencil,
   Plus,
   Quote,
   Search,
   Send,
   Sparkles,
+  Square,
   Trash2,
+  X,
 } from "lucide-react";
 import Link from "next/link";
 import { BookPreviewStage } from "./BookGalleryCard";
+import { BookReader, type ReaderCite } from "./BookReader";
 import { BookSettings } from "./BookSettings";
 import { ChatModePill, ChatReadinessGate } from "./BookChatReadiness";
 import { ChatMessageMarkdown } from "./ChatMessageMarkdown";
@@ -156,6 +156,34 @@ function evidenceToActiveCite(item: BookChatEvidenceDTO): ActiveCite {
   };
 }
 
+function buildCiteBadges(message: BookChatMessageDTO): ActiveCite[] {
+  const evidence = Array.isArray(message.evidence) ? message.evidence : [];
+  const out: ActiveCite[] = [];
+  const seen = new Set<string>();
+  for (const item of evidence) {
+    const key = `${item.kind}:${item.label}:${item.chapterOrderIndex ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(evidenceToActiveCite(item));
+    if (out.length >= 6) break;
+  }
+  if (out.length === 0 && Array.isArray(message.citations)) {
+    for (const item of message.citations) {
+      const key = `chunk:${item.chunkId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({
+        label: `Глава ${item.chapterOrderIndex}`,
+        chapterOrderIndex: item.chapterOrderIndex,
+        snippet: item.text || "",
+        kind: "chunk",
+      });
+      if (out.length >= 6) break;
+    }
+  }
+  return out;
+}
+
 function evidenceKindLabel(kind: string): string {
   switch (kind) {
     case "scene":
@@ -206,6 +234,7 @@ export function BookChat() {
   const router = useRouter();
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const isSendingRef = useRef(false);
   const activeStreamAbortRef = useRef<AbortController | null>(null);
 
@@ -219,9 +248,8 @@ export function BookChat() {
   const [streamStatus, setStreamStatus] = useState<string | null>(null);
   const [streamReasoning, setStreamReasoning] = useState<string | null>(null);
   const [search, setSearch] = useState("");
-  const [activeCite, setActiveCite] = useState<ActiveCite | null>(null);
-  const [scopeOpen, setScopeOpen] = useState(false);
-  const scopeRef = useRef<HTMLDivElement | null>(null);
+  const [sessionsOpen, setSessionsOpen] = useState(false);
+  const [readerCite, setReaderCite] = useState<ReaderCite | null>(null);
 
   const { readiness, loading: readinessLoading, error: readinessError } = useBookChatReadiness(bookId);
   const activeSessionId = routeSessionId || currentSessionId;
@@ -244,19 +272,22 @@ export function BookChat() {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, isLoading]);
 
+  // Composer auto-resize: grow textarea by content height up to max, then
+  // overflow:auto. Standard chat-app behaviour. Triggers on every keystroke
+  // (inputValue change) and also when input is cleared after send.
   useEffect(() => {
-    setActiveCite(null);
-    setInputValue("");
-  }, [activeSessionId]);
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const MAX_HEIGHT = 240; // px — ~10 lines, then scrolls inside
+    el.style.height = `${Math.min(el.scrollHeight, MAX_HEIGHT)}px`;
+  }, [inputValue]);
 
   useEffect(() => {
-    if (!scopeOpen) return;
-    const onClickOutside = (event: MouseEvent) => {
-      if (scopeRef.current && !scopeRef.current.contains(event.target as Node)) setScopeOpen(false);
-    };
-    document.addEventListener("mousedown", onClickOutside);
-    return () => document.removeEventListener("mousedown", onClickOutside);
-  }, [scopeOpen]);
+    setInputValue("");
+    setSessionsOpen(false);
+    setReaderCite(null);
+  }, [activeSessionId]);
 
   useEffect(() => {
     if (!bookId) return;
@@ -463,6 +494,22 @@ export function BookChat() {
     router.replace(buildBookPath(`/book/${bookId}/chat`));
   };
 
+  /**
+   * User-initiated stream cancellation. Aborts the active fetch — the inflight
+   * `streamBookChatMessage` call will throw AbortError, which we catch in
+   * sendMessage's finally block (sets isLoading=false). The partial assistant
+   * draft (if any tokens already streamed in) stays in the messages array.
+   */
+  const cancelStream = () => {
+    activeStreamAbortRef.current?.abort();
+    activeStreamAbortRef.current = null;
+    isSendingRef.current = false;
+    setIsLoading(false);
+    setStreamStatus(null);
+    setStreamReasoning(null);
+    queueMicrotask(() => composerRef.current?.focus());
+  };
+
   const sendMessage = async (questionRaw: string) => {
     if (!bookId || !readiness?.canChat) return;
     const question = String(questionRaw || "").trim();
@@ -474,8 +521,12 @@ export function BookChat() {
     activeStreamAbortRef.current = streamAbortController;
     setInputValue("");
     setIsLoading(true);
-    setStreamStatus("Разбираю вопрос и подбираю опоры в тексте");
+    setStreamStatus("Думаю над вопросом");
     setStreamReasoning(null);
+    // Keep focus on the composer after a click on Send (clicking moves focus
+    // to the button, breaking "type-and-Enter" flow). Schedule a microtask so
+    // the focus call wins over React's render cycle.
+    queueMicrotask(() => composerRef.current?.focus());
 
     try {
       const sessionId = await ensureActiveSession();
@@ -619,6 +670,34 @@ export function BookChat() {
 
   const groupedSessions = useMemo(() => groupSessions(filteredSessions), [filteredSessions]);
 
+  const openReaderForCite = (cite: ActiveCite) => {
+    if (cite.chapterOrderIndex == null) return;
+    setReaderCite({
+      snippet: cite.snippet || "",
+      chapterOrderIndex: cite.chapterOrderIndex,
+      label: cite.label,
+    });
+  };
+
+  const openReaderForRef = (ref: {
+    chapterOrderIndex: number;
+    paragraphRanges: Array<{ start: number; end?: number }>;
+  }) => {
+    if (!ref.paragraphRanges.length) return;
+    const ranges = ref.paragraphRanges;
+    const formatRange = (r: { start: number; end?: number }) =>
+      r.end ? `${r.start}–${r.end}` : String(r.start);
+    const label =
+      ranges.length === 1
+        ? `Глава ${ref.chapterOrderIndex} · параграф${ranges[0]!.end ? "ы" : ""} ${formatRange(ranges[0]!)}`
+        : `Глава ${ref.chapterOrderIndex} · ${ranges.length} фрагмента: ${ranges.map(formatRange).join(", ")}`;
+    setReaderCite({
+      chapterOrderIndex: ref.chapterOrderIndex,
+      paragraphRanges: ranges,
+      label,
+    });
+  };
+
   if (bookError) {
     return (
       <div className="container" style={{ paddingBottom: 72, paddingTop: 40 }}>
@@ -640,16 +719,25 @@ export function BookChat() {
 
   return (
     <div
-      className="screen-fade book-chat-shell"
+      className="screen-fade book-chat-shell chat-shell"
       style={{
         borderTop: "1px solid var(--rule)",
         display: "grid",
-        gridTemplateColumns: "288px minmax(0,1fr) 340px",
-        height: "calc(100svh - 64px)",
+        gridTemplateColumns: "288px minmax(0,1fr)",
+        // 65px = .navbar-inner height (64px) + .navbar border-bottom (1px).
+        // Without the +1 we overflow the viewport by 1px → page-level scroll
+        // appears alongside the inner messages scroll (the "two scrollbars" bug).
+        height: "calc(100svh - 65px)",
       }}
     >
+      {/* Mobile drawer backdrop for sessions sidebar */}
+      {sessionsOpen ? (
+        <div className="chat-sessions-backdrop" onClick={() => setSessionsOpen(false)} />
+      ) : null}
+
       {/* Left — sessions */}
       <aside
+        className={`chat-sessions ${sessionsOpen ? "open" : ""}`}
         style={{
           background: "var(--paper-2)",
           borderRight: "1px solid var(--rule)",
@@ -658,6 +746,14 @@ export function BookChat() {
           minHeight: 0,
         }}
       >
+        <button
+          type="button"
+          className="chat-sessions-close"
+          onClick={() => setSessionsOpen(false)}
+          aria-label="Закрыть"
+        >
+          <X size={18} />
+        </button>
         <div style={{ padding: "18px 18px 12px" }}>
           <button
             className="btn btn-mark btn-block"
@@ -784,6 +880,7 @@ export function BookChat() {
       {/* Center — dialog */}
       <main style={{ display: "flex", flexDirection: "column", minHeight: 0 }}>
         <div
+          className="chat-header"
           style={{
             alignItems: "center",
             borderBottom: "1px solid var(--rule)",
@@ -794,6 +891,14 @@ export function BookChat() {
           }}
         >
           <div className="row-sm" style={{ minWidth: 0 }}>
+            <button
+              type="button"
+              className="chat-mobile-sessions-btn"
+              onClick={() => setSessionsOpen(true)}
+              aria-label="Сессии"
+            >
+              <MessageSquare size={14} /> Чаты
+            </button>
             {book ? (
               <>
                 <div style={{ flexShrink: 0, width: 28 }}><BookPreviewStage book={book} size="sm" /></div>
@@ -819,61 +924,15 @@ export function BookChat() {
               <div className="muted">Книга</div>
             )}
           </div>
-          <div className="row-sm" style={{ position: "relative" }} ref={scopeRef}>
-            <button
-              className="btn btn-ghost btn-sm"
-              onClick={() => setScopeOpen((current) => !current)}
-              title="Область чата (пока доступна только текущая книга)"
-            >
-              <Filter size={14} /> Область
-            </button>
-            {scopeOpen ? (
-              <div
-                style={{
-                  background: "var(--cream)",
-                  border: "1px solid var(--rule)",
-                  borderRadius: "var(--r-lg)",
-                  boxShadow: "var(--shadow-lg)",
-                  padding: 8,
-                  position: "absolute",
-                  right: 0,
-                  top: "calc(100% + 6px)",
-                  width: 280,
-                  zIndex: 50,
-                }}
+          <div className="row-sm">
+            {book ? (
+              <Link
+                className="btn btn-ghost btn-sm"
+                href={buildBookPath(`/book/${bookId}`)}
               >
-                <div className="mono" style={{ color: "var(--ink-faint)", padding: "6px 10px" }}>Переключить контекст</div>
-                <div className="bc-scope-item active">
-                  {book ? (
-                    <div style={{ flexShrink: 0, width: 20 }}><BookPreviewStage book={book} size="sm" /></div>
-                  ) : (
-                    <Library size={16} />
-                  )}
-                  <div style={{ minWidth: 0 }}>
-                    <div>{book?.title || "Текущая книга"}</div>
-                    <div className="bc-scope-hint">Активный режим</div>
-                  </div>
-                </div>
-                <div className="bc-scope-item disabled" title="Чат по всей библиотеке появится позже">
-                  <Library size={16} />
-                  <div style={{ minWidth: 0 }}>
-                    <div>Вся библиотека</div>
-                    <div className="bc-scope-hint">Скоро</div>
-                  </div>
-                </div>
-                <div className="bc-scope-item disabled" title="Подборки книг появятся позже">
-                  <Sparkles size={16} />
-                  <div style={{ minWidth: 0 }}>
-                    <div>Подборка книг…</div>
-                    <div className="bc-scope-hint">Скоро</div>
-                  </div>
-                  <ChevronRight size={12} style={{ color: "var(--ink-faint)", marginLeft: "auto" }} />
-                </div>
-              </div>
+                <BookOpen size={14} /> Открыть разбор
+              </Link>
             ) : null}
-            <Link className="btn btn-plain btn-sm" href={buildBookPath(`/book/${bookId}`)} title="Сохранить / открыть разбор">
-              <Bookmark size={14} />
-            </Link>
           </div>
         </div>
 
@@ -897,35 +956,46 @@ export function BookChat() {
 
         {readiness?.canChat ? (
           <>
-            <div ref={scrollAreaRef} style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "32px 48px" }}>
+            <div
+              ref={scrollAreaRef}
+              className="chat-messages"
+              style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "32px 48px" }}
+            >
               <div className="stack-xl" style={{ margin: "0 auto", maxWidth: 760 }}>
                 {messages.length === 0 && book ? (
                   <ChatWelcome book={book} />
                 ) : null}
 
-                {messages.map((message) =>
+                {messages.map((message, i) =>
                   message.role === "user" ? (
-                    <UserMessage key={message.id} content={message.content} createdAt={message.createdAt} />
+                    <div key={message.id} data-msg-idx={i} className="msg-row">
+                      <UserMessage content={message.content} createdAt={message.createdAt} />
+                    </div>
                   ) : (
-                    <AssistantMessage
-                      key={message.id}
-                      message={message}
-                      onCite={(cite) => setActiveCite(cite)}
-                    />
+                    <div key={message.id} data-msg-idx={i} className="msg-row">
+                      <AssistantMessage
+                        message={message}
+                        onCite={(cite) => openReaderForCite(cite)}
+                        onRefCite={openReaderForRef}
+                      />
+                    </div>
                   )
                 )}
 
                 {isLoading ? (
                   <Typing
                     streamStatus={streamStatus}
-                    streamReasoning={streamReasoning}
+                    assistantStreaming={(() => {
+                      const last = messages[messages.length - 1];
+                      return Boolean(last && last.role === "assistant" && last.pending);
+                    })()}
                   />
                 ) : null}
                 <div ref={messagesEndRef} />
               </div>
             </div>
 
-            <div style={{ padding: "20px 48px 28px" }}>
+            <div className="chat-composer-wrap" style={{ padding: "20px 48px 28px" }}>
               <div style={{ margin: "0 auto", maxWidth: 760 }}>
                 {showSuggestions ? (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 14 }}>
@@ -952,30 +1022,48 @@ export function BookChat() {
                   }}
                 >
                   <textarea
-                    className="textarea"
-                    rows={2}
+                    ref={composerRef}
+                    className="textarea chat-composer-textarea"
+                    rows={1}
                     value={inputValue}
                     onChange={(event) => setInputValue(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === "Enter" && !event.shiftKey) {
                         event.preventDefault();
+                        // sendMessage uses isLoading + isSendingRef guards
+                        // internally, so spamming Enter while a stream is in
+                        // progress is a no-op. We deliberately keep the input
+                        // enabled (not `disabled` during stream) so the user
+                        // doesn't lose focus — feels like typical chat UX.
                         void sendMessage(inputValue);
                       }
                     }}
                     placeholder={placeholderTitle}
-                    disabled={isLoading || !readiness?.canChat}
+                    disabled={!readiness?.canChat}
                     style={{ background: "transparent", border: "none", boxShadow: "none", padding: 0 }}
                   />
                   <div className="row" style={{ justifyContent: "space-between", marginTop: 10 }}>
                     <div className="mono" style={{ color: "var(--ink-faint)" }}>↵ отправить · ⇧↵ перенос</div>
-                    <button
-                      className="btn btn-mark btn-sm"
-                      onClick={() => void sendMessage(inputValue)}
-                      disabled={!inputValue.trim() || isLoading || !readiness?.canChat}
-                      style={{ opacity: inputValue.trim() ? 1 : 0.5 }}
-                    >
-                      <Send size={16} /> Отправить
-                    </button>
+                    {isLoading ? (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={cancelStream}
+                        title="Прервать ответ"
+                      >
+                        <Square size={14} fill="currentColor" /> Стоп
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="btn btn-mark btn-sm"
+                        onClick={() => void sendMessage(inputValue)}
+                        disabled={!inputValue.trim() || !readiness?.canChat}
+                        style={{ opacity: inputValue.trim() ? 1 : 0.5 }}
+                      >
+                        <Send size={16} /> Отправить
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -984,25 +1072,12 @@ export function BookChat() {
         ) : null}
       </main>
 
-      {/* Right — context */}
-      <aside
-        style={{
-          background: "var(--paper-2)",
-          borderLeft: "1px solid var(--rule)",
-          minHeight: 0,
-          overflow: "auto",
-        }}
-      >
-        {activeCite ? (
-          <ActiveCitePanel cite={activeCite} onClose={() => setActiveCite(null)} />
-        ) : (
-          <ContextPanel
-            book={book}
-            buildBookPath={buildBookPath}
-            bookId={bookId}
-          />
-        )}
-      </aside>
+      <BookReader
+        open={Boolean(readerCite)}
+        book={book}
+        cite={readerCite}
+        onClose={() => setReaderCite(null)}
+      />
 
       <style jsx>{`
         .bc-session-item {
@@ -1071,63 +1146,40 @@ export function BookChat() {
           background: var(--paper-2);
           color: var(--ink);
         }
-        .bc-scope-item {
-          align-items: center;
-          background: transparent;
-          border: none;
-          border-radius: var(--r-sm);
-          color: var(--ink);
-          cursor: pointer;
-          display: flex;
-          font-size: 13px;
-          gap: 10px;
-          padding: 8px 10px;
-          text-align: left;
-          width: 100%;
-        }
-        .bc-scope-item:hover {
-          background: var(--paper-2);
-        }
-        .bc-scope-item.active {
-          background: var(--paper-2);
-        }
-        .bc-scope-item.disabled {
-          color: var(--ink-muted);
-          cursor: not-allowed;
-          opacity: 0.7;
-        }
-        .bc-scope-hint {
-          color: var(--ink-muted);
-          font-size: 11px;
-          margin-top: 1px;
-        }
         @keyframes bc-dot {
-          0%, 80%, 100% {
-            opacity: 0.3;
-            transform: translateY(0);
-          }
-          40% {
-            opacity: 1;
-            transform: translateY(-3px);
-          }
+          0%, 80%, 100% { opacity: 0.3; transform: translateY(0); }
+          40% { opacity: 1; transform: translateY(-3px); }
+        }
+        :global(.chat-typing-row) {
+          display: inline-flex;
+          align-items: center;
+          gap: 10px;
+          padding: 6px 0;
+          font-family: var(--font-mono);
+          font-size: 12px;
+          color: var(--mark);
+          line-height: 1;
+        }
+        :global(.chat-typing-dots) {
+          display: inline-flex;
+          align-items: center;
+          gap: 3px;
+        }
+        :global(.chat-typing-dots > span) {
+          width: 5px;
+          height: 5px;
+          border-radius: 50%;
+          background: currentColor;
+          animation: bc-dot 1.2s infinite ease-in-out;
+        }
+        :global(.chat-typing-dots > span:nth-child(2)) { animation-delay: 0.15s; }
+        :global(.chat-typing-dots > span:nth-child(3)) { animation-delay: 0.30s; }
+        :global(.chat-typing-text) {
+          letter-spacing: .02em;
         }
         @media (max-width: 1100px) {
           :global(div.book-chat-shell) {
             grid-template-columns: 240px minmax(0, 1fr) !important;
-          }
-          :global(div.book-chat-shell > aside:last-of-type) {
-            display: none !important;
-          }
-        }
-        @media (max-width: 760px) {
-          :global(div.book-chat-shell) {
-            display: flex !important;
-            flex-direction: column;
-            height: auto !important;
-            min-height: calc(100svh - 64px);
-          }
-          :global(div.book-chat-shell > aside:first-of-type) {
-            max-height: 260px;
           }
         }
       `}</style>
@@ -1201,35 +1253,18 @@ function UserMessage({ content, createdAt }: { content: string; createdAt: strin
   );
 }
 
-function AssistantMessage({ message, onCite }: { message: UiMessage; onCite: (cite: ActiveCite) => void }) {
+function AssistantMessage({
+  message,
+  onCite,
+  onRefCite,
+}: {
+  message: UiMessage;
+  onCite: (cite: ActiveCite) => void;
+  onRefCite?: (ref: { chapterOrderIndex: number; paragraphRanges: Array<{ start: number; end?: number }> }) => void;
+}) {
   const evidence = Array.isArray(message.evidence) ? message.evidence : [];
   const usedSources = Array.isArray(message.usedSources) ? message.usedSources : [];
-
-  // Build distinct citation badges from evidence (preferred) — fallback to citations
-  const citeBadges: ActiveCite[] = [];
-  const seen = new Set<string>();
-  for (const item of evidence) {
-    const key = `${item.kind}:${item.label}:${item.chapterOrderIndex ?? ""}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    citeBadges.push(evidenceToActiveCite(item));
-    if (citeBadges.length >= 6) break;
-  }
-
-  if (citeBadges.length === 0 && Array.isArray(message.citations)) {
-    for (const item of message.citations) {
-      const key = `chunk:${item.chunkId}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      citeBadges.push({
-        label: `Глава ${item.chapterOrderIndex}`,
-        chapterOrderIndex: item.chapterOrderIndex,
-        snippet: item.text || "",
-        kind: "chunk",
-      });
-      if (citeBadges.length >= 6) break;
-    }
-  }
+  const citeBadges = buildCiteBadges(message);
 
   // Tool / search activity row — derive from evidence kind counts
   const toolCounts = new Map<string, number>();
@@ -1312,6 +1347,7 @@ function AssistantMessage({ message, onCite }: { message: UiMessage; onCite: (ci
             content={message.content}
             inlineCitations={message.inlineCitations}
             className="text-foreground"
+            onRefCite={onRefCite}
           />
         </div>
 
@@ -1352,172 +1388,27 @@ function AssistantMessage({ message, onCite }: { message: UiMessage; onCite: (ci
   );
 }
 
-function ActiveCitePanel({ cite, onClose }: { cite: ActiveCite; onClose: () => void }) {
-  return (
-    <div style={{ padding: 28 }}>
-      <div className="mono" style={{ color: "var(--mark)", marginBottom: 10 }}>Источник</div>
-      <div style={{ fontFamily: "var(--font-serif)", fontSize: 18 }}>
-        {evidenceKindLabel(cite.kind)}
-        {cite.chapterOrderIndex !== null ? ` · Глава ${cite.chapterOrderIndex}` : ""}
-      </div>
-      <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 4 }}>{cite.label}</div>
-      {cite.snippet ? (
-        <div
-          style={{
-            background: "var(--cream)",
-            border: "1px solid var(--rule)",
-            borderRadius: "var(--r)",
-            fontFamily: "var(--font-serif)",
-            fontSize: 15,
-            lineHeight: 1.65,
-            marginTop: 20,
-            padding: 18,
-          }}
-        >
-          <span
-            style={{
-              color: "var(--mark)",
-              fontSize: 28,
-              lineHeight: 0,
-              marginRight: 4,
-              position: "relative",
-              top: 10,
-            }}
-          >
-            «
-          </span>
-          {cite.snippet}
-          <span
-            style={{
-              color: "var(--mark)",
-              fontSize: 28,
-              lineHeight: 0,
-              marginLeft: 2,
-              position: "relative",
-              top: 10,
-            }}
-          >
-            »
-          </span>
-        </div>
-      ) : (
-        <p className="soft" style={{ fontSize: 13, lineHeight: 1.55, marginTop: 16 }}>
-          Развернутого фрагмента нет — это упоминание из карточки сущности.
-        </p>
-      )}
-      <button className="btn btn-plain btn-sm btn-block" onClick={onClose} style={{ marginTop: 16 }}>
-        Скрыть
-      </button>
-    </div>
-  );
-}
-
-function ContextPanel({
-  book,
-  buildBookPath,
-  bookId,
-}: {
-  book: BookCoreDTO | null;
-  buildBookPath: (path: string) => string;
-  bookId: string;
-}) {
-  return (
-    <div style={{ padding: 28 }}>
-      <div className="mono" style={{ color: "var(--mark)", marginBottom: 14 }}>Контекст разговора</div>
-      {book ? (
-        <>
-          <div style={{ margin: "0 auto", width: 140 }}>
-            <BookPreviewStage book={book} />
-          </div>
-          <div style={{ marginTop: 16, textAlign: "center" }}>
-            <div style={{ fontFamily: "var(--font-serif)", fontSize: 17, lineHeight: 1.25 }}>{book.title}</div>
-            <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 6 }}>{book.author || "Автор не указан"}</div>
-          </div>
-          <div className="hr" style={{ margin: "20px 0" }} />
-          <Link
-            className="btn btn-ghost btn-sm btn-block"
-            href={buildBookPath(`/book/${bookId}`)}
-            style={{ justifyContent: "center" }}
-          >
-            <Pencil size={14} /> Открыть разбор
-          </Link>
-          <div className="mono" style={{ color: "var(--ink-faint)", marginBottom: 10, marginTop: 24 }}>Подсказка</div>
-          <p className="soft" style={{ fontSize: 13, lineHeight: 1.55 }}>
-            Нажмите на бейдж под ответом — здесь откроется фрагмент-источник с цитатой.
-          </p>
-          {book.canManage ? (
-            <div style={{ marginTop: 18 }}>
-              <BookSettings book={book} />
-            </div>
-          ) : null}
-        </>
-      ) : (
-        <p className="muted">Загружаем книгу...</p>
-      )}
-    </div>
-  );
-}
-
+/**
+ * One-line live status while the model is preparing a response. Auto-hides as
+ * soon as the assistant starts streaming actual answer tokens (the chat
+ * already inserts a pending assistant message at that point — caller passes
+ * `assistantStreaming=true` to suppress this row).
+ */
 function Typing({
   streamStatus,
-  streamReasoning,
+  assistantStreaming,
 }: {
   streamStatus: string | null;
-  streamReasoning: string | null;
+  assistantStreaming: boolean;
 }) {
-  const heading = streamStatus || "Ремарка ищет в тексте…";
+  if (assistantStreaming) return null;
+  const heading = streamStatus || "Думаю";
   return (
-    <div style={{ display: "grid", gap: 16, gridTemplateColumns: "36px 1fr" }}>
-      <div
-        style={{
-          alignItems: "center",
-          background: "var(--mark-soft)",
-          borderRadius: "50%",
-          color: "var(--mark)",
-          display: "flex",
-          height: 36,
-          justifyContent: "center",
-          width: 36,
-        }}
-      >
-        <Sparkles size={16} />
-      </div>
-      <div style={{ paddingTop: 6 }}>
-        <div className="row-sm mono" style={{ color: "var(--mark)", marginBottom: 8 }}>
-          <MessageSquare size={12} /> {heading}
-        </div>
-        <div style={{ display: "inline-flex", gap: 4 }}>
-          {[0, 1, 2].map((index) => (
-            <span
-              key={index}
-              style={{
-                animation: `bc-dot 1.2s ${index * 0.15}s infinite ease-in-out`,
-                background: "var(--mark)",
-                borderRadius: "50%",
-                display: "inline-block",
-                height: 6,
-                width: 6,
-              }}
-            />
-          ))}
-        </div>
-        {streamReasoning ? (
-          <div
-            className="row-sm"
-            style={{
-              alignItems: "flex-start",
-              color: "var(--ink-muted)",
-              fontSize: 12,
-              lineHeight: 1.5,
-              marginTop: 10,
-              maxWidth: 560,
-            }}
-          >
-            <Brain size={12} style={{ flexShrink: 0, marginTop: 3 }} />
-            <span>Мысли модели: {streamReasoning}</span>
-          </div>
-        ) : null}
-      </div>
+    <div className="chat-typing-row">
+      <span className="chat-typing-dots" aria-hidden="true">
+        <span /><span /><span />
+      </span>
+      <span className="chat-typing-text">{heading}</span>
     </div>
   );
 }

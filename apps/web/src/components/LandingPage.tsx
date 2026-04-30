@@ -244,41 +244,6 @@ export function LandingPage() {
         </div>
       </section>
 
-      {/* Футер */}
-      <footer style={{ background: "var(--paper-2)", borderTop: "1px solid var(--rule)" }}>
-        <div className="container" style={{ paddingBottom: 56, paddingTop: 56 }}>
-          <div
-            style={{
-              alignItems: "flex-end",
-              display: "flex",
-              flexWrap: "wrap",
-              gap: 48,
-              justifyContent: "space-between",
-            }}
-          >
-            <div>
-              <div className="logo" style={{ fontSize: 28 }}>
-                ремарка<span className="dot">.</span>
-              </div>
-              <p className="muted" style={{ fontSize: 13, marginTop: 12, maxWidth: 320 }}>
-                Литературный AI-сервис. На полях любой книги — ваш экземпляр с пометками, к которому можно вернуться.
-              </p>
-            </div>
-            <div className="row-lg" style={{ fontSize: 13 }}>
-              <Link className="nav-link" href="/explore">Каталог</Link>
-              <Link className="nav-link" href="/explore">Блог</Link>
-              <Link className="nav-link" href="/explore">Правовая информация</Link>
-              <Link className="nav-link" href="/explore">Поддержка</Link>
-            </div>
-          </div>
-          <div className="hr" style={{ marginBottom: 18, marginTop: 32 }} />
-          <div className="row" style={{ flexWrap: "wrap", justifyContent: "space-between" }}>
-            <div className="mono" style={{ color: "var(--ink-faint)" }}>© 2026 remarka · Made for readers</div>
-            <div className="mono" style={{ color: "var(--ink-faint)" }}>Сделано для читателей</div>
-          </div>
-        </div>
-      </footer>
-
       <style jsx>{`
         @media (max-width: 1024px) {
           .landing-hero-grid,

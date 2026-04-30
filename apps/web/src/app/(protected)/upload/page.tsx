@@ -8,5 +8,9 @@ export default async function UploadPage() {
     redirect("/signin");
   }
 
+  // TEMPORARY: until the subscription model exists, every authenticated user
+  // is treated as Plus and can hit /upload. When billing is wired up, gate
+  // here on `authUser.plan !== "plus"` and redirect to `/library?paywall=upload`.
+
   return <UploadFlow />;
 }

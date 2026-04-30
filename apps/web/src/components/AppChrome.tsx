@@ -25,10 +25,11 @@ export function AppChrome({
   const pathname = usePathname();
   const chatRoute = isChatPath(pathname || "");
 
-  // TEMPORARY: until the subscription model exists, treat admin users as Plus
-  // so the design's pill renders for the dev/owner. Everyone else is Free.
-  // Replace with real plan resolution from User.plan when wired up.
-  const plan: "free" | "plus" = userRole === "admin" ? "plus" : "free";
+  // TEMPORARY: until the subscription model exists, treat every authenticated
+  // user as Plus so the design's plan-pill, upload, and analysis flows are
+  // testable end-to-end. Replace with real `User.plan` resolution when the
+  // billing backend is wired up.
+  const plan: "free" | "plus" = "plus";
 
   return (
     <div className="page">

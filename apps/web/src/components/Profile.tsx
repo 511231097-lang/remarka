@@ -206,9 +206,6 @@ export function Profile({ authUser }: ProfileProps) {
 
         <Section title="Аккаунт">
           <div className="row" style={{ flexWrap: "wrap", gap: 12, padding: "20px 20px" }}>
-            <button className="btn btn-ghost" disabled title="Функция готовится">
-              Выгрузить данные
-            </button>
             <button
               className="btn btn-plain"
               onClick={() => void signOut({ callbackUrl: "/signin" })}
@@ -233,7 +230,7 @@ export function Profile({ authUser }: ProfileProps) {
               padding: "14px 20px",
             }}
           >
-            Выгрузка данных и удаление аккаунта пока недоступны в интерфейсе. Эти функции готовятся.
+            Удаление аккаунта пока недоступно в интерфейсе — функция готовится.
           </div>
         </Section>
       </div>

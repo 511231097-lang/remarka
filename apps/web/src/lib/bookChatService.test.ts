@@ -3,16 +3,10 @@ import assert from "node:assert/strict";
 import {
   buildAutoExpandedParagraphSlicePlans,
   buildEvidenceFragmentsFromSceneBounds,
-  buildHeuristicChatPreplan,
-  decideCompiledAnswerRuntime,
-  deriveCitationsFromEvidencePack,
-  pickEvidenceCoverage,
+  filterParagraphHitsAgainstCoverage,
   uniquifyRerankRecordIds,
   type AutoContextSceneBounds,
   type AutoExpandableParagraphHit,
-  type ChatPreplan,
-  type EvidenceGroup,
-  type EvidencePack,
 } from "./bookChatService";
 
 function hit(paragraphIndex: number, overrides: Partial<AutoExpandableParagraphHit> = {}): AutoExpandableParagraphHit {
@@ -159,351 +153,6 @@ test("buildEvidenceFragmentsFromSceneBounds creates overlapping small windows in
   );
   assert.ok(fragments.every((fragment) => fragment.sceneId === "scene-2"));
 });
-
-function evidenceGroup(index: number, overrides: Partial<EvidenceGroup> = {}): EvidenceGroup {
-  const chapterOrderIndex = overrides.chapterOrderIndex ?? Math.ceil(index / 2);
-  const paragraphStart = overrides.paragraphStart ?? index * 10;
-  const paragraphEnd = overrides.paragraphEnd ?? paragraphStart + 2;
-  return {
-    id: overrides.id ?? `ev-${index}`,
-    chapterId: overrides.chapterId ?? `chapter-${chapterOrderIndex}`,
-    chapterOrderIndex,
-    chapterTitle: overrides.chapterTitle ?? `Глава ${chapterOrderIndex}`,
-    sceneId: overrides.sceneId ?? `scene-${Math.ceil(index / 2)}`,
-    sceneIndex: overrides.sceneIndex ?? Math.ceil(index / 2),
-    sceneTitle: overrides.sceneTitle,
-    paragraphStart,
-    paragraphEnd,
-    paragraphs:
-      overrides.paragraphs ??
-      [
-        {
-          paragraphIndex: paragraphStart,
-          text: `Фрагмент ${index}`,
-        },
-      ],
-    text: overrides.text ?? `Фрагмент ${index}`,
-    score: overrides.score ?? 1 - index / 100,
-    confidence: overrides.confidence ?? "high",
-    matchedBy: overrides.matchedBy ?? ["semantic", "rerank"],
-    matchedSubquery: overrides.matchedSubquery,
-  };
-}
-
-function preplan(overrides: Partial<ChatPreplan> = {}): ChatPreplan {
-  return {
-    route: "grounded_answer",
-    model: "pro",
-    complexity: "hard",
-    answerMode: "chronology",
-    retrieval: {
-      query: "главная цепочка",
-      subqueries: ["часть A", "часть B"],
-      order: "chronological",
-      topK: 14,
-      useScenes: true,
-      evidenceBudget: "large",
-    },
-    slots: [],
-    ...overrides,
-  };
-}
-
-function evidencePack(overrides: Partial<EvidencePack> = {}): EvidencePack {
-  const group = evidenceGroup(1);
-  return {
-    schemaVersion: "compiled-evidence-v1",
-    route: "grounded_answer",
-    complexity: "medium",
-    answerMode: "explanation",
-    order: "relevance",
-    budget: "medium",
-    query: "вопрос",
-    subqueries: [],
-    groups: [group],
-    slots: [],
-    blocks: [{ label: "вопрос", groups: [group] }],
-    metrics: {
-      groupCount: 1,
-      evidenceChars: group.text.length,
-      sceneBoostUsed: false,
-      rerank: {
-        enabled: false,
-        used: false,
-        candidateCount: 0,
-        returned: 0,
-        model: null,
-        latencyMs: 0,
-      },
-      chapterDistribution: { ch1: 1 },
-      sceneDistribution: { "ch1:sc1": 1 },
-    },
-    ...overrides,
-  };
-}
-
-test("buildHeuristicChatPreplan keeps simple fact on light model", () => {
-  const plan = buildHeuristicChatPreplan({
-    userQuestion: "Как зовут друга Гарри?",
-    scenesReady: true,
-  });
-
-  assert.equal(plan.route, "grounded_answer");
-  assert.equal(plan.model, "lite");
-  assert.equal(plan.complexity, "simple");
-  assert.equal(plan.retrieval.evidenceBudget, "small");
-});
-
-test("buildHeuristicChatPreplan escalates chronology questions to pro", () => {
-  const plan = buildHeuristicChatPreplan({
-    userQuestion:
-      "Как дневник Тома Реддла постепенно завоёвывает доверие Джинни, и через какую цепочку событий это приводит к открытию Тайной комнаты?",
-    scenesReady: true,
-  });
-
-  assert.equal(plan.model, "pro");
-  assert.equal(plan.answerMode, "chronology");
-  assert.equal(plan.retrieval.order, "chronological");
-  assert.equal(plan.retrieval.evidenceBudget, "large");
-});
-
-test("buildHeuristicChatPreplan creates clue slots for basilisk-style synthesis", () => {
-  const plan = buildHeuristicChatPreplan({
-    userQuestion:
-      "По каким разрозненным признакам можно вывести, что чудовище — василиск, и как связаны пауки, трубы, петухи и окаменение?",
-    scenesReady: true,
-  });
-
-  assert.equal(plan.answerMode, "clue_synthesis");
-  assert.deepEqual(
-    plan.slots.map((slot) => slot.id),
-    ["spiders", "pipes", "roosters", "petrification"]
-  );
-});
-
-test("buildHeuristicChatPreplan creates row slots for attack sequence questions", () => {
-  const plan = buildHeuristicChatPreplan({
-    userQuestion:
-      "Восстанови точную последовательность нападений: кто пострадал, при каких обстоятельствах и почему никто не погиб?",
-    scenesReady: true,
-  });
-
-  assert.equal(plan.answerMode, "table_sequence");
-  assert.deepEqual(
-    plan.slots.map((slot) => slot.id),
-    ["mrs_norris", "colin", "justin_nick", "hermione_penelope"]
-  );
-});
-
-test("decideCompiledAnswerRuntime keeps simple complete answers pack-only", () => {
-  const runtime = decideCompiledAnswerRuntime({
-    fallbackChatModel: "fallback-model",
-    preplan: preplan({
-      model: "lite",
-      complexity: "simple",
-      answerMode: "fact",
-      retrieval: {
-        query: "факт",
-        subqueries: [],
-        order: "relevance",
-        topK: 6,
-        useScenes: true,
-        evidenceBudget: "small",
-      },
-    }),
-    evidencePack: evidencePack({
-      complexity: "simple",
-      answerMode: "fact",
-      budget: "small",
-    }),
-  });
-
-  assert.equal(runtime.model, "lite");
-  assert.deepEqual(runtime.repairTools, []);
-  assert.equal(runtime.maxToolCalls, 0);
-});
-
-test("decideCompiledAnswerRuntime enables bounded repair for missing required evidence", () => {
-  const runtime = decideCompiledAnswerRuntime({
-    fallbackChatModel: "fallback-model",
-    preplan: preplan({
-      model: "pro",
-      complexity: "hard",
-      answerMode: "clue_synthesis",
-    }),
-    evidencePack: evidencePack({
-      complexity: "hard",
-      answerMode: "clue_synthesis",
-      slots: [
-        {
-          slotId: "roosters",
-          title: "Петухи",
-          required: true,
-          role: "clue",
-          coverage: "low",
-          missingAnchors: ["петухи", "василиск"],
-          groups: [],
-        },
-      ],
-    }),
-  });
-
-  assert.equal(runtime.model, "pro");
-  assert.deepEqual(runtime.repairTools, ["search_evidence", "read_passages"]);
-  assert.equal(runtime.maxToolCalls, 2);
-  assert.ok(runtime.reasons.includes("low_or_missing_required_evidence"));
-});
-
-test("decideCompiledAnswerRuntime does not repair medium slots for semantic missing anchors", () => {
-  const runtime = decideCompiledAnswerRuntime({
-    fallbackChatModel: "fallback-model",
-    preplan: preplan({
-      model: "pro",
-      complexity: "hard",
-      answerMode: "clue_synthesis",
-    }),
-    evidencePack: evidencePack({
-      complexity: "hard",
-      answerMode: "clue_synthesis",
-      slots: [
-        {
-          slotId: "exoneration",
-          title: "Доказательство невиновности",
-          required: true,
-          role: "clue",
-          coverage: "medium",
-          missingAnchors: ["невиновность", "логика"],
-          groups: [evidenceGroup(1)],
-        },
-      ],
-    }),
-  });
-
-  assert.equal(runtime.model, "lite");
-  assert.deepEqual(runtime.repairTools, []);
-  assert.equal(runtime.maxToolCalls, 0);
-});
-
-test("decideCompiledAnswerRuntime keeps cheap read repair for literal missing anchors near existing groups", () => {
-  const runtime = decideCompiledAnswerRuntime({
-    fallbackChatModel: "fallback-model",
-    preplan: preplan({
-      model: "pro",
-      complexity: "hard",
-      answerMode: "table_sequence",
-    }),
-    evidencePack: evidencePack({
-      complexity: "hard",
-      answerMode: "table_sequence",
-      slots: [
-        {
-          slotId: "row",
-          title: "Строка",
-          required: true,
-          role: "row",
-          coverage: "medium",
-          missingAnchors: ["Гермиона"],
-          groups: [evidenceGroup(1)],
-        },
-      ],
-    }),
-  });
-
-  assert.equal(runtime.model, "pro");
-  assert.deepEqual(runtime.repairTools, ["read_passages"]);
-  assert.equal(runtime.maxToolCalls, 1);
-});
-
-test("decideCompiledAnswerRuntime allows search repair for progressive reveal literal gaps", () => {
-  const runtime = decideCompiledAnswerRuntime({
-    fallbackChatModel: "fallback-model",
-    preplan: preplan({
-      model: "pro",
-      complexity: "hard",
-      answerMode: "progressive_reveal",
-    }),
-    evidencePack: evidencePack({
-      complexity: "hard",
-      answerMode: "progressive_reveal",
-      slots: [
-        {
-          slotId: "chain",
-          title: "Цепочка событий",
-          required: true,
-          role: "clue",
-          coverage: "medium",
-          missingAnchors: ["дневник"],
-          groups: [evidenceGroup(1)],
-        },
-      ],
-    }),
-  });
-
-  assert.equal(runtime.model, "pro");
-  assert.deepEqual(runtime.repairTools, ["search_evidence", "read_passages"]);
-  assert.equal(runtime.maxToolCalls, 2);
-});
-
-test("decideCompiledAnswerRuntime allows search repair for clue synthesis literal gaps", () => {
-  const runtime = decideCompiledAnswerRuntime({
-    fallbackChatModel: "fallback-model",
-    preplan: preplan({
-      model: "pro",
-      complexity: "hard",
-      answerMode: "clue_synthesis",
-    }),
-    evidencePack: evidencePack({
-      complexity: "hard",
-      answerMode: "clue_synthesis",
-      slots: [
-        {
-          slotId: "mechanism",
-          title: "Механизм",
-          required: true,
-          role: "clue",
-          coverage: "medium",
-          missingAnchors: ["окаменение"],
-          groups: [evidenceGroup(1)],
-        },
-      ],
-    }),
-  });
-
-  assert.equal(runtime.model, "pro");
-  assert.deepEqual(runtime.repairTools, ["search_evidence", "read_passages"]);
-  assert.equal(runtime.maxToolCalls, 2);
-});
-
-test("decideCompiledAnswerRuntime allows search repair for decisive literal gaps", () => {
-  const runtime = decideCompiledAnswerRuntime({
-    fallbackChatModel: "fallback-model",
-    preplan: preplan({
-      model: "pro",
-      complexity: "hard",
-      answerMode: "clue_synthesis",
-    }),
-    evidencePack: evidencePack({
-      complexity: "hard",
-      answerMode: "clue_synthesis",
-      slots: [
-        {
-          slotId: "decisive",
-          title: "Решающее доказательство",
-          required: true,
-          role: "decisive",
-          coverage: "medium",
-          missingAnchors: ["дневник"],
-          groups: [evidenceGroup(1)],
-        },
-      ],
-    }),
-  });
-
-  assert.equal(runtime.model, "pro");
-  assert.deepEqual(runtime.repairTools, ["search_evidence", "read_passages"]);
-  assert.equal(runtime.maxToolCalls, 2);
-});
-
 test("uniquifyRerankRecordIds preserves first ids and rewrites duplicates", () => {
   assert.deepEqual(uniquifyRerankRecordIds(["ev1", "ev2", "ev1", "", "ev2", "ev1"]), [
     "ev1",
@@ -515,68 +164,42 @@ test("uniquifyRerankRecordIds preserves first ids and rewrites duplicates", () =
   ]);
 });
 
-test("pickEvidenceCoverage keeps at least one group per subquery and sorts chronology", () => {
-  const selected = pickEvidenceCoverage({
-    preplan: preplan(),
-    groups: [
-      evidenceGroup(5, { matchedSubquery: "часть B", chapterOrderIndex: 5, paragraphStart: 20, paragraphEnd: 22 }),
-      evidenceGroup(1, { matchedSubquery: "часть A", chapterOrderIndex: 2, paragraphStart: 30, paragraphEnd: 32 }),
-      evidenceGroup(2, { matchedSubquery: "часть B", chapterOrderIndex: 3, paragraphStart: 10, paragraphEnd: 12 }),
-    ],
-  });
+test("filterParagraphHitsAgainstCoverage drops hits already inside slice ranges", () => {
+  const hits = [
+    { chapterId: "ch-1", paragraphIndex: 5 },   // inside slice 3-10 → drop
+    { chapterId: "ch-1", paragraphIndex: 12 },  // outside → keep
+    { chapterId: "ch-1", paragraphIndex: 50 },  // outside → keep
+    { chapterId: "ch-2", paragraphIndex: 5 },   // different chapter, slice doesn't apply → keep
+  ];
+  const slices = [{ chapterId: "ch-1", paragraphStart: 3, paragraphEnd: 10 }];
+  const groups: Array<{ chapterId: string; paragraphStart: number; paragraphEnd: number }> = [];
 
-  assert.ok(selected.some((group) => group.matchedSubquery === "часть A"));
-  assert.ok(selected.some((group) => group.matchedSubquery === "часть B"));
+  const result = filterParagraphHitsAgainstCoverage(hits, slices, groups);
   assert.deepEqual(
-    selected.map((group) => `${group.chapterOrderIndex}:${group.paragraphStart}`),
-    ["2:30", "3:10", "5:20"]
+    result.map((hit) => `${hit.chapterId}:${hit.paragraphIndex}`),
+    ["ch-1:12", "ch-1:50", "ch-2:5"]
   );
 });
 
-test("deriveCitationsFromEvidencePack uses evidence groups instead of tool capture", () => {
-  const group = evidenceGroup(1, {
-    chapterOrderIndex: 7,
-    sceneIndex: 2,
-    paragraphStart: 42,
-    paragraphEnd: 45,
-    matchedSubquery: "улика",
-  });
-  const pack: EvidencePack = {
-    schemaVersion: "compiled-evidence-v1",
-    route: "grounded_answer",
-    complexity: "medium",
-    answerMode: "explanation",
-    order: "relevance",
-    budget: "medium",
-    query: "вопрос",
-    subqueries: ["улика"],
-    groups: [group],
-    slots: [],
-    blocks: [{ label: "улика", groups: [group] }],
-    metrics: {
-      groupCount: 1,
-      evidenceChars: group.text.length,
-      sceneBoostUsed: false,
-      rerank: {
-        enabled: true,
-        used: true,
-        candidateCount: 1,
-        returned: 1,
-        model: "test-reranker",
-        latencyMs: 1,
-      },
-      chapterDistribution: { ch7: 1 },
-      sceneDistribution: { "ch7:sc2": 1 },
-    },
-  };
+test("filterParagraphHitsAgainstCoverage drops hits inside group ranges too", () => {
+  const hits = [
+    { chapterId: "ch-1", paragraphIndex: 22 },  // inside group 20-25 → drop
+    { chapterId: "ch-1", paragraphIndex: 30 },  // outside → keep
+  ];
+  const slices: Array<{ chapterId: string; paragraphStart: number; paragraphEnd: number }> = [];
+  const groups = [{ chapterId: "ch-1", paragraphStart: 20, paragraphEnd: 25 }];
 
-  assert.deepEqual(deriveCitationsFromEvidencePack(pack), [
-    {
-      chapterOrderIndex: 7,
-      sceneIndex: 2,
-      paragraphStart: 42,
-      paragraphEnd: 45,
-      reason: "Evidence for: улика",
-    },
-  ]);
+  const result = filterParagraphHitsAgainstCoverage(hits, slices, groups);
+  assert.deepEqual(
+    result.map((hit) => hit.paragraphIndex),
+    [30]
+  );
+});
+
+test("filterParagraphHitsAgainstCoverage returns all hits when no coverage exists", () => {
+  const hits = [
+    { chapterId: "ch-1", paragraphIndex: 1 },
+    { chapterId: "ch-1", paragraphIndex: 2 },
+  ];
+  assert.equal(filterParagraphHitsAgainstCoverage(hits, [], []).length, 2);
 });

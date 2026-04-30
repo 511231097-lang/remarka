@@ -3,6 +3,7 @@ import type {
   BookAnalysisStatusDTO,
   BookAnalyzerStatusDTO as BookAnalyzerStatusDTOValue,
   BookAnalyzerStateDTO,
+  BookChapterContentDTO,
   BookChapterDTO,
   BookChatCreateSessionResponseDTO,
   BookChatCreateSessionRequestDTO,
@@ -111,6 +112,19 @@ export async function getBookChapters(bookId: string): Promise<BookChapterDTO[]>
   });
 
   const safe = await ensureOk(response, "Не удалось загрузить главы");
+  return safe.json();
+}
+
+export async function getBookChapterContent(
+  bookId: string,
+  orderIndex: number
+): Promise<BookChapterContentDTO> {
+  const response = await fetch(`/api/books/${bookId}/chapters/${orderIndex}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  const safe = await ensureOk(response, "Не удалось загрузить текст главы");
   return safe.json();
 }
 
