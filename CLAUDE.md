@@ -7,8 +7,8 @@ AI-эксперт по книгам в формате чата. Точность
 - **Worker**: Node + pg-boss — `apps/worker`
 - **DB**: PostgreSQL + pgvector через Prisma — `packages/db`
 - **Shared**: `packages/contracts`, `packages/ai`
-- **Storage**: MinIO (S3-compatible) для artifacts и books
-- **LLM**: Vertex AI (Gemini) по умолчанию; Timeweb / KIA как альтернативы
+- **Storage**: MinIO (S3-compatible) для artifacts и books, Timeweb S3 на проде
+- **LLM**: Vertex AI (Gemini 3.x) — единственный провайдер. Альтернативы (Timeweb / KIA) были удалены в PR #13 как мёртвые эксперименты.
 
 ## Environment
 
@@ -34,7 +34,7 @@ wsl.exe -d Ubuntu -e bash -lc "cd /home/west/Documents/myb/remarka && npm run te
 # golden eval (single run, cheap)
 wsl.exe -d Ubuntu -e bash -lc "cd /home/west/Documents/myb/remarka && npm run eval:chat-regression -- --golden"
 
-# golden eval (stable measurement, recommended for T1..T7 comparisons)
+# golden eval (stable measurement, recommended для cost/quality сравнений между итерациями)
 wsl.exe -d Ubuntu -e bash -lc "cd /home/west/Documents/myb/remarka && npm run eval:chat-regression -- --golden --runs 3 --warmup"
 
 # bring up infra (db + minio) only — eval and dev run on host node
@@ -52,19 +52,32 @@ This is the highest-value surface of the product. The flow is documented in deta
 
 - **Frontend chat UI**: `apps/web/src/components/BookChat.tsx`
 - **Stream API route**: `apps/web/src/app/api/books/[bookId]/chat/sessions/[sessionId]/stream/route.ts`
-- **Service brain**: `apps/web/src/lib/bookChatService.ts` (~11k lines)
+- **Service brain**: `apps/web/src/lib/bookChatService.ts` (~8k lines после чистки PR #5)
 - **Tools**: `apps/web/src/lib/bookChatTools.ts`
 - **Analysis pipeline (data prep)**: `apps/worker/src/analysisPipeline.npz.ts`
 
 The chat uses a hybrid retriever (pgvector semantic + lexical RRF fusion + Vertex Ranking rerank), a small planner LLM that decides `toolPolicy` and search queries, then a main Gemini call with tool-use over the planned queries.
 
-Known weaknesses being worked on (T1..T7 plan):
-- Tool descriptions overlap → planner picks wrong tool ~43% of the time
-- `toolPolicy="required"` forced on every "book question" → over-search
-- Evidence formatted as raw JSON for the LLM (not markdown)
-- No alias-expansion using `BookEntityAlias` (already populated by analysis)
-- Scenes lack `contextSummary` — Anthropic-style contextual retrieval missing
-- Paragraph embeddings have no hierarchical context injection
+### RAG audit & план
+
+Полный аудит — `docs/research/rag-audit-2026-04-30.md`. Что закрыто и что в backlog'е:
+
+**Уже сделано:**
+- Markdown-formatted evidence (был raw JSON в LLM)
+- History compaction with hysteresis (`BookChatThread.compactedHistory*`)
+- Anti-jailbreak hardening через `<thread-summary>` XML wrapper
+- `compileEvidencePack` subtree удалён целиком (~3,977 строк) в PR #5
+- Per-step LLM metrics с `cachedInputTokens` + `thoughtsTokens`
+- Paragraph-hits dedupe (drop хитов уже покрытых evidence-группами) + slice budget 18k → 8k
+- `selectedTools` user-control убран (закрывает QUALITY #1 другим путём)
+- Vertex 2.5-flash тестировали → откатили (галлюцинации на сложных цепочках)
+
+**Backlog (приоритет ROI):**
+- **TOP — Tighten Pro-tier router в planner prompt** (`bookChatService.ts:3398-3401`). Сейчас слишком часто рутит на Pro; ужесточить до `complexity=hard AND multi-group`. **Главная экономическая ручка: −30 до −47% LLM-стоимости.**
+- **Gate `search_scenes`** когда `complexity=simple` — закрывает T3 over-search.
+- **Alias expansion** — модель `BookEntityAlias` была удалена в PR #15 (никогда не наполнялась). Если возьмёмся — нужно сначала восстановить таблицу или взять alias-источник из `BookEntity` показывающего characters/aliases в анализе.
+- **Scene `contextSummary`** (Anthropic-style contextual retrieval) — большой трек, требует доработки analysis pipeline.
+- **Paragraph hierarchical context injection** — большой трек, требует переэмбеддинга всех книг.
 
 ## Eval / Golden Set
 
@@ -87,10 +100,21 @@ For golden eval, you usually only need `db` + `minio` containers. Web and worker
 
 ## Git / Branching
 
-- Active branch lives in `improve/rag-T<N>-<slug>` per the T1..T7 plan
+- Branch naming свободное (`feat/...`, `fix/...`, `chore/...`, `improve/rag-...`)
 - One Edit task = one branch = one PR
 - Do not commit `tmp-*` scripts at repo root or `.next/`, `.pgdata-local/`, `node_modules/`
 - Default `main` is the merge target
+
+## CI / Deploy
+
+Pipeline collapsed into `pipeline.yml` после PR #11 (см. `docs/deployment.md`):
+
+```
+push → build (auto) → migrate (manual) ──┬─→ deploy-web    (manual)
+                                         └─→ deploy-worker (manual)
+```
+
+`migrate` / `deploy-*` — manual gates через GitHub Environments (`prod-db` / `prod-web` / `prod-worker`) с required reviewers. На push сборка идёт сама, но прод не трогается до approve. Аварийный re-deploy без rebuild — `redeploy.yml`.
 
 ## Что НЕ делать
 
