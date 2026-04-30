@@ -10,6 +10,15 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: false
 
+# Force GitHub-shipped JS actions (upload-artifact, download-artifact, etc.)
+# to run their internal runtime on Node 24 instead of the now-deprecated
+# Node 20. Will become the default on 2026-06-02; setting this flag now
+# suppresses deprecation annotations and gives us early validation.
+# Note: this is unrelated to the Node version our code runs on
+# (controlled by `actions/setup-node` → 22).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Build + stage on VPS
