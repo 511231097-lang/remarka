@@ -1,0 +1,391 @@
+name: Pipeline
+
+# Single GitLab-style pipeline:
+#
+#   push → build (auto) → migrate (manual) ──┬─→ deploy-web    (manual)
+#                                            └─→ deploy-worker (manual)
+#
+# The "manual" gates are GitHub Environments with required reviewers.
+# Setup is one-time, in repo Settings → Environments:
+#   • prod-db        → required reviewer: <you>
+#   • prod-web       → required reviewer: <you>, URL https://remarka.app
+#   • prod-worker    → required reviewer: <you>
+#
+# In the Actions UI the run pauses at each gate and surfaces a
+# "Review deployments" → "Approve and deploy" button. Approving any
+# subset is fine; e.g. you can approve migrate + deploy-web while
+# skipping deploy-worker.
+#
+# release_id is computed once in build and passed downstream via outputs,
+# so migrate / deploy never have to guess the latest staged release on
+# the host (which races on rapid consecutive pushes).
+#
+# For redeploying a previously-built release without going through the
+# full pipeline (rollback, infra hiccup recovery), see redeploy.yml.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: pipeline-prod
+  cancel-in-progress: false
+
+env:
+  # Force GitHub-shipped JS actions (upload-artifact, download-artifact, etc.)
+  # to run their internal runtime on Node 24 instead of the now-deprecated
+  # Node 20. Will become the default on 2026-06-02; setting this flag now
+  # suppresses deprecation annotations and gives us early validation.
+  # Note: this is unrelated to the Node version our code runs on
+  # (controlled by `actions/setup-node` → 22).
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  build:
+    name: Build + stage on VPS
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    outputs:
+      release_id: ${{ steps.release.outputs.id }}
+    env:
+      WEB_HOST: ${{ secrets.WEB_HOST }}
+      WORKER_HOST: ${{ secrets.WORKER_HOST }}
+      DEPLOY_USER: root
+      APP_USER: remarka
+      APP_HOME: /srv/remarka
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node 22
+        uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies (npm ci)
+        run: npm ci
+
+      - name: Generate Prisma client
+        run: npm run db:generate
+
+      - name: Typecheck (web)
+        run: npx tsc --noEmit -p apps/web/tsconfig.json
+
+      - name: Typecheck (worker)
+        run: npm --prefix apps/worker run typecheck
+
+      - name: Unit tests (web)
+        run: npm run test:unit
+
+      - name: Build web (Next.js)
+        env:
+          NEXT_TELEMETRY_DISABLED: "1"
+          NODE_ENV: production
+        run: npm run web:build
+
+      - name: Build worker (if a build script exists)
+        run: |
+          if node -e "process.exit(require('./apps/worker/package.json').scripts.build ? 0 : 1)"; then
+            npm --prefix apps/worker run build
+          else
+            echo "No worker build script — skipping (worker uses tsx at runtime)."
+          fi
+
+      - name: Compute release id
+        id: release
+        run: echo "id=$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage release bundle locally
+        run: |
+          set -euo pipefail
+          mkdir -p _bundle
+          # Copy everything except dev/build cruft. node_modules is reinstalled
+          # on each host (smaller transfer + platform-correct binaries).
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='.next/cache' \
+            --exclude='evals' \
+            --exclude='_bundle' \
+            --exclude='.pgdata-local' \
+            --exclude='tmp-*' \
+            --exclude='*.log' \
+            ./ _bundle/
+
+      # Keep a GH artifact too — handy for debugging without VPS access, and
+      # makes the build reproducible if we ever need to rebuild manually.
+      - name: Upload bundle artifact
+        uses: actions/upload-artifact@v5
+        with:
+          name: remarka-bundle-${{ steps.release.outputs.id }}
+          path: _bundle
+          retention-days: 7
+          if-no-files-found: error
+          # CRITICAL: by default upload-artifact ignores hidden files (.next/,
+          # .env*, etc.). Without this flag standalone build is silently lost.
+          include-hidden-files: true
+
+      - name: Configure SSH (web + worker via ProxyJump)
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_DEPLOY_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$WEB_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # NB: ProxyJump must reference the 'web' alias above (NOT
+          # $DEPLOY_USER@$WEB_HOST). When ssh spawns the jump connection
+          # it re-resolves the host through ssh_config; an alias inherits
+          # IdentityFile, but a literal user@IP falls back to defaults
+          # (no keys on a fresh runner) → Permission denied (publickey).
+          cat >>~/.ssh/config <<EOF
+          Host web
+            HostName $WEB_HOST
+            User $DEPLOY_USER
+            IdentityFile ~/.ssh/id_deploy
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile ~/.ssh/known_hosts
+          Host worker
+            HostName $WORKER_HOST
+            User $DEPLOY_USER
+            IdentityFile ~/.ssh/id_deploy
+            ProxyJump web
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+
+      - name: Stage bundle on web VPS + npm ci
+        run: |
+          set -euo pipefail
+          RELEASE_ID=${{ steps.release.outputs.id }}
+          ssh web "install -d -o $APP_USER -g $APP_USER -m 755 $APP_HOME/releases/$RELEASE_ID"
+          rsync -az --delete _bundle/ "web:$APP_HOME/releases/$RELEASE_ID/"
+          ssh web bash -s <<EOF
+          set -euo pipefail
+          RELEASE_DIR=$APP_HOME/releases/$RELEASE_ID
+          chown -R $APP_USER:$APP_USER "\$RELEASE_DIR"
+          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && npm ci --omit=dev --no-audit --no-fund"
+          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && npm run db:generate"
+          # Prune all but the 5 newest releases. Migrate/deploy choose by
+          # release_id explicitly, but we keep a few for rollback flexibility.
+          cd $APP_HOME/releases
+          ls -1t | tail -n +6 | xargs -r rm -rf
+          EOF
+
+      # NB: this step is `continue-on-error` so a temporarily broken worker
+      # SSH (rotated key, host rebuild, etc.) doesn't block web deploys.
+      # When this step fails the build job summary will show a yellow
+      # warning, and deploy-worker will fail until the underlying issue is
+      # fixed and the pipeline re-run.
+      - name: Stage bundle on worker VPS + npm ci
+        id: stage_worker
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          RELEASE_ID=${{ steps.release.outputs.id }}
+          ssh worker "install -d -o $APP_USER -g $APP_USER -m 755 $APP_HOME/releases/$RELEASE_ID"
+          rsync -az --delete -e "ssh" _bundle/ "worker:$APP_HOME/releases/$RELEASE_ID/"
+          ssh worker bash -s <<EOF
+          set -euo pipefail
+          RELEASE_DIR=$APP_HOME/releases/$RELEASE_ID
+          chown -R $APP_USER:$APP_USER "\$RELEASE_DIR"
+          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && npm ci --omit=dev --no-audit --no-fund"
+          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && npm run db:generate"
+          cd $APP_HOME/releases
+          ls -1t | tail -n +6 | xargs -r rm -rf
+          EOF
+
+      - name: Summary
+        run: |
+          {
+            echo "## Build complete"
+            echo ""
+            echo "**Release ID**: \`${{ steps.release.outputs.id }}\`"
+            echo ""
+            echo "Bundle staged on:"
+            echo "- web: \`$APP_HOME/releases/${{ steps.release.outputs.id }}/\` ✅"
+            if [ "${{ steps.stage_worker.outcome }}" = "success" ]; then
+              echo "- worker: \`$APP_HOME/releases/${{ steps.release.outputs.id }}/\` ✅"
+            else
+              echo "- worker: ❌ failed (SSH/rsync). Web deploy is unaffected, but **deploy-worker** will fail until the underlying issue is fixed."
+            fi
+            echo ""
+            echo "Next: approve **migrate**, then **deploy-web** / **deploy-worker** in this run."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  migrate:
+    name: Apply DB migrations
+    needs: build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: prod-db
+    env:
+      RELEASE_ID: ${{ needs.build.outputs.release_id }}
+      DEPLOY_USER: root
+      APP_USER: remarka
+      APP_HOME: /srv/remarka
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_DEPLOY_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.WEB_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Apply migrations from staged release
+        run: |
+          set -euo pipefail
+          ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@${{ secrets.WEB_HOST }}" bash -s <<EOF
+          set -euo pipefail
+          RELEASE_DIR=$APP_HOME/releases/$RELEASE_ID
+          if [ ! -d "\$RELEASE_DIR" ]; then
+            echo "::error::Release dir \$RELEASE_DIR does not exist on host."
+            exit 1
+          fi
+          # Prisma reads DATABASE_URL from .env via its own dotenv parser
+          # (NOT shell). We can't \`source\` web.env directly — values like
+          # postgres URLs contain unquoted '?', '(', '&' that break bash
+          # parsing (systemd's EnvironmentFile parser is lenient where
+          # bash isn't). Drop web.env in next to the prisma schema so its
+          # dotenv finds it. Removed after the run so it doesn't leak.
+          install -m 600 -o $APP_USER -g $APP_USER \
+            $APP_HOME/shared/env/web.env "\$RELEASE_DIR/packages/db/.env"
+          trap "rm -f \$RELEASE_DIR/packages/db/.env" EXIT
+          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && npm run db:migrate:deploy"
+          EOF
+
+      - name: Summary
+        run: |
+          {
+            echo "## Migrations applied"
+            echo ""
+            echo "**Release ID**: \`$RELEASE_ID\`"
+            echo ""
+            echo "Next: approve **deploy-web** / **deploy-worker** to switch traffic."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  deploy-web:
+    name: Deploy web
+    needs: [build, migrate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: prod-web
+      url: https://remarka.app
+    env:
+      RELEASE_ID: ${{ needs.build.outputs.release_id }}
+      DEPLOY_HOST: ${{ secrets.WEB_HOST }}
+      DEPLOY_USER: root
+      APP_USER: remarka
+      APP_HOME: /srv/remarka
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_DEPLOY_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Switch symlink + restart web
+        run: |
+          ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@$DEPLOY_HOST" bash -s <<EOF
+          set -euo pipefail
+          RELEASE_DIR=$APP_HOME/releases/$RELEASE_ID
+          if [ ! -d "\$RELEASE_DIR" ]; then
+            echo "::error::Release dir \$RELEASE_DIR not found. Build first."
+            exit 1
+          fi
+
+          ln -snfT "\$RELEASE_DIR" $APP_HOME/current
+          systemctl restart remarka-web
+
+          # Wait for the new instance to come up.
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            if curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
+              echo "Health check OK on attempt \$i"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::Health check failed after 10 attempts."
+          journalctl -u remarka-web -n 50 --no-pager
+          exit 1
+          EOF
+
+  deploy-worker:
+    name: Deploy worker
+    needs: [build, migrate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment:
+      name: prod-worker
+    env:
+      RELEASE_ID: ${{ needs.build.outputs.release_id }}
+      DEPLOY_HOST: ${{ secrets.WORKER_HOST }}
+      JUMP_HOST: ${{ secrets.WEB_HOST }}
+      DEPLOY_USER: root
+      APP_USER: remarka
+      APP_HOME: /srv/remarka
+    steps:
+      - name: Configure SSH (with ProxyJump via web)
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_DEPLOY_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "$JUMP_HOST" >> ~/.ssh/known_hosts 2>/dev/null
+
+          # NB: ProxyJump on the 'worker' host below must reference the
+          # 'web' alias (NOT $DEPLOY_USER@$JUMP_HOST). See pipeline.build's
+          # SSH config for the full explanation.
+          cat >>~/.ssh/config <<EOF
+          Host web
+            HostName $JUMP_HOST
+            User $DEPLOY_USER
+            IdentityFile ~/.ssh/id_deploy
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile ~/.ssh/known_hosts
+          Host worker
+            HostName $DEPLOY_HOST
+            User $DEPLOY_USER
+            IdentityFile ~/.ssh/id_deploy
+            ProxyJump web
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile ~/.ssh/known_hosts
+          EOF
+
+      - name: Switch symlink + restart worker
+        run: |
+          ssh worker bash -s <<EOF
+          set -euo pipefail
+          RELEASE_DIR=$APP_HOME/releases/$RELEASE_ID
+          if [ ! -d "\$RELEASE_DIR" ]; then
+            echo "::error::Release dir \$RELEASE_DIR not found on worker. Build first."
+            exit 1
+          fi
+
+          ln -snfT "\$RELEASE_DIR" $APP_HOME/current
+          systemctl restart remarka-worker
+
+          # systemd reports 'activating' for several seconds after restart
+          # even when the process is healthy. Retry instead of a flat sleep.
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            STATE=\$(systemctl is-active remarka-worker || true)
+            if [ "\$STATE" = "active" ]; then
+              echo "Worker active on attempt \$i"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::Worker did not reach 'active' (last state: \$STATE)."
+          journalctl -u remarka-worker -n 80 --no-pager
+          exit 1
+          EOF
