@@ -36,13 +36,10 @@ export function SiteFooter() {
 
         <div className="footer-col">
           <div className="footer-title">Контакты</div>
-          <div className="footer-line">ИП Иванов И. И.</div>
-          <div className="footer-line">ОГРНИП 000000000000000</div>
-          <div className="footer-line">
-            Адрес для корреспонденции:
-            <br />
-            г. Москва, а/я 000
-          </div>
+          {/* TODO: при запуске заменить заглушки на реальные ФИО и ИНН. */}
+          <div className="footer-line">Самозанятый «Ф.И.О.»</div>
+          <div className="footer-line">ИНН «000000000000»</div>
+          <div className="footer-line">Плательщик НПД</div>
           <a href="mailto:hello@remarka.app">hello@remarka.app</a>
           <a href="mailto:abuse@remarka.app">abuse@remarka.app — жалобы</a>
         </div>
