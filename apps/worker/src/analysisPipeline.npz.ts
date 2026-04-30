@@ -2896,7 +2896,7 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
       },
     });
 
-    await tx.bookScene.deleteMany({
+    await tx.bookAnalysisScene.deleteMany({
       where: {
         bookId: book.id,
       },
@@ -3383,11 +3383,11 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
       let persistedScenesForFragments: SceneEmbeddingSourceRow[] = [];
 
       if (scenesToCreate.length) {
-        await prisma.bookScene.createMany({
+        await prisma.bookAnalysisScene.createMany({
           data: scenesToCreate,
         });
 
-        const persistedScenes = await prisma.bookScene.findMany({
+        const persistedScenes = await prisma.bookAnalysisScene.findMany({
           where: {
             bookId: book.id,
             chapterId: chapter.id,
@@ -3777,7 +3777,7 @@ export async function markBookAnalysisFailed(params: {
   });
 
   await prisma.$transaction(async (tx: any) => {
-    await tx.bookScene.deleteMany({
+    await tx.bookAnalysisScene.deleteMany({
       where: {
         bookId: params.bookId,
       },
