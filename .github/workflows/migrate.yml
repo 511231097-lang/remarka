@@ -73,11 +73,16 @@ jobs:
             echo "Release dir \$RELEASE_DIR does not exist on host."
             exit 1
           fi
-          # Prisma migrate deploy reads DATABASE_URL from env. Source the
-          # same env file systemd uses for remarka-web at runtime.
-          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && \
-            set -a && source $APP_HOME/shared/env/web.env && set +a && \
-            npm run db:migrate:deploy"
+          # Prisma reads DATABASE_URL from .env via its own dotenv parser
+          # (NOT shell). We can't \`source\` web.env directly — values like
+          # postgres URLs contain unquoted '?', '(', '&' that break bash
+          # parsing (systemd's EnvironmentFile parser is lenient where
+          # bash isn't). Drop web.env in next to the prisma schema so its
+          # dotenv finds it. Removed after the run so it doesn't leak.
+          install -m 600 -o $APP_USER -g $APP_USER \
+            $APP_HOME/shared/env/web.env "\$RELEASE_DIR/packages/db/.env"
+          trap "rm -f \$RELEASE_DIR/packages/db/.env" EXIT
+          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && npm run db:migrate:deploy"
           EOF
 
       - name: Summary
