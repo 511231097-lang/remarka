@@ -2,34 +2,68 @@ import { prisma } from "@remarka/db";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
 
-// Personal data export — honours the right-to-portability declared in
-// the Privacy policy (152-FZ art. 14 + the GDPR-style data-takeout norm).
+// Personal data export — middle ground between the strict 152-FZ
+// "personal data only" reading and a Google-Takeout-style dump of
+// everything-the-user-touched.
 //
-// Returns a single JSON file with the user's profile, books, library
-// entries, and chat history. Does NOT include:
-//   - raw uploaded book files (large blobs, available on request via
-//     privacy@ email — privacy п.10 makes this fallback explicit)
-//   - auth internals (Account / Session / VerificationToken — nothing
-//     user-meaningful, only OAuth refresh tokens etc.)
-//   - per-turn LLM accounting (BookChatTurnMetric, BookChatToolRun) —
-//     internal billing/observability data, not "the user's data"
+// Includes:
+//   - profile: id, name, email, avatarUrl, role + source attribution
+//   - books owned: light metadata (title/author/state/timestamps).
+//     No showcase JSON blob, no mimeType / sizeBytes — those are
+//     internal storage details.
+//   - library entries (just bookId + addedAt)
+//   - chats: grouped by bookId, then threads, then human-readable
+//     messages. Only role + content + createdAt — no thread.id,
+//     no compactedHistory, no citationsJson / toolRunsJson /
+//     metricsJson (those are internal optimization / observability
+//     data and would be unreadable to the user anyway).
+//   - legalContext: operator, purposes, legal grounds, named
+//     subprocessors, cross-border transfer disclosure, retention,
+//     rights — required by 152-FZ ст. 14 to accompany any data-
+//     subject access request.
+//   - notIncluded: structured list of what is NOT in the export and
+//     where to get each thing (UI / privacy@). Trims routine email.
 //
-// Schema versioning: bumped if the export shape changes so downstream
-// tooling (or a future re-import path) can branch on it.
+// Excluded by design:
+//   - Raw uploaded book files (large blobs, on request via privacy@)
+//   - Auth internals (Account / Session / VerificationToken)
+//   - Per-turn LLM accounting (BookChatTurnMetric / BookChatToolRun)
+//   - Technical logs (IP, user-agent) — server journal, retained on
+//     the host, exported only on request
 
-const EXPORT_SCHEMA_VERSION = 1;
+const EXPORT_SCHEMA_VERSION = 2;
 
 type ExportPayload = {
   exportedAt: string;
   schemaVersion: number;
-  notes: string[];
+  legalContext: {
+    operator: {
+      type: string;
+      fullName: string;
+      inn: string;
+      taxRegime: string;
+      contactEmail: string;
+      privacyContact: string;
+    };
+    purposes: string[];
+    legalGrounds: string[];
+    subprocessors: Array<{
+      name: string;
+      country: string;
+      role: string;
+    }>;
+    crossBorderTransfer: string;
+    retention: string;
+    rights: string[];
+    privacyPolicyUrl: string;
+  };
   user: {
     id: string;
     name: string | null;
     email: string | null;
-    image: string | null;
+    avatarUrl: string | null;
     role: string;
-    createdAt: string;
+    source: string;
   } | null;
   books: Array<{
     id: string;
@@ -38,32 +72,30 @@ type ExportPayload = {
     isPublic: boolean;
     analysisState: string;
     chapterCount: number;
-    fileName: string;
-    mimeType: string;
-    sizeBytes: number;
-    createdAt: string;
     summary: string | null;
-    showcase: unknown;
+    uploadedAt: string;
   }>;
-  libraryEntries: Array<{
+  library: Array<{
     bookId: string;
     addedAt: string;
   }>;
   chats: Array<{
     bookId: string;
     threads: Array<{
-      id: string;
       title: string;
       createdAt: string;
       updatedAt: string;
-      compactedHistory: string | null;
       messages: Array<{
-        id: string;
         role: string;
         content: string;
         createdAt: string;
       }>;
     }>;
+  }>;
+  notIncluded: Array<{
+    item: string;
+    reason: string;
+    howToGet: string;
   }>;
 };
 
@@ -87,13 +119,15 @@ export async function GET() {
     prisma.book.findMany({
       where: { ownerUserId: authUser.id },
       orderBy: { createdAt: "asc" },
-      include: {
-        summaryArtifacts: {
-          where: { kind: "book_brief" },
-          select: { summary: true, bodyMarkdown: true, metadataJson: true, updatedAt: true },
-          orderBy: { updatedAt: "desc" },
-          take: 1,
-        },
+      select: {
+        id: true,
+        title: true,
+        author: true,
+        isPublic: true,
+        analysisState: true,
+        chapterCount: true,
+        summary: true,
+        createdAt: true,
       },
     }),
     prisma.bookLike.findMany({
@@ -104,11 +138,14 @@ export async function GET() {
     prisma.bookChatThread.findMany({
       where: { ownerUserId: authUser.id },
       orderBy: [{ bookId: "asc" }, { createdAt: "asc" }],
-      include: {
+      select: {
+        bookId: true,
+        title: true,
+        createdAt: true,
+        updatedAt: true,
         messages: {
           orderBy: { createdAt: "asc" },
           select: {
-            id: true,
             role: true,
             content: true,
             createdAt: true,
@@ -118,19 +155,20 @@ export async function GET() {
     }),
   ]);
 
-  // User row should always exist (we just resolved auth from it). The
-  // null branch is just a type-safety belt.
   const userPayload = user
     ? {
-        ...user,
-        // createdAt isn't stored on User in this schema (NextAuth default
-        // doesn't add it), so emit the export time instead — best effort.
-        createdAt: new Date().toISOString(),
+        id: user.id,
+        name: user.name,
+        email: user.email,
+        avatarUrl: user.image,
+        role: user.role,
+        source:
+          "Получено от Google OAuth при первом входе. Сервис не запрашивает у вас никаких ПДн напрямую — только идентификационные поля, переданные Google.",
       }
     : null;
 
-  // Group threads by bookId for a more readable export (one entry per
-  // book containing all the conversations the user had with it).
+  // Group threads by bookId for readability — one entry per book with
+  // every conversation the user had about it underneath.
   const chatsByBook = new Map<string, ExportPayload["chats"][number]>();
   for (const thread of threads) {
     const entry = chatsByBook.get(thread.bookId) ?? {
@@ -138,13 +176,10 @@ export async function GET() {
       threads: [],
     };
     entry.threads.push({
-      id: thread.id,
       title: thread.title,
       createdAt: thread.createdAt.toISOString(),
       updatedAt: thread.updatedAt.toISOString(),
-      compactedHistory: thread.compactedHistory ?? null,
       messages: thread.messages.map((message) => ({
-        id: message.id,
         role: message.role,
         content: message.content,
         createdAt: message.createdAt.toISOString(),
@@ -156,12 +191,57 @@ export async function GET() {
   const payload: ExportPayload = {
     exportedAt: new Date().toISOString(),
     schemaVersion: EXPORT_SCHEMA_VERSION,
-    notes: [
-      "Этот файл — выгрузка ваших данных из сервиса ремарка по правилам политики обработки ПДн (п. 10).",
-      "Сюда НЕ входят: исходные загруженные файлы книг (выгружаются по запросу на privacy@remarka.app — это слишком тяжёлые объекты для веб-выгрузки), служебные токены авторизации, внутренние метрики LLM.",
-      "Поле books[].showcase — это публичный AI-разбор книги (если он был сгенерирован), он не уникален для вас как пользователя.",
-      "Поле chats[].threads[].compactedHistory — текст сжатого summary вашей более ранней истории чата (используется внутри для экономии токенов).",
-    ],
+    legalContext: {
+      operator: {
+        type: "Самозанятый (плательщик НПД)",
+        fullName: "«Ф.И.О.»",
+        inn: "«000000000000»",
+        taxRegime: "Налог на профессиональный доход (НПД)",
+        contactEmail: "hello@remarka.app",
+        privacyContact: "privacy@remarka.app",
+      },
+      purposes: [
+        "Создание и ведение учётной записи",
+        "Оказание услуги анализа литературных текстов",
+        "Ведение истории диалогов с ассистентом",
+        "Защита от злоупотреблений и обеспечение работоспособности сервиса",
+        "Исполнение требований закона",
+      ],
+      legalGrounds: [
+        "Исполнение договора (Пользовательского соглашения), заключаемого при регистрации",
+        "Согласие субъекта на трансграничную передачу (для авторизации Google и работы ассистента)",
+        "Исполнение требований закона при ответах на запросы государственных органов",
+      ],
+      subprocessors: [
+        {
+          name: "Google LLC",
+          country: "США",
+          role: "Авторизация (OAuth) и обработка запросов ассистента (Vertex AI / Gemini)",
+        },
+        {
+          name: "ООО НКО «ЮMoney»",
+          country: "Российская Федерация",
+          role: "Приём платежей через сервис ЮKassa (на момент выгрузки может быть ещё не активирован)",
+        },
+        {
+          name: "Поставщик хостинга и инфраструктурных услуг",
+          country: "Российская Федерация",
+          role: "Размещение базы данных и файлового хранилища на территории РФ",
+        },
+      ],
+      crossBorderTransfer:
+        "При работе ассистента и авторизации часть идентификационных данных и фрагментов запросов передаётся в США (Google LLC). США не входит в перечень государств с адекватной защитой ПДн (ст. 12 ФЗ-152); передача осуществляется с вашего явного согласия, данного при регистрации.",
+      retention:
+        "Учётная запись и связанные данные хранятся пока существует учётная запись и до 6 месяцев после её удаления (для защиты прав). Логи авторизации — до 1 года. Платёжные документы — по налоговым срокам.",
+      rights: [
+        "Право доступа: вы скачиваете эту выгрузку прямо из Профиля",
+        "Право на исправление: имя/e-mail/аватар синхронизируются с Google-аккаунтом и обновляются автоматически при следующем входе",
+        "Право на удаление: кнопка «Удалить аккаунт» в Профиле; удаление необратимо",
+        "Право на ограничение обработки и отзыв согласия: запрос на privacy@remarka.app",
+        "Право на жалобу в Роскомнадзор",
+      ],
+      privacyPolicyUrl: "https://remarka.app/legal/privacy",
+    },
     user: userPayload,
     books: ownedBooks.map((book) => ({
       id: book.id,
@@ -170,18 +250,38 @@ export async function GET() {
       isPublic: book.isPublic,
       analysisState: book.analysisState,
       chapterCount: book.chapterCount,
-      fileName: book.fileName,
-      mimeType: book.mimeType,
-      sizeBytes: book.sizeBytes,
-      createdAt: book.createdAt.toISOString(),
       summary: book.summary,
-      showcase: book.summaryArtifacts[0] ?? null,
+      uploadedAt: book.createdAt.toISOString(),
     })),
-    libraryEntries: libraryEntries.map((entry) => ({
+    library: libraryEntries.map((entry) => ({
       bookId: entry.bookId,
       addedAt: entry.createdAt.toISOString(),
     })),
     chats: Array.from(chatsByBook.values()),
+    notIncluded: [
+      {
+        item: "Исходные файлы загруженных книг (EPUB / FB2 / PDF)",
+        reason: "Это произведения, а не ПДн, и они слишком тяжёлые для веб-выгрузки.",
+        howToGet:
+          "Запрос на privacy@remarka.app с указанием bookId — пришлём presigned-ссылки на скачивание.",
+      },
+      {
+        item: "Полный AI-разбор книг (showcase: герои, темы, ключевые события, цитаты)",
+        reason: "Это публичный артефакт книги, не уникальный для вас как пользователя.",
+        howToGet: "Откройте книгу в /library — разбор отображается на её странице.",
+      },
+      {
+        item: "Платёжные квитанции / чеки НПД",
+        reason: "До запуска платных тарифов их нет.",
+        howToGet:
+          "После оплаты ссылка на чек НПД приходит на указанный e-mail; копия — в личном кабинете «Мой налог» ФНС.",
+      },
+      {
+        item: "Технические логи (IP, user-agent, refresh-токены)",
+        reason: "Хранятся в журнале сервера до 1 года, используются только для безопасности.",
+        howToGet: "Запрос на privacy@remarka.app — выгрузим срез по вашему e-mail.",
+      },
+    ],
   };
 
   const body = JSON.stringify(payload, null, 2);
