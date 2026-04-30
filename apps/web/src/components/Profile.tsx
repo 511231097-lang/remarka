@@ -2,9 +2,14 @@
 
 import Link from "next/link";
 import { signOut } from "next-auth/react";
-import { Sparkles } from "lucide-react";
+import { Sparkles, X, AlertTriangle } from "lucide-react";
+import { useEffect, useState } from "react";
 import { currentUser } from "@/lib/mockData";
 import { useTheme } from "@/lib/ThemeContext";
+
+// Confirmation token must match the one enforced server-side in
+// apps/web/src/app/api/profile/account/route.ts. Keep them in sync.
+const DELETE_CONFIRMATION = "УДАЛИТЬ";
 
 interface ProfileProps {
   authUser: {
@@ -21,6 +26,7 @@ export function Profile({ authUser }: ProfileProps) {
   const plan = currentUser.plan.type === "plus" ? "plus" : "free";
   const isPlus = plan === "plus";
   const { theme, setTheme } = useTheme();
+  const [deleteOpen, setDeleteOpen] = useState(false);
 
   return (
     <div className="screen-fade">
@@ -214,8 +220,7 @@ export function Profile({ authUser }: ProfileProps) {
             </button>
             <button
               className="btn btn-plain"
-              disabled
-              title="Функция готовится"
+              onClick={() => setDeleteOpen(true)}
               style={{ color: "var(--mark)" }}
             >
               Удалить аккаунт
@@ -230,9 +235,170 @@ export function Profile({ authUser }: ProfileProps) {
               padding: "14px 20px",
             }}
           >
-            Удаление аккаунта пока недоступно в интерфейсе — функция готовится.
+            При удалении аккаунта стираются все ваши книги, история чатов, результаты
+            анализа и настройки. Восстановить эти данные после удаления невозможно.
           </div>
         </Section>
+      </div>
+      {deleteOpen && <DeleteAccountDialog onClose={() => setDeleteOpen(false)} />}
+    </div>
+  );
+}
+
+function DeleteAccountDialog({ onClose }: { onClose: () => void }) {
+  const [confirmation, setConfirmation] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const canDelete =
+    confirmation.trim().toUpperCase() === DELETE_CONFIRMATION && !submitting;
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !submitting) onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = "";
+    };
+  }, [onClose, submitting]);
+
+  const handleDelete = async () => {
+    if (!canDelete) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      const res = await fetch("/api/profile/account", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: DELETE_CONFIRMATION }),
+      });
+      if (!res.ok && res.status !== 204) {
+        let message = `Ошибка ${res.status}`;
+        try {
+          const data = (await res.json()) as { error?: string };
+          if (data?.error) message = data.error;
+        } catch {
+          // Ignore — keep the generic message.
+        }
+        throw new Error(message);
+      }
+      // Drop the next-auth session and bounce to the landing page. We
+      // pick / over /signin because the account no longer exists, and
+      // /signin would be the immediate next step anyway from /.
+      await signOut({ callbackUrl: "/" });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Не удалось удалить аккаунт");
+      setSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="overlay" onClick={() => !submitting && onClose()}>
+      <div
+        className="dialog"
+        style={{ maxWidth: 480 }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            marginBottom: 18,
+          }}
+        >
+          <div>
+            <div
+              className="mono eyebrow"
+              style={{ color: "var(--mark)", display: "flex", alignItems: "center", gap: 6 }}
+            >
+              <AlertTriangle size={12} /> Необратимое действие
+            </div>
+            <h2 style={{ fontSize: 24, marginTop: 6 }}>Удалить аккаунт</h2>
+          </div>
+          <button
+            className="btn-plain"
+            style={{ padding: 6 }}
+            onClick={() => !submitting && onClose()}
+            aria-label="Закрыть"
+            disabled={submitting}
+          >
+            <X size={16} />
+          </button>
+        </div>
+
+        <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--ink-soft)" }}>
+          Будут безвозвратно удалены: ваша учётная запись, все загруженные книги,
+          история чатов, результаты анализа и настройки. Файлы из активных хранилищ
+          стираются сразу; из резервных копий — в течение 60 дней по графику.
+        </p>
+        <p style={{ fontSize: 14, lineHeight: 1.6, color: "var(--ink-soft)", marginTop: 10 }}>
+          Чтобы подтвердить, введите слово{" "}
+          <span className="mono" style={{ color: "var(--mark)" }}>
+            {DELETE_CONFIRMATION}
+          </span>{" "}
+          в поле ниже.
+        </p>
+
+        <input
+          type="text"
+          value={confirmation}
+          onChange={(event) => setConfirmation(event.target.value)}
+          placeholder={DELETE_CONFIRMATION}
+          autoFocus
+          disabled={submitting}
+          style={{
+            background: "var(--paper-2)",
+            border: "1px solid var(--rule)",
+            borderRadius: "var(--r)",
+            color: "var(--ink)",
+            fontFamily: "var(--font-mono)",
+            fontSize: 14,
+            marginTop: 14,
+            padding: "10px 14px",
+            width: "100%",
+          }}
+        />
+
+        {error && (
+          <div
+            style={{
+              alignItems: "center",
+              borderColor: "var(--mark)",
+              color: "var(--mark)",
+              display: "flex",
+              fontSize: 13,
+              gap: 8,
+              marginTop: 12,
+            }}
+          >
+            <AlertTriangle size={14} />
+            {error}
+          </div>
+        )}
+
+        <div className="row" style={{ gap: 10, justifyContent: "flex-end", marginTop: 22 }}>
+          <button
+            type="button"
+            className="btn btn-plain btn-sm"
+            onClick={onClose}
+            disabled={submitting}
+          >
+            Отмена
+          </button>
+          <button
+            type="button"
+            className="btn btn-mark btn-sm"
+            onClick={() => void handleDelete()}
+            disabled={!canDelete}
+            style={{ opacity: canDelete ? 1 : 0.5 }}
+          >
+            {submitting ? "Удаление…" : "Удалить безвозвратно"}
+          </button>
+        </div>
       </div>
     </div>
   );
