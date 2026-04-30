@@ -18,7 +18,6 @@ import type {
   BookLibraryStateDTO,
   BookShowcaseDTO,
   BooksListResponseDTO,
-  LiterarySectionKeyDTO,
 } from "@/lib/books";
 
 export interface ListBooksParams {

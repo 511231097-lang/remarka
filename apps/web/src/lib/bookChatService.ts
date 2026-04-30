@@ -231,8 +231,6 @@ const AUTO_CONTEXT_MARGIN_PARAGRAPHS = 6;
 const AUTO_CONTEXT_MAX_SLICE_PARAGRAPHS = 48;
 const AUTO_CONTEXT_MAX_SLICES_PER_SEARCH = 2;
 const AUTO_CONTEXT_MAX_CAPTURED_SLICES = 8;
-const COMPILED_EVIDENCE_TOOL_CONFIG_KEY = "compiled-evidence-v1";
-const COMPILED_EVIDENCE_SELECTED_TOOLS = ["preplan", "search_evidence", "answer_with_evidence"] as const;
 const EVIDENCE_GROUP_MAX_PARAGRAPHS = 4;
 const EVIDENCE_GROUP_EXPAND_BEFORE = 1;
 const EVIDENCE_GROUP_EXPAND_AFTER = 1;
@@ -1397,10 +1395,7 @@ function buildChatMetrics(params: {
     embeddingModel: String(params.embeddingModel || "").trim(),
     pricingVersion: resolvePricingVersion(),
     selectedTools,
-    toolConfigKey:
-      selectedTools.join("|") === COMPILED_EVIDENCE_SELECTED_TOOLS.join("|")
-        ? COMPILED_EVIDENCE_TOOL_CONFIG_KEY
-        : buildRuntimeToolConfigKey(selectedTools),
+    toolConfigKey: buildRuntimeToolConfigKey(selectedTools),
     promptVariant: BOOK_CHAT_PROMPT_VARIANT,
     systemPromptVersion: BOOK_CHAT_SYSTEM_PROMPT_VERSION,
     modelInputTokens: Math.round(usage.inputTokens),
