@@ -172,6 +172,22 @@ jobs:
 
           ln -snfT "\$RELEASE_DIR" $APP_HOME/current
           systemctl restart remarka-worker
-          sleep 3
-          systemctl is-active remarka-worker
+
+          # Wait up to ~20s for the unit to leave 'activating' and reach
+          # 'active'. systemd reports 'activating' immediately after
+          # restart even when the process is healthy, so a flat sleep+check
+          # races. If still not active after the loop, dump the journal
+          # and bail (deploy aborts, old release stays symlinked).
+          for i in 1 2 3 4 5 6 7 8 9 10; do
+            STATE=\$(systemctl is-active remarka-worker || true)
+            if [ "\$STATE" = "active" ]; then
+              echo "Worker active on attempt \$i"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "::error::Worker did not reach 'active' (last state: \$STATE)."
+          journalctl -u remarka-worker -n 80 --no-pager
+          exit 1
           EOF
