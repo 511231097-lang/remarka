@@ -3,9 +3,6 @@ import type {
   BookAnalysisState,
   BookChapter,
   BookLike,
-  BookQuoteMentionKind,
-  BookQuoteTag,
-  BookQuoteType,
   BookSummaryArtifact,
   User,
 } from "@prisma/client";
@@ -28,9 +25,6 @@ export interface BookCardDTO {
   owner: BookOwnerDTO;
   status: "ready";
   chaptersCount: number;
-  charactersCount: number;
-  themesCount: number;
-  locationsCount: number;
   libraryUsersCount: number;
   isInLibrary: boolean;
   canAddToLibrary: boolean;
@@ -86,9 +80,33 @@ export interface BookChapterContentDTO {
   totalChapters: number;
 }
 
-export type BookQuoteTypeDTO = BookQuoteType;
-export type BookQuoteTagDTO = BookQuoteTag;
-export type BookQuoteMentionKindDTO = BookQuoteMentionKind;
+// String-union DTOs (decoupled from Prisma enums after the BookQuote*
+// schema purge). Values match what bookChatService and ChatMessageMarkdown
+// expect.
+export type BookQuoteTypeDTO =
+  | "dialogue"
+  | "monologue"
+  | "narration"
+  | "description"
+  | "reflection"
+  | "action";
+export type BookQuoteTagDTO =
+  | "conflict"
+  | "relationship"
+  | "identity"
+  | "morality"
+  | "power"
+  | "freedom"
+  | "fear"
+  | "guilt"
+  | "hope"
+  | "fate"
+  | "society"
+  | "violence"
+  | "love"
+  | "death"
+  | "faith";
+export type BookQuoteMentionKindDTO = "character" | "theme" | "location";
 
 export interface BookQuoteMentionDTO {
   kind: BookQuoteMentionKindDTO;
@@ -449,9 +467,6 @@ type BookWithOwner = Book & {
 type BookCardProjection = BookWithOwner & {
   _count: {
     likes: number;
-    bookCharacters: number;
-    bookThemes: number;
-    bookLocations: number;
   };
   likes: Pick<BookLike, "bookId">[];
 };
@@ -491,9 +506,6 @@ export function toBookCardDTO(book: BookCardProjection, viewerUserId?: string | 
     owner: toBookOwnerDTO(book.owner),
     status: "ready",
     chaptersCount: book.chapterCount,
-    charactersCount: book._count.bookCharacters,
-    themesCount: book._count.bookThemes,
-    locationsCount: book._count.bookLocations,
     libraryUsersCount: book._count.likes,
     isInLibrary,
     canAddToLibrary,

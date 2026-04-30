@@ -33,4 +33,3 @@ export {
   upsertBookChatTurnMetric,
   replaceBookChatToolRuns,
 } from "./bookMetricsStore";
-export { computeBookEvalSnapshot, type BookEvalSnapshot, type BookEvalHeadEntitySample } from "./bookEvalMetrics";
