@@ -44,14 +44,21 @@ export function UploadFlow() {
   const [selectedFile, setSelectedFile] = useState<SelectedFileMeta | null>(null);
   const [createdBookId, setCreatedBookId] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<BookAnalysisStatusDTO | null>(null);
-  const [consents, setConsents] = useState({ rights: false, license: false, process: false });
+  // Один объединённый чекбокс: законное основание + принятие условий загрузки.
+  // Юридический разбор: rights warranty (заверение о законности) и license
+  // grant (предоставление сервису права хранить и анализировать) разной природы,
+  // но в клик-врапе российская и зарубежная практика их регулярно объединяют —
+  // важна доказуемость явного волеизъявления, а не количество галок.
+  // Обещания сервиса ("не публикуется, не для обучения, видна только тебе")
+  // живут в самом документе /legal/upload — пользователь соглашается с ними
+  // принятием условий по ссылке.
+  const [uploadConsent, setUploadConsent] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
   const inputRef = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
 
-  const allConsents = consents.rights && consents.license && consents.process;
-  const canStart = Boolean(selectedFile) && allConsents;
+  const canStart = Boolean(selectedFile) && uploadConsent;
 
   useEffect(() => {
     if (step !== "processing" || !createdBookId) return;
@@ -256,27 +263,19 @@ export function UploadFlow() {
 
               <div className="stack-lg" style={{ marginTop: 28 }}>
                 <ConsentRow
-                  checked={consents.rights}
-                  onChange={(rights) => setConsents((current) => ({ ...current, rights }))}
-                  label="Заверение о правах"
-                  sub="Я заверяю, что у меня есть достаточные права на загрузку этого файла: это моя рукопись, законно приобретённый экземпляр, произведение в общественном достоянии или иное законное основание. Ответственность за достоверность заверения я беру на себя."
-                />
-                <ConsentRow
-                  checked={consents.license}
-                  onChange={(license) => setConsents((current) => ({ ...current, license }))}
+                  checked={uploadConsent}
+                  onChange={setUploadConsent}
                   label={
                     <>
-                      Принимаю{" "}
-                      <Link className="lnk" href="/legal/upload">Условия загрузки произведения</Link>
+                      Я подтверждаю, что у меня есть законное основание загрузить
+                      этот файл и использовать его через сервис, и принимаю{" "}
+                      <Link className="lnk" href="/legal/upload">
+                        Условия загрузки произведения
+                      </Link>
+                      .
                     </>
                   }
-                  sub="Предоставляю Ремарке ограниченную неисключительную лицензию на хранение, техническое воспроизведение, индексирование и анализ произведения — только для выдачи результата мне. Лицензия не даёт права публиковать или распространять файл."
-                />
-                <ConsentRow
-                  checked={consents.process}
-                  onChange={(process) => setConsents((current) => ({ ...current, process }))}
-                  label="Согласие на обработку и анализ"
-                  sub="Содержимое файла обрабатывается автоматически: извлечение текста, построение векторного индекса, формирование разбора. Книга не публикуется, не используется для обучения моделей и не попадает в общий каталог — она видна только мне."
+                  sub="Законное основание — это законно приобретённый экземпляр, ваша рукопись, произведение в общественном достоянии или иное законное основание. Файл хранится приватно: не публикуется, не передаётся другим пользователям и не используется для обучения моделей. Подробности — в Условиях загрузки."
                 />
               </div>
 
