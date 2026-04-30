@@ -147,7 +147,6 @@ model Book {
   likes                      BookLike[]
   paragraphs                 BookParagraph[]
   sentences                  BookSentence[]
-  scenes                     BookScene[]
   summaryArtifacts           BookSummaryArtifact[]
   contentVersionsV2          BookContentVersion[]
   analysisRunsV2             BookAnalysisRun[]
@@ -180,7 +179,6 @@ model BookChapter {
   book                       Book                            @relation(fields: [bookId], references: [id], onDelete: Cascade)
   paragraphs                 BookParagraph[]
   sentences                  BookSentence[]
-  scenes                     BookScene[]
   analysisScenes             BookAnalysisScene[]
   sceneEmbeddings            BookSceneEmbedding[]
   paragraphEmbeddings        BookParagraphEmbedding[]
@@ -327,7 +325,6 @@ model BookParagraph {
   chapterId         String
   chapterOrderIndex Int      @default(0)
   paragraphIndex    Int      @default(0)
-  sceneId           String?
   orderIndex        Int
   orderInChapter    Int
   startChar         Int
@@ -339,7 +336,6 @@ model BookParagraph {
 
   book       Book                     @relation(fields: [bookId], references: [id], onDelete: Cascade)
   chapter    BookChapter              @relation(fields: [chapterId], references: [id], onDelete: Cascade)
-  scene      BookScene?               @relation(fields: [sceneId], references: [id], onDelete: SetNull)
   sentences  BookSentence[]
   embeddings BookParagraphEmbedding[]
 
@@ -347,7 +343,6 @@ model BookParagraph {
   @@unique([bookId, chapterId, paragraphIndex])
   @@index([chapterId, orderInChapter])
   @@index([chapterId, paragraphIndex])
-  @@index([sceneId, orderIndex])
 }
 
 model BookEvidenceFragment {
@@ -409,7 +404,6 @@ model BookSentence {
   bookId         String
   chapterId      String
   paragraphId    String
-  sceneId        String?
   orderIndex     Int
   orderInChapter Int
   orderInScene   Int
@@ -422,39 +416,9 @@ model BookSentence {
   book      Book          @relation(fields: [bookId], references: [id], onDelete: Cascade)
   chapter   BookChapter   @relation(fields: [chapterId], references: [id], onDelete: Cascade)
   paragraph BookParagraph @relation(fields: [paragraphId], references: [id], onDelete: Cascade)
-  scene     BookScene?    @relation(fields: [sceneId], references: [id], onDelete: SetNull)
 
   @@unique([bookId, orderIndex])
   @@index([paragraphId, orderIndex])
-  @@index([sceneId, orderIndex])
-}
-
-model BookScene {
-  id                  String                      @id @default(cuid())
-  bookId              String
-  chapterId           String
-  orderIndex          Int
-  title               String?
-  summary             String?                     @db.Text
-  startParagraphOrder Int
-  endParagraphOrder   Int
-  startChar           Int
-  endChar             Int
-  text                String                      @db.Text
-  embedding           Unsupported("vector(768)")?
-  embeddingModel      String?
-  metadataJson        Json?
-  createdAt           DateTime                    @default(now())
-  updatedAt           DateTime                    @updatedAt
-
-  book             Book                  @relation(fields: [bookId], references: [id], onDelete: Cascade)
-  chapter          BookChapter           @relation(fields: [chapterId], references: [id], onDelete: Cascade)
-  paragraphs       BookParagraph[]
-  sentences        BookSentence[]
-  summaryArtifacts BookSummaryArtifact[]
-
-  @@unique([bookId, orderIndex])
-  @@index([chapterId, orderIndex])
 }
 
 model BookSummaryArtifact {
@@ -466,7 +430,6 @@ model BookSummaryArtifact {
   summary      String                  @db.Text
   bodyMarkdown String?                 @db.Text
   chapterId    String?
-  sceneId      String?
   metadataJson Json?
   confidence   Float                   @default(0.7)
   createdAt    DateTime                @default(now())
@@ -474,11 +437,9 @@ model BookSummaryArtifact {
 
   book    Book         @relation(fields: [bookId], references: [id], onDelete: Cascade)
   chapter BookChapter? @relation(fields: [chapterId], references: [id], onDelete: SetNull)
-  scene   BookScene?   @relation(fields: [sceneId], references: [id], onDelete: SetNull)
 
   @@unique([bookId, kind, key])
   @@index([chapterId])
-  @@index([sceneId])
 }
 
 model BookAnalyzerTask {

@@ -2246,7 +2246,7 @@ async function getLexicalCorpusCache(params: {
           cacheTtlMs: BOOK_SEARCH_CACHE_TTL_MS,
           cacheMaxBooks: BOOK_SEARCH_CACHE_MAX_BOOKS,
         }),
-        prisma.bookScene.findMany({
+        prisma.bookAnalysisScene.findMany({
           where: {
             bookId: params.bookId,
           },
@@ -3507,7 +3507,7 @@ async function searchScenesTool(params: {
   }
 
   if (unresolvedSceneRefs.size) {
-    const extraScenes = await prisma.bookScene.findMany({
+    const extraScenes = await prisma.bookAnalysisScene.findMany({
       where: {
         bookId: params.bookId,
         OR: Array.from(unresolvedSceneRefs.values()).map((ref) => ({
@@ -3662,7 +3662,7 @@ async function getSceneContextTool(params: {
 }): Promise<SceneRow[]> {
   if (!params.primarySceneIds.length) return [];
 
-  const primaryRows = await prisma.bookScene.findMany({
+  const primaryRows = await prisma.bookAnalysisScene.findMany({
     where: {
       bookId: params.bookId,
       id: {
@@ -3679,7 +3679,7 @@ async function getSceneContextTool(params: {
   if (!primaryRows.length) return [];
 
   const chapterIds = Array.from(new Set(primaryRows.map((item: any) => item.chapterId)));
-  const chapterScenes = await prisma.bookScene.findMany({
+  const chapterScenes = await prisma.bookAnalysisScene.findMany({
     where: {
       bookId: params.bookId,
       chapterId: {

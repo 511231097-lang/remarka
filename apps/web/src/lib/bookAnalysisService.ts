@@ -460,7 +460,7 @@ export async function requestBookAnalysis(bookId: string, source: AnalysisTrigge
       throw new BookAnalysisRequestError("ANALYSIS_ALREADY_RUNNING", 409, "Analysis is already queued or running");
     }
 
-    await tx.bookScene.deleteMany({
+    await tx.bookAnalysisScene.deleteMany({
       where: {
         bookId,
       },

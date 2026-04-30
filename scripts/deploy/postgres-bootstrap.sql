@@ -65,22 +65,7 @@ CREATE INDEX IF NOT EXISTS book_evidence_fragment_embedding_vector_hnsw
     USING hnsw ("vector" vector_cosine_ops)
     WITH (m = 16, ef_construction = 64);
 
--- BookScene also has a `vector(768)` embedding column (without an _Embedding
--- side table). Index it too so legacy retrieval paths stay fast.
-CREATE INDEX IF NOT EXISTS book_scene_inline_embedding_hnsw
-    ON "BookScene"
-    USING hnsw ("embedding" vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
-
--- BookChunk has a non-nullable embedding column too.
-CREATE INDEX IF NOT EXISTS book_chunk_embedding_hnsw
-    ON "BookChunk"
-    USING hnsw ("embedding" vector_cosine_ops)
-    WITH (m = 16, ef_construction = 64);
-
 -- Refresh planner stats after creating indexes so query plans pick them up.
 ANALYZE "BookParagraphEmbedding";
 ANALYZE "BookSceneEmbedding";
 ANALYZE "BookEvidenceFragmentEmbedding";
-ANALYZE "BookScene";
-ANALYZE "BookChunk";
