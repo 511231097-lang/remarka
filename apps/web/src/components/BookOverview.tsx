@@ -2,12 +2,12 @@
 
 import Link from "next/link";
 import { motion } from "motion/react";
-import { Check, MessageCircle, Plus } from "lucide-react";
+import { Check, MessageCircle, Plus, X } from "lucide-react";
 import { useParams, useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { BookPreviewStage } from "./BookGalleryCard";
 import { BookSettings } from "./BookSettings";
-import { getBook, getBookShowcase } from "@/lib/booksClient";
+import { addBookToLibrary, getBook, getBookShowcase, removeBookFromLibrary } from "@/lib/booksClient";
 import { appendBookDetailSource, resolveBookDetailSource } from "@/lib/bookDetailNavigation";
 import {
   displayAuthor,
@@ -57,6 +57,59 @@ export function BookOverview() {
   const [showcaseLoading, setShowcaseLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [libraryPending, setLibraryPending] = useState(false);
+
+  const handleToggleLibrary = async () => {
+    if (!book || libraryPending) return;
+    if (!book.canAddToLibrary && !book.canRemoveFromLibrary) return;
+
+    const wasInLibrary = book.isInLibrary;
+    setLibraryPending(true);
+    // Optimistic flip
+    setBook((prev) =>
+      prev
+        ? {
+            ...prev,
+            isInLibrary: !wasInLibrary,
+            canAddToLibrary: wasInLibrary,
+            canRemoveFromLibrary: !wasInLibrary,
+            libraryUsersCount: Math.max(0, prev.libraryUsersCount + (wasInLibrary ? -1 : 1)),
+          }
+        : prev,
+    );
+    try {
+      const next = wasInLibrary
+        ? await removeBookFromLibrary(book.id)
+        : await addBookToLibrary(book.id);
+      setBook((prev) =>
+        prev
+          ? {
+              ...prev,
+              isInLibrary: next.isInLibrary,
+              canAddToLibrary: !next.isInLibrary && !prev.canManage,
+              canRemoveFromLibrary: next.isInLibrary && !prev.canManage,
+              libraryUsersCount: next.libraryUsersCount,
+            }
+          : prev,
+      );
+    } catch (libraryError) {
+      // Revert on failure
+      setBook((prev) =>
+        prev
+          ? {
+              ...prev,
+              isInLibrary: wasInLibrary,
+              canAddToLibrary: !wasInLibrary && !prev.canManage,
+              canRemoveFromLibrary: wasInLibrary && !prev.canManage,
+              libraryUsersCount: Math.max(0, prev.libraryUsersCount + (wasInLibrary ? 1 : -1)),
+            }
+          : prev,
+      );
+      setError(libraryError instanceof Error ? libraryError.message : "Не удалось обновить библиотеку");
+    } finally {
+      setLibraryPending(false);
+    }
+  };
 
   useEffect(() => {
     if (!bookId) return;
@@ -141,13 +194,41 @@ export function BookOverview() {
                     <Link className="btn btn-mark btn-lg" href={chatHref}>
                       <MessageCircle size={16} /> Начать разговор
                     </Link>
-                    {book.canManage || resolvedSource === "library" ? (
+                    {book.canManage ? (
                       <button className="btn btn-ghost btn-lg" disabled style={{ opacity: 0.7 }}>
-                        <Check size={16} /> {book.canManage ? "Ваша книга" : "В библиотеке"}
+                        <Check size={16} /> Ваша книга
+                      </button>
+                    ) : book.isInLibrary ? (
+                      <button
+                        className="btn btn-ghost btn-lg"
+                        onClick={() => void handleToggleLibrary()}
+                        disabled={libraryPending}
+                        title="Удалить из библиотеки"
+                        style={{
+                          cursor: libraryPending ? "not-allowed" : "pointer",
+                          opacity: libraryPending ? 0.5 : 1,
+                        }}
+                      >
+                        <Check size={16} /> В библиотеке
+                      </button>
+                    ) : book.canAddToLibrary ? (
+                      <button
+                        className="btn btn-ghost btn-lg"
+                        onClick={() => void handleToggleLibrary()}
+                        disabled={libraryPending}
+                        style={{
+                          cursor: libraryPending ? "not-allowed" : "pointer",
+                          opacity: libraryPending ? 0.5 : 1,
+                        }}
+                      >
+                        <Plus size={16} /> Добавить к себе
                       </button>
                     ) : (
-                      <button className="btn btn-ghost btn-lg" disabled title="Добавление с этой страницы будет подключено отдельно" style={{ opacity: 0.7 }}>
-                        <Plus size={16} /> Добавить к себе
+                      // Private book of another user — shouldn't render here
+                      // since GET /api/books/[bookId] would 404, but keep a
+                      // safe fallback just in case.
+                      <button className="btn btn-ghost btn-lg" disabled style={{ opacity: 0.5 }}>
+                        <X size={16} /> Недоступна
                       </button>
                     )}
                     {book.canManage ? <BookSettings book={book} triggerClassName="btn btn-plain btn-sm" triggerLabel="Настройки" /> : null}

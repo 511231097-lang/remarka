@@ -42,6 +42,13 @@ export interface BookCoreDTO {
   analysisState: BookAnalysisState;
   chapterCount: number;
   canManage: boolean;
+  // Library state — same semantics as BookCardDTO so the book detail
+  // page can drive the same add/remove flow as Explore. Computed by the
+  // GET /api/books/[bookId] route based on the viewer's likes.
+  isInLibrary: boolean;
+  canAddToLibrary: boolean;
+  canRemoveFromLibrary: boolean;
+  libraryUsersCount: number;
   createdAt: string;
   owner: BookOwnerDTO;
 }
@@ -525,6 +532,12 @@ export function toBookCoreDTO(book: BookWithOwner): BookCoreDTO {
     analysisState: book.analysisState,
     chapterCount: book.chapterCount,
     canManage: false,
+    // Library state defaults; the route handler decorates these based on
+    // the viewer's likes (or leaves them at zero for create flows etc.).
+    isInLibrary: false,
+    canAddToLibrary: false,
+    canRemoveFromLibrary: false,
+    libraryUsersCount: 0,
     createdAt: book.createdAt.toISOString(),
     owner: toBookOwnerDTO(book.owner),
   };
