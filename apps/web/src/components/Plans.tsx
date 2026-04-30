@@ -2,7 +2,14 @@
 
 import { useState } from "react";
 import { ArrowRight, Check, Plus } from "lucide-react";
-import { currentUser } from "@/lib/mockData";
+
+// TODO: replace this mock with real subscription state from session/billing
+// when a paid tier is live. For now we hard-code "free" since billing is
+// not wired yet — keeps the page rendering exactly as before with the
+// removed mockData fixture.
+const currentUser: { plan: { type: "free" | "plus" } } = {
+  plan: { type: "free" },
+};
 
 const freeFeatures: ReadonlyArray<readonly [string, boolean]> = [
   ["Полный каталог из 98 книг", true],

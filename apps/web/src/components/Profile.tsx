@@ -4,8 +4,18 @@ import Link from "next/link";
 import { signOut } from "next-auth/react";
 import { Sparkles, X, AlertTriangle } from "lucide-react";
 import { useEffect, useState } from "react";
-import { currentUser } from "@/lib/mockData";
 import { useTheme } from "@/lib/ThemeContext";
+
+// TODO: replace this mock with real subscription state from session/billing
+// when a paid tier is live. For now we hard-code "free" since billing is
+// not wired yet. The display name/email fallbacks below kick in only when
+// the authenticated user record has empty fields, which shouldn't happen
+// with Google OAuth — they are belt-and-suspenders defaults.
+const currentUser: { name: string; email: string; plan: { type: "free" | "plus" } } = {
+  name: "Аноним",
+  email: "",
+  plan: { type: "free" },
+};
 
 // Confirmation token must match the one enforced server-side in
 // apps/web/src/app/api/profile/account/route.ts. Keep them in sync.
