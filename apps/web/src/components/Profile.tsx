@@ -37,6 +37,48 @@ export function Profile({ authUser }: ProfileProps) {
   const isPlus = plan === "plus";
   const { theme, setTheme } = useTheme();
   const [deleteOpen, setDeleteOpen] = useState(false);
+  const [exportPending, setExportPending] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
+  const handleExport = async () => {
+    if (exportPending) return;
+    setExportPending(true);
+    setExportError(null);
+    try {
+      const res = await fetch("/api/profile/export", {
+        method: "GET",
+        headers: { Accept: "application/json" },
+      });
+      if (!res.ok) {
+        let message = `Ошибка ${res.status}`;
+        try {
+          const data = (await res.json()) as { error?: string };
+          if (data?.error) message = data.error;
+        } catch {
+          // keep generic message
+        }
+        throw new Error(message);
+      }
+      const blob = await res.blob();
+      const dispositionHeader = res.headers.get("Content-Disposition") || "";
+      const filenameMatch = dispositionHeader.match(/filename="([^"]+)"/);
+      const filename = filenameMatch?.[1] || `remarka-export-${Date.now()}.json`;
+      // Trigger download via temporary anchor — the standard browser dance.
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = filename;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      // Revoke after a tick — Safari can race if revoked synchronously.
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      setExportError(err instanceof Error ? err.message : "Не удалось выгрузить данные");
+    } finally {
+      setExportPending(false);
+    }
+  };
 
   return (
     <div className="screen-fade">
@@ -230,12 +272,37 @@ export function Profile({ authUser }: ProfileProps) {
             </button>
             <button
               className="btn btn-plain"
+              onClick={() => void handleExport()}
+              disabled={exportPending}
+              style={{
+                cursor: exportPending ? "not-allowed" : "pointer",
+                opacity: exportPending ? 0.6 : 1,
+              }}
+            >
+              {exportPending ? "Готовим выгрузку…" : "Выгрузить мои данные"}
+            </button>
+            <button
+              className="btn btn-plain"
               onClick={() => setDeleteOpen(true)}
               style={{ color: "var(--mark)" }}
             >
               Удалить аккаунт
             </button>
           </div>
+          {exportError && (
+            <div
+              className="soft"
+              style={{
+                borderTop: "1px solid var(--rule-soft)",
+                color: "var(--mark)",
+                fontSize: 13,
+                lineHeight: 1.55,
+                padding: "10px 20px",
+              }}
+            >
+              {exportError}
+            </div>
+          )}
           <div
             className="soft"
             style={{
@@ -245,8 +312,14 @@ export function Profile({ authUser }: ProfileProps) {
               padding: "14px 20px",
             }}
           >
-            При удалении аккаунта стираются все ваши книги, история чатов, результаты
-            анализа и настройки. Восстановить эти данные после удаления невозможно.
+            <strong>Выгрузка</strong> — JSON-файл со всеми вашими данными в сервисе:
+            профиль, книги (метаданные и результат разбора), библиотека и история чатов.
+            Исходные файлы загруженных книг в выгрузку не входят (тяжёлые объекты,
+            запрашиваются отдельно через privacy@remarka.app).
+            <br />
+            <br />
+            <strong>Удаление</strong> аккаунта стирает все ваши книги, историю чатов,
+            результаты анализа и настройки. Восстановить эти данные после удаления невозможно.
           </div>
         </Section>
       </div>
