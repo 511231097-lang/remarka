@@ -10,6 +10,15 @@ concurrency:
   group: build-${{ github.ref }}
   cancel-in-progress: false
 
+# Force GitHub-shipped JS actions (upload-artifact, download-artifact, etc.)
+# to run their internal runtime on Node 24 instead of the now-deprecated
+# Node 20. Will become the default on 2026-06-02; setting this flag now
+# suppresses deprecation annotations and gives us early validation.
+# Note: this is unrelated to the Node version our code runs on
+# (controlled by `actions/setup-node` → 22).
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     name: Build + stage on VPS
@@ -116,7 +125,12 @@ jobs:
             HostName $WORKER_HOST
             User $DEPLOY_USER
             IdentityFile ~/.ssh/id_deploy
-            ProxyJump $DEPLOY_USER@$WEB_HOST
+            # NB: ProxyJump must reference the 'web' alias above (NOT
+            # $DEPLOY_USER@$WEB_HOST). When ssh spawns the jump connection
+            # it re-resolves the host through ssh_config; an alias inherits
+            # IdentityFile, but a literal user@IP falls back to defaults
+            # (no keys on a fresh runner) → "Permission denied (publickey,password)".
+            ProxyJump web
             StrictHostKeyChecking accept-new
             UserKnownHostsFile ~/.ssh/known_hosts
           EOF
@@ -139,7 +153,14 @@ jobs:
           ls -1t | tail -n +6 | xargs -r rm -rf
           EOF
 
+      # NB: this step is `continue-on-error` so a temporarily broken worker
+      # SSH (rotated key, host rebuild, etc.) doesn't block web deploys.
+      # When this step fails the Build job summary will show a yellow
+      # warning, and Deploy with `target=worker` will fail until the
+      # underlying issue is fixed and Build is re-run.
       - name: Stage bundle on worker VPS + npm ci
+        id: stage_worker
+        continue-on-error: true
         run: |
           set -euo pipefail
           RELEASE_ID=${{ steps.release.outputs.id }}
@@ -161,8 +182,12 @@ jobs:
           echo "**Release ID**: \`${{ steps.release.outputs.id }}\`" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Bundle staged on:" >> $GITHUB_STEP_SUMMARY
-          echo "- web: \`$APP_HOME/releases/${{ steps.release.outputs.id }}/\`" >> $GITHUB_STEP_SUMMARY
-          echo "- worker: \`$APP_HOME/releases/${{ steps.release.outputs.id }}/\`" >> $GITHUB_STEP_SUMMARY
+          echo "- web: \`$APP_HOME/releases/${{ steps.release.outputs.id }}/\` ✅" >> $GITHUB_STEP_SUMMARY
+          if [ "${{ steps.stage_worker.outcome }}" = "success" ]; then
+            echo "- worker: \`$APP_HOME/releases/${{ steps.release.outputs.id }}/\` ✅" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "- worker: ❌ failed (SSH/rsync). Web deploy is unaffected, but \`Deploy\` with \`target=worker\` will fail until fixed." >> $GITHUB_STEP_SUMMARY
+          fi
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "Next steps (manual buttons in Actions):" >> $GITHUB_STEP_SUMMARY
           echo "1. Run **Migrate** workflow if this build contains DB migrations" >> $GITHUB_STEP_SUMMARY
