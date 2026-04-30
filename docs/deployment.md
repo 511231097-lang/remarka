@@ -116,33 +116,64 @@ psql "$DATABASE_URL" -f /srv/remarka/current/scripts/deploy/postgres-bootstrap.s
 
 ## 5. Деплой через GitHub Actions
 
-Раскат разделён на **три** workflow — каждый виден отдельной кнопкой в Actions:
+GitLab-style pipeline в одном workflow `pipeline.yml`:
 
-1. **Build** — триггерится автоматически на `push в main` (или вручную). Билдит бандл, типчекает, гоняет тесты, кладёт результат в `/srv/remarka/releases/<id>/` на web и worker, делает `npm ci --omit=dev` + `db:generate`. **Не трогает `current` symlink, не рестартит сервисы.** Прод продолжает работать на старой версии.
-2. **Migrate** — manual `workflow_dispatch`. По умолчанию выбирает последний staged релиз и запускает `prisma migrate deploy` оттуда. Идемпотентен — на уже мигрированной БД no-op.
-3. **Deploy** — manual `workflow_dispatch`. Переключает symlink `current` → `releases/<id>` на web/worker (выбор через input `target`), рестартит systemd, делает health-check.
+```
+push → build (auto) → migrate (manual) ──┬─→ deploy-web    (manual)
+                                         └─→ deploy-worker (manual)
+```
+
+В Actions UI один run, граф связан, на каждом manual-этапе кнопка `Review deployments` → `Approve and deploy`. Аппрувы независимые — можно одобрить только `migrate + deploy-web` и пропустить worker.
+
+`release_id` вычисляется в `build` job и пробрасывается в downstream через `needs.build.outputs.release_id`. Нет race-condition на `ls -t` под нагрузкой.
 
 ### Обычный flow
 
 ```
-git push origin main          ← Build стартует автоматом
-  ↓ (Actions, ждём зелёного)
-Click "Run workflow" в Migrate ← если PR содержал миграции
-Click "Run workflow" в Deploy ← переключаем код
+git push origin main             ← build стартует автоматом
+  ↓ (ждём зелёного)
+Approve "migrate"                ← если PR содержал миграции
+Approve "deploy-web"             ← переключаем web
+Approve "deploy-worker"          ← переключаем worker (можно параллельно с web)
 ```
 
-Если миграций в PR нет — `Migrate` можно пропускать, идти сразу в `Deploy`.
+Если миграций в PR нет — `migrate` всё равно нужно одобрить (no-op на уже мигрированной БД), чтобы цепочка прошла. Альтернативно — после approve всех деплоев можно вообще не апрувить migrate, но тогда deploy не запустятся (они `needs: migrate`). При желании можно сделать migrate опциональной — скажи, перепилю на `if:`-фильтр.
+
+### Setup environments (один раз)
+
+В **Settings → Environments** репо создать три окружения:
+
+| Environment    | Required reviewers | Environment URL          | Назначение                        |
+|----------------|-------------------|--------------------------|-----------------------------------|
+| `prod-db`      | владелец          | —                        | gate перед миграциями             |
+| `prod-web`     | владелец          | `https://remarka.app`    | gate перед деплоем web            |
+| `prod-worker`  | владелец          | —                        | gate перед деплоем worker         |
+
+Без этого приёмочные кнопки не появятся, и pipeline застрянет на первом manual-этапе с ошибкой "environment 'prod-db' does not exist".
 
 ### Secrets
 
-В Settings → Secrets уже должны быть:
+В Settings → Secrets:
 - `SSH_DEPLOY_KEY` — приватный ключ, парный к `~/.ssh/remarka_deploy.pub`
 - `WEB_HOST` — IP или hostname web VPS
 - `WORKER_HOST` — IP воркера (доступен через ProxyJump через web)
 
-### Откат
+### Аварийный re-deploy / rollback
 
-Если новый Deploy сломал — откатываемся на предыдущий релиз:
+Отдельный workflow `redeploy.yml` (manual `workflow_dispatch`) для:
+- отката на предыдущий релиз без перезапуска полного пайплайна
+- повторного выкатывания после ручного восстановления хоста
+- деплоя конкретного `release_id`
+
+Параметры:
+- `target`: `web` / `worker` / `both`
+- `release_id`: пусто = последний staged релиз на web, иначе явный ID
+
+`redeploy.yml` НЕ запускает миграции на этом пути — `prisma migrate deploy` в этом коде additive-only, и для отката безопаснее предположить «БД уже на нужной схеме, нужно только переключить код». Если на rollback нужны миграции — гоняй полный pipeline.
+
+Использует те же `prod-web` / `prod-worker` environments, поэтому approval-flow идентичный.
+
+### Ручной откат через SSH (если CI недоступен)
 
 ```bash
 ssh remarka-web 'sudo -u remarka bash -lc "
@@ -151,7 +182,7 @@ ssh remarka-web 'sudo -u remarka bash -lc "
 " && sudo systemctl restart remarka-web'
 ```
 
-Build хранит **5 последних** релизов, deploy не чистит ничего сам — есть запас на быстрый откат.
+Build хранит **5 последних** релизов — есть запас на быстрый откат.
 
 Ручной деплой (если CI лежит):
 

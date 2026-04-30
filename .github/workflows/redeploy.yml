@@ -1,24 +1,31 @@
-name: Deploy
+name: Redeploy
 
-# Switches `current` symlink to a release that has already been built and
-# staged on the VPS by the Build workflow, then restarts the systemd unit(s).
+# Emergency lever: switch the `current` symlink to a previously-built
+# release without going through the main pipeline. Use cases:
+#   - rollback to a known-good release after a bad deploy
+#   - re-deploy after manual recovery on the host (rotated key, restored
+#     volume, etc.) without needing a fresh source push
 #
-# Migrations should be run via the Migrate workflow BEFORE this — Deploy does
-# not touch the DB. Health-check after restart aborts (and leaves the old
-# release symlinked) if the new instance fails to come up.
+# Does NOT run migrations on purpose — `prisma migrate deploy` is
+# additive-only in this codebase, but the safest assumption for a
+# rollback is "DB is already at the target schema; just flip code."
+# If you actually need to migrate, run the main Pipeline.
+#
+# Reuses the same prod-web / prod-worker environments as Pipeline, so the
+# manual-approval gates are identical.
 
 on:
   workflow_dispatch:
     inputs:
       target:
-        description: "Which hosts to deploy"
+        description: "Which hosts to redeploy"
         required: true
-        default: both
+        default: web
         type: choice
         options:
-          - both
           - web
           - worker
+          - both
       release_id:
         description: "Release ID to deploy (default: latest staged release on web)"
         required: false
@@ -26,7 +33,7 @@ on:
         default: ""
 
 concurrency:
-  group: deploy-prod
+  group: pipeline-prod
   cancel-in-progress: false
 
 env:
@@ -63,18 +70,21 @@ jobs:
               "ls -1t $APP_HOME/releases | head -1")
           fi
           if [ -z "$RELEASE_ID" ]; then
-            echo "::error::No release found in $APP_HOME/releases. Run Build first."
+            echo "::error::No release found in $APP_HOME/releases."
             exit 1
           fi
           echo "id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
           echo "Resolved release: $RELEASE_ID"
 
-  deploy-web:
-    name: Deploy web
+  redeploy-web:
+    name: Redeploy web
     needs: pick-release
-    if: ${{ inputs.target == 'both' || inputs.target == 'web' }}
+    if: ${{ inputs.target == 'web' || inputs.target == 'both' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment:
+      name: prod-web
+      url: https://remarka.app
     env:
       RELEASE_ID: ${{ needs.pick-release.outputs.release_id }}
       DEPLOY_HOST: ${{ secrets.WEB_HOST }}
@@ -96,14 +106,13 @@ jobs:
           set -euo pipefail
           RELEASE_DIR=$APP_HOME/releases/$RELEASE_ID
           if [ ! -d "\$RELEASE_DIR" ]; then
-            echo "::error::Release dir \$RELEASE_DIR not found. Build first."
+            echo "::error::Release dir \$RELEASE_DIR not found."
             exit 1
           fi
 
           ln -snfT "\$RELEASE_DIR" $APP_HOME/current
           systemctl restart remarka-web
 
-          # Wait for the new instance to come up.
           for i in 1 2 3 4 5 6 7 8 9 10; do
             if curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1; then
               echo "Health check OK on attempt \$i"
@@ -117,12 +126,14 @@ jobs:
           exit 1
           EOF
 
-  deploy-worker:
-    name: Deploy worker
+  redeploy-worker:
+    name: Redeploy worker
     needs: pick-release
-    if: ${{ inputs.target == 'both' || inputs.target == 'worker' }}
+    if: ${{ inputs.target == 'worker' || inputs.target == 'both' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    environment:
+      name: prod-worker
     env:
       RELEASE_ID: ${{ needs.pick-release.outputs.release_id }}
       DEPLOY_HOST: ${{ secrets.WORKER_HOST }}
@@ -139,11 +150,6 @@ jobs:
           chmod 600 ~/.ssh/id_deploy
           ssh-keyscan -H "$JUMP_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
-          # NB: ProxyJump on the 'worker' host below must reference the
-          # 'web' alias (NOT $DEPLOY_USER@$JUMP_HOST). When ssh spawns the
-          # jump connection it re-resolves the host through ssh_config; an
-          # alias inherits IdentityFile, but a literal user@IP falls back
-          # to defaults (no keys on a fresh runner) → auth fails on jump.
           cat >>~/.ssh/config <<EOF
           Host web
             HostName $JUMP_HOST
@@ -166,18 +172,13 @@ jobs:
           set -euo pipefail
           RELEASE_DIR=$APP_HOME/releases/$RELEASE_ID
           if [ ! -d "\$RELEASE_DIR" ]; then
-            echo "::error::Release dir \$RELEASE_DIR not found on worker. Build first."
+            echo "::error::Release dir \$RELEASE_DIR not found on worker."
             exit 1
           fi
 
           ln -snfT "\$RELEASE_DIR" $APP_HOME/current
           systemctl restart remarka-worker
 
-          # Wait up to ~20s for the unit to leave 'activating' and reach
-          # 'active'. systemd reports 'activating' immediately after
-          # restart even when the process is healthy, so a flat sleep+check
-          # races. If still not active after the loop, dump the journal
-          # and bail (deploy aborts, old release stays symlinked).
           for i in 1 2 3 4 5 6 7 8 9 10; do
             STATE=\$(systemctl is-active remarka-worker || true)
             if [ "\$STATE" = "active" ]; then
