@@ -42,41 +42,6 @@ function getFloatEnv(name: string, fallback: number): number {
   return parsed;
 }
 
-const DEFAULT_KIA_EXTRACT_MODEL = "gemini-3-flash-openai";
-
-function resolveKiaModelRoute(model: string): string {
-  const normalized = String(model || "").trim().toLowerCase();
-  if (!normalized) return "gemini-3-flash";
-  return normalized.replace(/-openai$/i, "");
-}
-
-function normalizeKiaBaseUrl(raw: string, model: string): string {
-  const value = raw.replace(/\/+$/, "");
-  const modelRoute = resolveKiaModelRoute(model);
-  const defaultBaseUrl = `https://api.kie.ai/${modelRoute}/v1`;
-
-  if (!value) return defaultBaseUrl;
-
-  const legacyApiVersionMatch = value.match(/^(https?:\/\/[^/]+)\/api\/v(\d+)$/i);
-  if (legacyApiVersionMatch) {
-    const host = legacyApiVersionMatch[1];
-    const version = legacyApiVersionMatch[2];
-    if (/^https?:\/\/api\.kie\.ai$/i.test(host)) {
-      return `${host}/${modelRoute}/v${version}`;
-    }
-    return value;
-  }
-
-  if (/^https?:\/\/api\.kie\.ai$/i.test(value)) {
-    return `${value}/${modelRoute}/v1`;
-  }
-
-  if (/\/v\d+$/i.test(value)) return value;
-
-  return `${value}/v1`;
-}
-
-type ExtractProvider = "timeweb" | "kia" | "vertex";
 type ArtifactStorageProvider = "local" | "s3";
 type BookStorageProvider = "local" | "s3";
 type VertexModelTier = "lite" | "flash" | "pro";
@@ -127,28 +92,10 @@ function parseVertexModelTierOverrides(raw: string): Record<string, VertexModelT
   return result;
 }
 
-const configuredExtractProviderRaw = String(process.env.EXTRACT_LLM_PROVIDER || process.env.LLM_PROVIDER || "vertex")
-  .trim()
-  .toLowerCase();
-const supportedExtractProviders = new Set(["timeweb", "kia", "vertex"]);
-const configuredExtractProvider: ExtractProvider =
-  configuredExtractProviderRaw === "kia"
-    ? "kia"
-    : configuredExtractProviderRaw === "vertex"
-      ? "vertex"
-      : "timeweb";
-if (configuredExtractProviderRaw && !supportedExtractProviders.has(configuredExtractProviderRaw)) {
-  throw new Error(`Unsupported EXTRACT_LLM_PROVIDER: ${configuredExtractProviderRaw}`);
-}
+// Vertex is the only extraction provider currently used. The legacy
+// EXTRACT_LLM_PROVIDER / LLM_PROVIDER env vars are intentionally ignored
+// — see the cleanup PR removing the timeweb/kia clients for context.
 
-const DEFAULT_EXTRACT_MODEL = "a6de1886-5c89-45b8-9d7b-78eecae8a32b";
-const configuredExtractModel = String(process.env.TIMEWEB_EXTRACT_MODEL || DEFAULT_EXTRACT_MODEL).trim();
-const configuredFallbackModel = String(process.env.TIMEWEB_EXTRACT_FALLBACK_MODEL || "").trim();
-const configuredKiaExtractModel = String(
-  process.env.KIA_EXTRACT_MODEL || process.env.KIA_GEMINI_MODEL || DEFAULT_KIA_EXTRACT_MODEL
-)
-  .trim();
-const configuredKiaFallbackModel = String(process.env.KIA_EXTRACT_FALLBACK_MODEL || "").trim();
 const configuredVertexModelByTier: Record<VertexModelTier, string> = {
   lite: String(process.env.VERTEX_MODEL_LITE || DEFAULT_VERTEX_MODEL_BY_TIER.lite).trim(),
   flash: String(process.env.VERTEX_MODEL_FLASH || DEFAULT_VERTEX_MODEL_BY_TIER.flash).trim(),
@@ -179,9 +126,6 @@ const configuredVertexExtractModel =
     ? configuredVertexModelByTier[configuredVertexModelTier]
     : configuredVertexExtractModelLegacy;
 const configuredVertexFallbackModel = String(process.env.VERTEX_EXTRACT_FALLBACK_MODEL || "").trim();
-const isTimewebProvider = configuredExtractProvider === "timeweb";
-const isKiaProvider = configuredExtractProvider === "kia";
-const isVertexProvider = configuredExtractProvider === "vertex";
 const artifactsEnabled = getBoolEnv("ANALYSIS_ARTIFACTS_ENABLED", true);
 const configuredArtifactStorageProviderRaw = String(process.env.ARTIFACTS_STORAGE_PROVIDER || "local")
   .trim()
@@ -321,39 +265,8 @@ export const workerConfig = {
     bookSceneEdgeMaxTokens: getIntEnv("BOOK_SCENE_EDGE_MAX_TOKENS", 4096),
     bookSceneEdgeMaxAttempts: getIntEnv("BOOK_SCENE_EDGE_MAX_ATTEMPTS", 1),
   },
-  extraction: {
-    provider: configuredExtractProvider,
-  },
-  timeweb: {
-    apiToken: getRequiredEnvIf("TIMEWEB_API_TOKEN", isTimewebProvider),
-    proxySource: getRequiredEnvIf("TIMEWEB_PROXY_SOURCE", isTimewebProvider),
-    baseHost: String(process.env.TIMEWEB_BASE_HOST || "https://agent.timeweb.cloud").replace(/\/+$/, ""),
-    extractProfile: String(process.env.TIMEWEB_EXTRACT_PROFILE || "qwen").trim().toLowerCase(),
-    extractAccessId: getRequiredEnvIf("TIMEWEB_EXTRACT_ACCESS_ID", isTimewebProvider),
-    extractModel: configuredExtractModel,
-    extractFallbackModel:
-      configuredFallbackModel || (configuredExtractModel === DEFAULT_EXTRACT_MODEL ? "" : DEFAULT_EXTRACT_MODEL),
-    extractMaxTokens: getIntEnv("TIMEWEB_EXTRACT_MAX_TOKENS", 4096),
-    extractAttempts: getIntEnv("TIMEWEB_EXTRACT_ATTEMPTS", 3),
-    timeoutMs: getIntEnv("TIMEWEB_TIMEOUT_MS", 120000),
-    maxRetries: getIntEnv("TIMEWEB_MAX_RETRIES", 2),
-  },
-  kia: {
-    apiKey: getRequiredEnvIf("KIA_API_KEY", isKiaProvider),
-    proxySource: String(process.env.KIA_PROXY_SOURCE || process.env.TIMEWEB_PROXY_SOURCE || "remarka-worker-kia").trim(),
-    baseUrl: normalizeKiaBaseUrl(
-      String(process.env.KIA_CHAT_BASE_URL || process.env.KIA_BASE_URL || "").trim(),
-      configuredKiaExtractModel
-    ),
-    extractModel: configuredKiaExtractModel,
-    extractFallbackModel: configuredKiaFallbackModel,
-    extractMaxTokens: getIntEnv("KIA_EXTRACT_MAX_TOKENS", getIntEnv("TIMEWEB_EXTRACT_MAX_TOKENS", 4096)),
-    extractAttempts: getIntEnv("KIA_EXTRACT_ATTEMPTS", getIntEnv("TIMEWEB_EXTRACT_ATTEMPTS", 3)),
-    timeoutMs: getIntEnv("KIA_TIMEOUT_MS", getIntEnv("TIMEWEB_TIMEOUT_MS", 120000)),
-    maxRetries: getIntEnv("KIA_MAX_RETRIES", getIntEnv("TIMEWEB_MAX_RETRIES", 2)),
-  },
   vertex: {
-    apiKey: getRequiredEnvIf("VERTEX_API_KEY", isVertexProvider),
+    apiKey: getRequiredEnv("VERTEX_API_KEY"),
     proxySource: String(process.env.VERTEX_PROXY_SOURCE || process.env.TIMEWEB_PROXY_SOURCE || "remarka-worker-vertex").trim(),
     baseUrl: String(process.env.VERTEX_BASE_URL || "https://aiplatform.googleapis.com").replace(/\/+$/, ""),
     modelTier: configuredVertexModelTier,
