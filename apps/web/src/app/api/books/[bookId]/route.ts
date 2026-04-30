@@ -26,6 +26,11 @@ async function resolveBook(context: RouteContext) {
           image: true,
         },
       },
+      _count: {
+        select: {
+          likes: true,
+        },
+      },
     },
   });
 
@@ -54,8 +59,26 @@ export async function GET(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
 
+  // Library state — mirror BookCardDTO semantics so the book detail
+  // page can drive the same add/remove flow as Explore.
+  const isOwner = book.ownerUserId === authUser.id;
+  const existingLike = await prisma.bookLike.findUnique({
+    where: {
+      bookId_userId: {
+        bookId: book.id,
+        userId: authUser.id,
+      },
+    },
+    select: { bookId: true },
+  });
+  const hasLibraryEntry = Boolean(existingLike);
+
   const dto = toBookCoreDTO(book);
-  dto.canManage = book.ownerUserId === authUser.id;
+  dto.canManage = isOwner;
+  dto.isInLibrary = isOwner || hasLibraryEntry;
+  dto.canAddToLibrary = !isOwner && book.isPublic && !hasLibraryEntry;
+  dto.canRemoveFromLibrary = !isOwner && hasLibraryEntry;
+  dto.libraryUsersCount = book._count.likes;
   return NextResponse.json(dto);
 }
 
