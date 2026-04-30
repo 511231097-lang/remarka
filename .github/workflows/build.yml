@@ -125,7 +125,12 @@ jobs:
             HostName $WORKER_HOST
             User $DEPLOY_USER
             IdentityFile ~/.ssh/id_deploy
-            ProxyJump $DEPLOY_USER@$WEB_HOST
+            # NB: ProxyJump must reference the 'web' alias above (NOT
+            # $DEPLOY_USER@$WEB_HOST). When ssh spawns the jump connection
+            # it re-resolves the host through ssh_config; an alias inherits
+            # IdentityFile, but a literal user@IP falls back to defaults
+            # (no keys on a fresh runner) → "Permission denied (publickey,password)".
+            ProxyJump web
             StrictHostKeyChecking accept-new
             UserKnownHostsFile ~/.ssh/known_hosts
           EOF

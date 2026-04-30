@@ -139,12 +139,23 @@ jobs:
           chmod 600 ~/.ssh/id_deploy
           ssh-keyscan -H "$JUMP_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
+          # NB: ProxyJump on the 'worker' host below must reference the
+          # 'web' alias (NOT $DEPLOY_USER@$JUMP_HOST). When ssh spawns the
+          # jump connection it re-resolves the host through ssh_config; an
+          # alias inherits IdentityFile, but a literal user@IP falls back
+          # to defaults (no keys on a fresh runner) → auth fails on jump.
           cat >>~/.ssh/config <<EOF
+          Host web
+            HostName $JUMP_HOST
+            User $DEPLOY_USER
+            IdentityFile ~/.ssh/id_deploy
+            StrictHostKeyChecking accept-new
+            UserKnownHostsFile ~/.ssh/known_hosts
           Host worker
             HostName $DEPLOY_HOST
             User $DEPLOY_USER
             IdentityFile ~/.ssh/id_deploy
-            ProxyJump $DEPLOY_USER@$JUMP_HOST
+            ProxyJump web
             StrictHostKeyChecking accept-new
             UserKnownHostsFile ~/.ssh/known_hosts
           EOF
