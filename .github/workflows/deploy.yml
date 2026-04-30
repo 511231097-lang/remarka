@@ -14,7 +14,7 @@ on:
           - worker
   push:
     branches:
-      - deploy/main
+      - main
 
 concurrency:
   group: deploy-${{ github.ref }}
