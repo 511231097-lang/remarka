@@ -1,0 +1,85 @@
+name: Migrate
+
+# Runs `prisma migrate deploy` against the production DB using a release that
+# has already been built and staged on the web VPS by the Build workflow.
+# Idempotent — running on an already-migrated DB is a no-op.
+#
+# Should be run AFTER Build is green and BEFORE Deploy (so the new DB schema
+# is in place when the new app code goes live). Migrations in this codebase
+# are typically additive (ADD COLUMN DEFAULT, etc.), so applying them ahead
+# of the code switch is safe — the still-running old code ignores new fields.
+
+on:
+  workflow_dispatch:
+    inputs:
+      release_id:
+        description: "Release ID to migrate from (default: latest staged release on web)"
+        required: false
+        type: string
+        default: ""
+
+concurrency:
+  group: migrate-prod
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    name: Apply DB migrations
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      DEPLOY_USER: root
+      APP_USER: remarka
+      APP_HOME: /srv/remarka
+    steps:
+      - name: Configure SSH
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          echo "${{ secrets.SSH_DEPLOY_KEY }}" > ~/.ssh/id_deploy
+          chmod 600 ~/.ssh/id_deploy
+          ssh-keyscan -H "${{ secrets.WEB_HOST }}" >> ~/.ssh/known_hosts 2>/dev/null
+
+      - name: Resolve release ID
+        id: pick
+        run: |
+          set -euo pipefail
+          INPUT="${{ inputs.release_id }}"
+          if [ -n "$INPUT" ]; then
+            RELEASE_ID="$INPUT"
+            echo "Using user-provided release: $RELEASE_ID"
+          else
+            RELEASE_ID=$(ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@${{ secrets.WEB_HOST }}" \
+              "ls -1t $APP_HOME/releases | head -1")
+            echo "Auto-picked latest staged release: $RELEASE_ID"
+          fi
+          if [ -z "$RELEASE_ID" ]; then
+            echo "::error::No release found in $APP_HOME/releases. Run Build first."
+            exit 1
+          fi
+          echo "id=$RELEASE_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Apply migrations from staged release
+        run: |
+          set -euo pipefail
+          RELEASE_ID="${{ steps.pick.outputs.id }}"
+          ssh -i ~/.ssh/id_deploy "$DEPLOY_USER@${{ secrets.WEB_HOST }}" bash -s <<EOF
+          set -euo pipefail
+          RELEASE_DIR=$APP_HOME/releases/$RELEASE_ID
+          if [ ! -d "\$RELEASE_DIR" ]; then
+            echo "Release dir \$RELEASE_DIR does not exist on host."
+            exit 1
+          fi
+          # Prisma migrate deploy reads DATABASE_URL from env. Source the
+          # same env file systemd uses for remarka-web at runtime.
+          sudo -u $APP_USER bash -lc "cd \$RELEASE_DIR && \
+            set -a && source $APP_HOME/shared/env/web.env && set +a && \
+            npm run db:migrate:deploy"
+          EOF
+
+      - name: Summary
+        run: |
+          echo "## Migration applied" >> $GITHUB_STEP_SUMMARY
+          echo "**Release ID**: \`${{ steps.pick.outputs.id }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Next: run **Deploy** workflow to switch app code over." >> $GITHUB_STEP_SUMMARY

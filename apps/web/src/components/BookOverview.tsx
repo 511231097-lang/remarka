@@ -2,23 +2,33 @@
 
 import Link from "next/link";
 import { motion } from "motion/react";
-import { BookOpen, Check, MessageCircle, Plus } from "lucide-react";
+import { Check, MessageCircle, Plus } from "lucide-react";
 import { useParams, useSearchParams } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { BookPreviewStage } from "./BookGalleryCard";
 import { BookSettings } from "./BookSettings";
 import { getBook, getBookShowcase } from "@/lib/booksClient";
 import { appendBookDetailSource, resolveBookDetailSource } from "@/lib/bookDetailNavigation";
-import { displayAuthor, type BookCoreDTO, type BookShowcaseDTO } from "@/lib/books";
+import {
+  displayAuthor,
+  type BookCoreDTO,
+  type BookShowcaseDTO,
+  type BookShowcaseCharacterDTO,
+  type BookShowcaseEventDTO,
+} from "@/lib/books";
 
-const CHARACTER_COLORS = [
+const HERO_AVATAR_COLORS = [
   "oklch(58% 0.11 60)",
   "oklch(42% 0.11 25)",
   "oklch(28% 0.04 260)",
   "oklch(36% 0.07 150)",
   "oklch(48% 0.09 55)",
   "oklch(60% 0.12 200)",
-] as const;
+];
+
+const PLACEHOLDER_HEROES = "Главные персонажи появятся после полного анализа книги.";
+const PLACEHOLDER_EVENTS = "Ключевые события появятся после полного анализа книги.";
+const IDEA_PLACEHOLDER = "Ключевая идея будет сформирована AI после полного анализа книги.";
 
 function resolveBookSummary(book: BookCoreDTO, showcase: BookShowcaseDTO | null): string {
   return (
@@ -29,21 +39,12 @@ function resolveBookSummary(book: BookCoreDTO, showcase: BookShowcaseDTO | null)
 }
 
 function resolveMainIdea(showcase: BookShowcaseDTO | null): string {
-  return (
-    String(showcase?.summary.mainIdea || "").trim() ||
-    "Ключевая идея будет сформирована AI после полного анализа книги."
-  );
+  return String(showcase?.summary.mainIdea || "").trim();
 }
 
 function resolveEyebrow(book: BookCoreDTO): string {
   const chapters = book.chapterCount > 0 ? `${book.chapterCount} глав` : "главы готовятся";
   return `AI-разбор · ${chapters} · ${book.isPublic ? "Публичная" : "Только для вас"}`;
-}
-
-function resolveChips(book: BookCoreDTO, showcase: BookShowcaseDTO | null): string[] {
-  const themeNames = (showcase?.themes || []).map((theme) => theme.name).filter(Boolean).slice(0, 5);
-  if (themeNames.length > 0) return themeNames;
-  return [book.isPublic ? "Публичная книга" : "Личная книга", "AI-разбор", "Чат по тексту"];
 }
 
 export function BookOverview() {
@@ -85,7 +86,16 @@ export function BookOverview() {
   const fallbackSource = book?.canManage ? "library" : "explore";
   const resolvedSource = source || fallbackSource;
   const chatHref = appendBookDetailSource(`/book/${bookId}/chat`, resolvedSource);
-  const backHref = resolvedSource === "library" ? "/library" : "/explore";
+
+  const themes = showcase?.themes ?? [];
+  const heroes = showcase?.characters ?? [];
+  const events = showcase?.keyEvents ?? [];
+  const idea = useMemo(() => resolveMainIdea(showcase), [showcase]);
+  const summary = book ? resolveBookSummary(book, showcase) : "";
+  const themeChips = useMemo(
+    () => themes.map((theme) => theme.name).filter(Boolean).slice(0, 6),
+    [themes]
+  );
 
   return (
     <div className="screen-fade">
@@ -118,14 +128,14 @@ export function BookOverview() {
                   <div className="mono" style={{ color: "var(--mark)", marginBottom: 16 }}>
                     {resolveEyebrow(book)}
                   </div>
-                  <h1 style={{ fontSize: "clamp(38px, 6vw, 52px)", letterSpacing: 0, lineHeight: 1.02, textWrap: "balance" }}>
+                  <h1 style={{ fontSize: "clamp(38px, 6vw, 52px)", letterSpacing: "-0.02em", lineHeight: 1.02, textWrap: "balance" }}>
                     {book.title}
                   </h1>
                   <div style={{ color: "var(--ink-soft)", fontFamily: "var(--font-serif)", fontSize: 20, fontStyle: "italic", marginTop: 12 }}>
                     {displayAuthor(book.author)}
                   </div>
                   <p className="soft" style={{ fontSize: 17, lineHeight: 1.6, marginTop: 20, maxWidth: 620, textWrap: "pretty" }}>
-                    {resolveBookSummary(book, showcase)}
+                    {summary}
                   </p>
                   <div className="book-hero-actions row" style={{ flexWrap: "wrap", marginTop: 28 }}>
                     <Link className="btn btn-mark btn-lg" href={chatHref}>
@@ -140,16 +150,15 @@ export function BookOverview() {
                         <Plus size={16} /> Добавить к себе
                       </button>
                     )}
-                    <Link className="btn btn-plain btn-lg" href={backHref}>
-                      {resolvedSource === "library" ? "К библиотеке" : "К каталогу"}
-                    </Link>
-                    {book.canManage ? <BookSettings book={book} triggerClassName="btn btn-plain btn-lg" triggerLabel="Настройки" /> : null}
+                    {book.canManage ? <BookSettings book={book} triggerClassName="btn btn-plain btn-sm" triggerLabel="Настройки" /> : null}
                   </div>
-                  <div className="row" style={{ flexWrap: "wrap", gap: 8, marginTop: 28 }}>
-                    {resolveChips(book, showcase).map((chip) => (
-                      <div key={chip} className="badge">{chip}</div>
-                    ))}
-                  </div>
+                  {themeChips.length > 0 && (
+                    <div className="row" style={{ flexWrap: "wrap", gap: 8, marginTop: 28 }}>
+                      {themeChips.map((chip) => (
+                        <div key={chip} className="badge">{chip}</div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </motion.div>
             </div>
@@ -159,116 +168,127 @@ export function BookOverview() {
             <div className="mono" style={{ color: "var(--mark)", marginBottom: 16, textAlign: "center" }}>
               Анализ · AI-разбор
             </div>
-            <h2 style={{ fontSize: 40, letterSpacing: 0, marginBottom: 48, textAlign: "center", textWrap: "balance" }}>
+            <h2
+              style={{
+                fontSize: 40,
+                letterSpacing: "-0.02em",
+                marginBottom: 48,
+                textAlign: "center",
+                textWrap: "balance",
+              }}
+            >
               Краткий разбор книги
             </h2>
 
-            {showcaseLoading ? (
-              <div className="card muted" style={{ marginBottom: 48, padding: 20 }}>Загружаем анализ книги...</div>
+            {showcaseLoading && !showcase ? (
+              <div className="card muted" style={{ marginBottom: 24, padding: 20 }}>Загружаем анализ книги…</div>
             ) : null}
 
             {!showcase && !showcaseLoading ? (
-              <div className="card" style={{ marginBottom: 48, padding: 24 }}>
-                <BookOpen size={22} style={{ color: "var(--mark)" }} />
-                <div style={{ fontFamily: "var(--font-serif)", fontSize: 24, marginTop: 12 }}>Витрина книги собирается</div>
-                <p className="soft" style={{ fontSize: 15, lineHeight: 1.65, marginTop: 10 }}>
-                  Ниже показана доступная информация из карточки книги. Полный AI-разбор появится после генерации витрины.
+              <div className="card" style={{ marginBottom: 32, padding: 24 }}>
+                <div style={{ fontFamily: "var(--font-serif)", fontSize: 22 }}>Витрина книги собирается</div>
+                <p className="soft" style={{ fontSize: 14, lineHeight: 1.6, marginTop: 8 }}>
+                  Ниже показана доступная информация. Полный AI-разбор появится после генерации витрины.
                 </p>
               </div>
             ) : null}
 
-            <AnalysisSection eyebrow="i · Описание" title="О чём эта книга">
-              <p style={{ color: "var(--ink)", fontFamily: "var(--font-serif)", fontSize: 19, lineHeight: 1.6, textWrap: "pretty" }}>
-                {resolveBookSummary(book, showcase)}
+            {/* i · Описание */}
+            <section className="stack">
+              <div className="mono" style={{ color: "var(--ink-muted)" }}>i · Описание</div>
+              <h3 style={{ fontSize: 28, letterSpacing: "-0.015em" }}>О чём эта книга</h3>
+              <p
+                style={{
+                  color: "var(--ink)",
+                  fontFamily: "var(--font-serif)",
+                  fontSize: 19,
+                  lineHeight: 1.6,
+                  textWrap: "pretty",
+                }}
+              >
+                {summary}
               </p>
-            </AnalysisSection>
+            </section>
 
-            <Divider />
+            <div className="hr" style={{ margin: "56px 0" }} />
 
-            <AnalysisSection eyebrow="ii · Ключевая идея" title="Что говорит автор">
+            {/* ii · Ключевая идея */}
+            <section className="stack">
+              <div className="mono" style={{ color: "var(--ink-muted)" }}>ii · Ключевая идея</div>
+              <h3 style={{ fontSize: 28, letterSpacing: "-0.015em" }}>Что говорит автор</h3>
               <div style={{ borderLeft: "3px solid var(--mark)", marginTop: 8, paddingLeft: 24 }}>
-                <p style={{ color: "var(--ink)", fontFamily: "var(--font-serif)", fontSize: 22, fontStyle: "italic", lineHeight: 1.45, textWrap: "pretty" }}>
-                  {resolveMainIdea(showcase)}
+                <p
+                  style={{
+                    color: "var(--ink)",
+                    fontFamily: "var(--font-serif)",
+                    fontSize: 22,
+                    fontStyle: "italic",
+                    lineHeight: 1.45,
+                    textWrap: "pretty",
+                  }}
+                >
+                  {idea || IDEA_PLACEHOLDER}
                 </p>
               </div>
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 20 }}>
-                {resolveChips(book, showcase).map((chip) => (
-                  <div key={chip} className="chip" style={{ cursor: "default" }}>{chip}</div>
-                ))}
-              </div>
-            </AnalysisSection>
+              {themeChips.length > 0 && (
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginTop: 20 }}>
+                  {themeChips.map((chip) => (
+                    <div key={chip} className="chip" style={{ cursor: "default" }}>{chip}</div>
+                  ))}
+                </div>
+              )}
+            </section>
 
-            <Divider />
+            <div className="hr" style={{ margin: "56px 0" }} />
 
-            <AnalysisSection eyebrow="iii · Главные персонажи" title="Кто движет сюжет">
-              {showcase?.characters.length ? (
-                <div className="book-character-grid" style={{ display: "grid", gap: 18, gridTemplateColumns: "repeat(2, 1fr)", marginTop: 8 }}>
-                  {showcase.characters.map((character, index) => (
-                    <article key={`${character.name}:${character.rank}`} className="card" style={{ background: "var(--cream)", padding: 20 }}>
-                      <div className="row-sm" style={{ marginBottom: 8 }}>
-                        <div
-                          style={{
-                            alignItems: "center",
-                            background: CHARACTER_COLORS[index % CHARACTER_COLORS.length],
-                            borderRadius: "50%",
-                            color: "#fff",
-                            display: "flex",
-                            fontFamily: "var(--font-serif)",
-                            fontSize: 14,
-                            height: 32,
-                            justifyContent: "center",
-                            width: 32,
-                          }}
-                        >
-                          {character.name.trim().charAt(0) || "?"}
-                        </div>
-                        <div style={{ fontFamily: "var(--font-serif)", fontSize: 17, fontWeight: 500 }}>{character.name}</div>
-                      </div>
-                      <p className="soft" style={{ fontSize: 14, lineHeight: 1.5 }}>{character.description}</p>
-                    </article>
+            {/* iii · Главные персонажи */}
+            <section className="stack">
+              <div className="mono" style={{ color: "var(--ink-muted)" }}>iii · Главные персонажи</div>
+              <h3 style={{ fontSize: 28, letterSpacing: "-0.015em" }}>Кто движет сюжет</h3>
+              {heroes.length > 0 ? (
+                <div
+                  className="heroes-grid"
+                  style={{ display: "grid", gap: 18, gridTemplateColumns: "repeat(2, 1fr)", marginTop: 8 }}
+                >
+                  {heroes.map((hero, index) => (
+                    <HeroCard key={`${hero.name}:${hero.rank}`} hero={hero} index={index} />
                   ))}
                 </div>
               ) : (
-                <p className="soft" style={{ fontSize: 15, lineHeight: 1.6 }}>Главные персонажи появятся после полного анализа книги.</p>
+                <PlaceholderCard text={PLACEHOLDER_HEROES} />
               )}
-            </AnalysisSection>
+            </section>
 
-            <Divider />
+            <div className="hr" style={{ margin: "56px 0" }} />
 
-            <AnalysisSection eyebrow="iv · Ключевые события" title="Сюжет в пяти точках">
-              {showcase?.keyEvents.length ? (
-                <ol style={{ listStyle: "none", marginTop: 12, padding: 0 }}>
-                  {showcase.keyEvents.map((event, index) => (
-                    <li
-                      key={`${event.title}:${index}`}
-                      style={{
-                        borderBottom: index < showcase.keyEvents.length - 1 ? "1px solid var(--rule-soft)" : "none",
-                        display: "grid",
-                        gap: 20,
-                        gridTemplateColumns: "48px 1fr",
-                        padding: "18px 0",
-                      }}
-                    >
-                      <div style={{ color: "var(--mark)", fontFamily: "var(--font-serif)", fontSize: 28, lineHeight: 1 }}>
-                        {String(index + 1).padStart(2, "0")}
-                      </div>
-                      <div style={{ color: "var(--ink)", fontFamily: "var(--font-serif)", fontSize: 19, lineHeight: 1.5, paddingTop: 2 }}>
-                        <div>{event.title}</div>
-                        <p className="soft" style={{ fontFamily: "var(--font-sans)", fontSize: 14, lineHeight: 1.55, marginTop: 6 }}>
-                          {event.description}
-                        </p>
-                      </div>
-                    </li>
+            {/* iv · Ключевые события */}
+            <section className="stack">
+              <div className="mono" style={{ color: "var(--ink-muted)" }}>iv · Ключевые события</div>
+              <h3 style={{ fontSize: 28, letterSpacing: "-0.015em" }}>Сюжет в нескольких точках</h3>
+              {events.length > 0 ? (
+                <ol style={{ listStyle: "none", margin: 0, marginTop: 12, padding: 0 }}>
+                  {events.map((event, index) => (
+                    <EventRow key={`${event.title}:${index}`} event={event} index={index} total={events.length} />
                   ))}
                 </ol>
               ) : (
-                <p className="soft" style={{ fontSize: 15, lineHeight: 1.6 }}>Ключевые события появятся после полного анализа книги.</p>
+                <PlaceholderCard text={PLACEHOLDER_EVENTS} />
               )}
-            </AnalysisSection>
+            </section>
 
-            <div style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: "var(--r-xl)", marginTop: 72, padding: "48px 32px", textAlign: "center" }}>
+            {/* CTA */}
+            <div
+              style={{
+                background: "var(--paper-2)",
+                border: "1px solid var(--rule)",
+                borderRadius: "var(--r-xl)",
+                marginTop: 72,
+                padding: "48px 32px",
+                textAlign: "center",
+              }}
+            >
               <div className="mono" style={{ color: "var(--mark)", marginBottom: 14 }}>Дальше — вопросы</div>
-              <h3 style={{ fontSize: 30, letterSpacing: 0, margin: "0 auto", maxWidth: 520, textWrap: "balance" }}>
+              <h3 style={{ fontSize: 30, letterSpacing: "-0.015em", margin: "0 auto", maxWidth: 520, textWrap: "balance" }}>
                 Хотите спросить о чём-то, чего нет в разборе?
               </h3>
               <p className="soft" style={{ fontSize: 15, lineHeight: 1.55, margin: "14px auto 0", maxWidth: 460 }}>
@@ -283,24 +303,24 @@ export function BookOverview() {
       )}
       <style jsx>{`
         @media (max-width: 820px) {
-          .book-hero-grid {
+          :global(.book-hero-grid) {
             grid-template-columns: 1fr !important;
             gap: 32px !important;
           }
-          .book-hero-actions {
+          :global(.book-hero-actions) {
             align-items: stretch;
             flex-direction: column;
           }
-          .book-hero-actions :global(.btn) {
+          :global(.book-hero-actions .btn) {
             justify-content: center;
             width: 100%;
           }
-          .book-character-grid {
+          :global(.heroes-grid) {
             grid-template-columns: 1fr !important;
           }
         }
         @media (max-width: 520px) {
-          .book-hero-grid > div:first-child {
+          :global(.book-hero-grid) > div:first-child {
             width: min(260px, 100%) !important;
           }
         }
@@ -309,18 +329,76 @@ export function BookOverview() {
   );
 }
 
-function AnalysisSection({ eyebrow, title, children }: { eyebrow: string; title: string; children: React.ReactNode }) {
+function HeroCard({ hero, index }: { hero: BookShowcaseCharacterDTO; index: number }) {
+  const initial = (hero.name || "?").trim().charAt(0) || "?";
+  const color = HERO_AVATAR_COLORS[index % HERO_AVATAR_COLORS.length];
   return (
-    <motion.section initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="stack">
-      <div>
-        <div className="mono" style={{ color: "var(--ink-muted)", marginBottom: 10 }}>{eyebrow}</div>
-        <h3 style={{ fontSize: 28, letterSpacing: 0 }}>{title}</h3>
+    <div className="card" style={{ background: "var(--cream)", padding: 20 }}>
+      <div className="row-sm" style={{ marginBottom: 8 }}>
+        <div
+          style={{
+            alignItems: "center",
+            background: color,
+            borderRadius: "50%",
+            color: "#fff",
+            display: "flex",
+            fontFamily: "var(--font-serif)",
+            fontSize: 14,
+            height: 32,
+            justifyContent: "center",
+            width: 32,
+          }}
+        >
+          {initial}
+        </div>
+        <div style={{ fontFamily: "var(--font-serif)", fontSize: 17, fontWeight: 500 }}>{hero.name}</div>
       </div>
-      {children}
-    </motion.section>
+      <p className="soft" style={{ fontSize: 14, lineHeight: 1.5 }}>{hero.description}</p>
+    </div>
   );
 }
 
-function Divider() {
-  return <div className="hr" style={{ margin: "56px 0" }} />;
+function EventRow({
+  event,
+  index,
+  total,
+}: {
+  event: BookShowcaseEventDTO;
+  index: number;
+  total: number;
+}) {
+  return (
+    <li
+      style={{
+        borderBottom: index < total - 1 ? "1px solid var(--rule-soft)" : "none",
+        display: "grid",
+        gap: 20,
+        gridTemplateColumns: "48px 1fr",
+        padding: "18px 0",
+      }}
+    >
+      <div style={{ color: "var(--mark)", fontFamily: "var(--font-serif)", fontSize: 28, lineHeight: 1 }}>
+        {String(index + 1).padStart(2, "0")}
+      </div>
+      <div style={{ color: "var(--ink)", fontFamily: "var(--font-serif)", fontSize: 19, lineHeight: 1.5, paddingTop: 2 }}>
+        <div>{event.title}</div>
+        {event.description ? (
+          <p className="soft" style={{ fontFamily: "var(--font-sans)", fontSize: 14, lineHeight: 1.55, marginTop: 6 }}>
+            {event.description}
+          </p>
+        ) : null}
+      </div>
+    </li>
+  );
+}
+
+function PlaceholderCard({ text }: { text: string }) {
+  return (
+    <div
+      className="card"
+      style={{ background: "var(--paper-2)", color: "var(--ink-muted)", fontSize: 14, padding: 20 }}
+    >
+      {text}
+    </div>
+  );
 }

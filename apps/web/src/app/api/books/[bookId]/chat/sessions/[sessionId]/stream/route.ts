@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import { BOOK_CHAT_SCENE_TOOLS_ENABLED, isBookChatToolName, type BookChatToolName } from "@/lib/bookChatTools";
 import { resolveAuthUser } from "@/lib/authUser";
 import { resolveAccessibleBook } from "@/lib/chatAccess";
 import { BookChatError, streamBookChatThreadReply } from "@/lib/bookChatService";
@@ -21,18 +20,18 @@ function statusForToolCall(toolName: string): string {
     normalized === "search_paragraphs_hybrid" ||
     normalized === "search_paragraphs_lexical"
   ) {
-    return "Ищу подходящие абзацы";
+    return "Ищу нужные параграфы";
   }
   if (normalized === "search_scenes") {
     return "Ищу подходящие сцены";
   }
   if (normalized === "get_scene_context") {
-    return "Детально изучаю сцену";
+    return "Изучаю сцену";
   }
   if (normalized === "read_passages" || normalized === "get_paragraph_slice") {
-    return "Читаю соседний контекст";
+    return "Читаю фрагмент";
   }
-  return "Проверяю релевантные фрагменты";
+  return "Проверяю фрагменты";
 }
 
 function statusForToolResult(toolName: string): string {
@@ -42,18 +41,18 @@ function statusForToolResult(toolName: string): string {
     normalized === "search_paragraphs_hybrid" ||
     normalized === "search_paragraphs_lexical"
   ) {
-    return "Нашёл релевантные абзацы, собираю ответ";
+    return "Анализирую параграфы";
   }
   if (normalized === "search_scenes") {
-    return "Сцены найдены, уточняю доказательства";
+    return "Анализирую сцены";
   }
   if (normalized === "get_scene_context") {
-    return "Сцена изучена, формулирую вывод";
+    return "Связываю детали сцены";
   }
   if (normalized === "read_passages" || normalized === "get_paragraph_slice") {
-    return "Контекст проверен, формулирую ответ";
+    return "Связываю контекст";
   }
-  return "Собираю ответ";
+  return "Формирую ответ";
 }
 
 export async function POST(request: Request, context: RouteContext) {
@@ -82,39 +81,6 @@ export async function POST(request: Request, context: RouteContext) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
   }
 
-  let selectedTools: BookChatToolName[] | undefined;
-  if (body.selectedTools !== undefined) {
-    if (!Array.isArray(body.selectedTools)) {
-      return NextResponse.json({ error: "selectedTools must be an array" }, { status: 400 });
-    }
-
-    const invalidTools = body.selectedTools
-      .map((item) => String(item || "").trim())
-      .filter(
-        (item) =>
-          item &&
-          (!isBookChatToolName(item) ||
-            (!BOOK_CHAT_SCENE_TOOLS_ENABLED && (item === "search_scenes" || item === "get_scene_context")))
-      );
-    if (invalidTools.length > 0) {
-      return NextResponse.json(
-        { error: `Unsupported tools: ${invalidTools.join(", ")}` },
-        { status: 400 }
-      );
-    }
-
-    selectedTools = Array.from(
-      new Set(
-        body.selectedTools
-          .map((item) => String(item || "").trim())
-          .filter((item): item is BookChatToolName => isBookChatToolName(item))
-      )
-    );
-    if (selectedTools.length === 0) {
-      return NextResponse.json({ error: "At least one tool must be selected" }, { status: 400 });
-    }
-  }
-
   const encoder = new TextEncoder();
   let closed = false;
 
@@ -141,14 +107,15 @@ export async function POST(request: Request, context: RouteContext) {
           sendEvent("session", {
             sessionId,
           });
-          sendStatus("Разбираю вопрос и подбираю опоры в тексте");
+          // Initial "Думаю над вопросом" is set client-side; we don't echo a
+          // duplicate server-side status here. The next status message will
+          // come from history compaction / planner / tool calls naturally.
 
           const result = await streamBookChatThreadReply({
             bookId: book.id,
             threadId: sessionId,
             ownerUserId: authUser.id,
             userText: message,
-            selectedTools,
             // Internal model thoughts are intentionally not streamed to the UI.
             // Some providers emit many repeated reasoning deltas, which can flood the chat surface.
             onStatus: async (status) => {

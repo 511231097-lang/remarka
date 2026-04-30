@@ -371,6 +371,8 @@ export async function upsertBookChatTurnMetric(params: {
   modelInputTokens?: number;
   modelOutputTokens?: number;
   modelTotalTokens?: number;
+  modelCachedInputTokens?: number;
+  modelThoughtsTokens?: number;
   embeddingInputTokens?: number;
   chatCostUsd?: number;
   embeddingCostUsd?: number;
@@ -381,6 +383,30 @@ export async function upsertBookChatTurnMetric(params: {
   fallbackUsed?: boolean;
   fallbackKind?: string | null;
 }) {
+  const baseFields = {
+    chatModel: String(params.chatModel || "").trim(),
+    embeddingModel: String(params.embeddingModel || "").trim(),
+    selectedToolsJson: asJson(params.selectedTools || []),
+    toolConfigKey: String(params.toolConfigKey || "").trim(),
+    promptVariant: String(params.promptVariant || "").trim(),
+    systemPromptVersion: String(params.systemPromptVersion || "").trim(),
+    pricingVersion: String(params.pricingVersion || "").trim(),
+    modelInputTokens: Math.max(0, Math.round(Number(params.modelInputTokens || 0))),
+    modelOutputTokens: Math.max(0, Math.round(Number(params.modelOutputTokens || 0))),
+    modelTotalTokens: Math.max(0, Math.round(Number(params.modelTotalTokens || 0))),
+    modelCachedInputTokens: Math.max(0, Math.round(Number(params.modelCachedInputTokens || 0))),
+    modelThoughtsTokens: Math.max(0, Math.round(Number(params.modelThoughtsTokens || 0))),
+    embeddingInputTokens: Math.max(0, Math.round(Number(params.embeddingInputTokens || 0))),
+    chatCostUsd: Math.max(0, Number(params.chatCostUsd || 0)),
+    embeddingCostUsd: Math.max(0, Number(params.embeddingCostUsd || 0)),
+    totalCostUsd: Math.max(0, Number(params.totalCostUsd || 0)),
+    totalLatencyMs: Math.max(0, Math.round(Number(params.totalLatencyMs || 0))),
+    answerLengthChars: Math.max(0, Math.round(Number(params.answerLengthChars || 0))),
+    citationCount: Math.max(0, Math.round(Number(params.citationCount || 0))),
+    fallbackUsed: Boolean(params.fallbackUsed),
+    fallbackKind: params.fallbackKind ? String(params.fallbackKind).trim() : null,
+  };
+
   return params.client.bookChatTurnMetric.upsert({
     where: {
       messageId: params.messageId,
@@ -389,47 +415,9 @@ export async function upsertBookChatTurnMetric(params: {
       bookId: params.bookId,
       threadId: params.threadId,
       messageId: params.messageId,
-      chatModel: String(params.chatModel || "").trim(),
-      embeddingModel: String(params.embeddingModel || "").trim(),
-      selectedToolsJson: asJson(params.selectedTools || []),
-      toolConfigKey: String(params.toolConfigKey || "").trim(),
-      promptVariant: String(params.promptVariant || "").trim(),
-      systemPromptVersion: String(params.systemPromptVersion || "").trim(),
-      pricingVersion: String(params.pricingVersion || "").trim(),
-      modelInputTokens: Math.max(0, Math.round(Number(params.modelInputTokens || 0))),
-      modelOutputTokens: Math.max(0, Math.round(Number(params.modelOutputTokens || 0))),
-      modelTotalTokens: Math.max(0, Math.round(Number(params.modelTotalTokens || 0))),
-      embeddingInputTokens: Math.max(0, Math.round(Number(params.embeddingInputTokens || 0))),
-      chatCostUsd: Math.max(0, Number(params.chatCostUsd || 0)),
-      embeddingCostUsd: Math.max(0, Number(params.embeddingCostUsd || 0)),
-      totalCostUsd: Math.max(0, Number(params.totalCostUsd || 0)),
-      totalLatencyMs: Math.max(0, Math.round(Number(params.totalLatencyMs || 0))),
-      answerLengthChars: Math.max(0, Math.round(Number(params.answerLengthChars || 0))),
-      citationCount: Math.max(0, Math.round(Number(params.citationCount || 0))),
-      fallbackUsed: Boolean(params.fallbackUsed),
-      fallbackKind: params.fallbackKind ? String(params.fallbackKind).trim() : null,
+      ...baseFields,
     },
-    update: {
-      chatModel: String(params.chatModel || "").trim(),
-      embeddingModel: String(params.embeddingModel || "").trim(),
-      selectedToolsJson: asJson(params.selectedTools || []),
-      toolConfigKey: String(params.toolConfigKey || "").trim(),
-      promptVariant: String(params.promptVariant || "").trim(),
-      systemPromptVersion: String(params.systemPromptVersion || "").trim(),
-      pricingVersion: String(params.pricingVersion || "").trim(),
-      modelInputTokens: Math.max(0, Math.round(Number(params.modelInputTokens || 0))),
-      modelOutputTokens: Math.max(0, Math.round(Number(params.modelOutputTokens || 0))),
-      modelTotalTokens: Math.max(0, Math.round(Number(params.modelTotalTokens || 0))),
-      embeddingInputTokens: Math.max(0, Math.round(Number(params.embeddingInputTokens || 0))),
-      chatCostUsd: Math.max(0, Number(params.chatCostUsd || 0)),
-      embeddingCostUsd: Math.max(0, Number(params.embeddingCostUsd || 0)),
-      totalCostUsd: Math.max(0, Number(params.totalCostUsd || 0)),
-      totalLatencyMs: Math.max(0, Math.round(Number(params.totalLatencyMs || 0))),
-      answerLengthChars: Math.max(0, Math.round(Number(params.answerLengthChars || 0))),
-      citationCount: Math.max(0, Math.round(Number(params.citationCount || 0))),
-      fallbackUsed: Boolean(params.fallbackUsed),
-      fallbackKind: params.fallbackKind ? String(params.fallbackKind).trim() : null,
-    },
+    update: baseFields,
   });
 }
 

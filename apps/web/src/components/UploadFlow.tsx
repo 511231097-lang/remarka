@@ -2,24 +2,56 @@
 
 import Link from "next/link";
 import { motion } from "motion/react";
-import { AlertCircle, Check, FileText, Loader2, Upload } from "lucide-react";
+import { AlertCircle, ArrowRight, BookOpen, Check, Library, Loader2, MessageCircle, Upload } from "lucide-react";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { createBook, getBookAnalysisStatus } from "@/lib/booksClient";
 import type { BookAnalysisStatusDTO } from "@/lib/books";
 
 type UploadStep = "select" | "consents" | "processing" | "complete";
 
+interface SelectedFileMeta {
+  file: File;
+  name: string;
+  size: string;
+  format: string;
+}
+
+const ACCEPTED_FORMATS = ["EPUB", "FB2", "PDF"] as const;
+
+function formatFileSize(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return "0 КБ";
+  if (bytes < 1024) return `${bytes} Б`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+}
+
+function detectFormat(name: string): string {
+  const ext = name.split(".").pop()?.toUpperCase() || "";
+  if (ext === "EPUB" || ext === "FB2" || ext === "PDF" || ext === "ZIP") return ext;
+  return ext || "Файл";
+}
+
+function progressLabel(progress: number): string {
+  if (progress < 25) return "Извлекаем текст…";
+  if (progress < 55) return "Разбиваем на фрагменты…";
+  if (progress < 85) return "Индексируем для поиска…";
+  return "Собираем разбор…";
+}
+
 export function UploadFlow() {
   const [step, setStep] = useState<UploadStep>("select");
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
+  const [selectedFile, setSelectedFile] = useState<SelectedFileMeta | null>(null);
   const [createdBookId, setCreatedBookId] = useState<string | null>(null);
   const [analysisStatus, setAnalysisStatus] = useState<BookAnalysisStatusDTO | null>(null);
   const [consents, setConsents] = useState({ rights: false, license: false, process: false });
   const [error, setError] = useState<string | null>(null);
+  const [dragActive, setDragActive] = useState(false);
+  const inputRef = useRef<HTMLInputElement | null>(null);
   const router = useRouter();
 
-  const canStart = selectedFile && consents.rights && consents.license && consents.process;
+  const allConsents = consents.rights && consents.license && consents.process;
+  const canStart = Boolean(selectedFile) && allConsents;
 
   useEffect(() => {
     if (step !== "processing" || !createdBookId) return;
@@ -58,7 +90,7 @@ export function UploadFlow() {
 
   useEffect(() => {
     if (step !== "complete" || !createdBookId) return;
-    const timer = setTimeout(() => router.push(`/book/${createdBookId}`), 1200);
+    const timer = setTimeout(() => router.push(`/book/${createdBookId}`), 1600);
     return () => clearTimeout(timer);
   }, [createdBookId, router, step]);
 
@@ -67,14 +99,28 @@ export function UploadFlow() {
   const totalBlocks = useMemo(() => chapterStats.reduce((sum, chapter) => sum + chapter.totalBlocks, 0), [chapterStats]);
   const progress = totalBlocks > 0 ? Math.round((checkedBlocks / totalBlocks) * 100) : createdBookId ? 18 : 6;
 
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
+  const acceptFile = (file: File | null | undefined) => {
     if (!file) return;
-    setSelectedFile(file);
+    setSelectedFile({
+      file,
+      name: file.name,
+      size: formatFileSize(file.size),
+      format: detectFormat(file.name),
+    });
     setCreatedBookId(null);
     setAnalysisStatus(null);
     setError(null);
     setStep("consents");
+  };
+
+  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
+    acceptFile(event.target.files?.[0]);
+  };
+
+  const handleDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    setDragActive(false);
+    acceptFile(event.dataTransfer.files?.[0]);
   };
 
   const handleStartProcessing = async () => {
@@ -84,7 +130,7 @@ export function UploadFlow() {
     setCreatedBookId(null);
     setStep("processing");
     try {
-      const created = await createBook({ file: selectedFile });
+      const created = await createBook({ file: selectedFile.file });
       setCreatedBookId(created.id);
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Не удалось загрузить книгу");
@@ -92,75 +138,242 @@ export function UploadFlow() {
     }
   };
 
+  const stepNumber = step === "select" ? 1 : step === "consents" ? 2 : 3;
+  const stepTitle =
+    step === "select"
+      ? "Добавить собственную книгу"
+      : step === "consents"
+        ? "Небольшие согласия"
+        : step === "processing"
+          ? "Ремарка читает книгу"
+          : "Готово — книга в библиотеке";
+
   return (
     <div className="screen-fade">
-      <div className="container-narrow" style={{ paddingBottom: 72, paddingTop: 64 }}>
-        <div className="mono" style={{ color: "var(--mark)", marginBottom: 16 }}>Плюс · загрузка книги</div>
-        <h1 style={{ fontSize: "clamp(40px, 7vw, 56px)", letterSpacing: 0, lineHeight: 1.02 }}>
-          Загрузите книгу.<br />
-          <span style={{ color: "var(--mark)", fontStyle: "italic" }}>Ремарка</span> разберёт её.
+      <div className="container-narrow" style={{ paddingBottom: 96, paddingTop: 56 }}>
+        <div className="mono" style={{ color: "var(--mark)", marginBottom: 16 }}>
+          Загрузка · шаг {stepNumber} из 3
+        </div>
+        <h1 style={{ fontSize: "clamp(36px, 6vw, 44px)", letterSpacing: "-0.02em", lineHeight: 1.05 }}>
+          {stepTitle}
         </h1>
-        <p className="soft" style={{ fontSize: 17, lineHeight: 1.65, marginTop: 22, maxWidth: 620 }}>
-          Файл останется приватным. Перед обработкой нужно подтвердить права и согласие на технический анализ текста.
-        </p>
 
-        <motion.div initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} className="card" style={{ marginTop: 44, padding: 32 }}>
+        <motion.div
+          key={step}
+          initial={{ opacity: 0, y: 12 }}
+          animate={{ opacity: 1, y: 0 }}
+          style={{ marginTop: 40 }}
+        >
           {step === "select" && (
-            <label style={{ alignItems: "center", border: "1px dashed var(--rule)", borderRadius: "var(--r-lg)", cursor: "pointer", display: "flex", flexDirection: "column", gap: 14, padding: "56px 24px", textAlign: "center" }}>
-              <Upload size={30} style={{ color: "var(--mark)" }} />
-              <div>
-                <h2 style={{ fontSize: 28 }}>Выберите файл</h2>
-                <p className="muted" style={{ fontSize: 14, marginTop: 8 }}>EPUB · FB2 · PDF · ZIP</p>
+            <div>
+              <div
+                className="card"
+                onDragOver={(event) => { event.preventDefault(); setDragActive(true); }}
+                onDragLeave={() => setDragActive(false)}
+                onDrop={handleDrop}
+                onClick={() => inputRef.current?.click()}
+                style={{
+                  background: "var(--paper-2)",
+                  border: `2px dashed ${dragActive ? "var(--mark)" : "var(--rule)"}`,
+                  cursor: "pointer",
+                  padding: 48,
+                  textAlign: "center",
+                  transition: "border-color .15s",
+                }}
+              >
+                <div style={{ fontFamily: "var(--font-serif)", fontSize: 28, color: "var(--ink)" }}>
+                  Перетащите файл сюда
+                </div>
+                <div className="soft" style={{ fontSize: 14, marginTop: 8 }}>
+                  или нажмите, чтобы выбрать
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-mark btn-lg"
+                  style={{ marginTop: 24 }}
+                  onClick={(event) => { event.stopPropagation(); inputRef.current?.click(); }}
+                >
+                  <Upload size={16} /> Выбрать файл
+                </button>
+                <div className="row" style={{ gap: 12, justifyContent: "center", marginTop: 24 }}>
+                  {ACCEPTED_FORMATS.map((format) => (
+                    <div key={format} className="badge">{format}</div>
+                  ))}
+                  <span className="mono" style={{ color: "var(--ink-faint)" }}>до 50 МБ</span>
+                </div>
+                <input
+                  ref={inputRef}
+                  type="file"
+                  className="sr-only"
+                  accept=".fb2,.epub,.pdf,.zip"
+                  onChange={handleFileSelect}
+                />
               </div>
-              <span className="btn btn-mark">Открыть файл</span>
-              <input type="file" className="sr-only" accept=".fb2,.epub,.pdf,.zip" onChange={handleFileSelect} />
-            </label>
+              <p className="soft" style={{ fontSize: 13, lineHeight: 1.6, marginTop: 20 }}>
+                После загрузки Ремарка построит разбор и сделает книгу доступной для чата.
+                Обработка занимает 1–3 минуты на книгу объёмом 400 страниц.
+              </p>
+            </div>
           )}
 
           {step === "consents" && selectedFile && (
             <div>
-              <div className="row" style={{ alignItems: "flex-start", marginBottom: 24 }}>
-                <FileText size={24} style={{ color: "var(--mark)", flexShrink: 0 }} />
-                <div>
-                  <h2 style={{ fontSize: 28 }}>Подтверждение загрузки</h2>
-                  <p className="muted" style={{ fontSize: 14, marginTop: 4 }}>{selectedFile.name}</p>
+              <div className="card" style={{ padding: 24 }}>
+                <div className="row">
+                  <div
+                    style={{
+                      alignItems: "center",
+                      background: "var(--paper-2)",
+                      border: "1px solid var(--rule)",
+                      borderRadius: 4,
+                      color: "var(--ink-muted)",
+                      display: "flex",
+                      flexShrink: 0,
+                      height: 64,
+                      justifyContent: "center",
+                      width: 48,
+                    }}
+                  >
+                    <BookOpen size={20} />
+                  </div>
+                  <div>
+                    <div style={{ fontFamily: "var(--font-serif)", fontSize: 17 }}>{selectedFile.name}</div>
+                    <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 4 }}>
+                      {selectedFile.format} · {selectedFile.size}
+                    </div>
+                  </div>
                 </div>
               </div>
-              {error && <div className="card" style={{ borderColor: "var(--mark)", color: "var(--mark)", marginBottom: 18, padding: 14 }}><AlertCircle size={16} /> {error}</div>}
-              <div className="stack">
-                <ConsentRow checked={consents.rights} onChange={(rights) => setConsents({ ...consents, rights })} label="У меня есть право использовать этот файл для личного чтения и анализа." />
-                <ConsentRow checked={consents.license} onChange={(license) => setConsents({ ...consents, license })} label="Я предоставляю ремарке ограниченную лицензию на техническую обработку файла." />
-                <ConsentRow checked={consents.process} onChange={(process) => setConsents({ ...consents, process })} label="Я согласен на автоматическое извлечение текста, индексацию и построение разбора." />
+
+              {error && (
+                <div
+                  className="card"
+                  style={{ alignItems: "center", borderColor: "var(--mark)", color: "var(--mark)", display: "flex", gap: 10, marginTop: 18, padding: 14 }}
+                >
+                  <AlertCircle size={16} /> {error}
+                </div>
+              )}
+
+              <div className="stack-lg" style={{ marginTop: 28 }}>
+                <ConsentRow
+                  checked={consents.rights}
+                  onChange={(rights) => setConsents((current) => ({ ...current, rights }))}
+                  label="Заверение о правах"
+                  sub="Я заверяю, что у меня есть достаточные права на загрузку этого файла: это моя рукопись, законно приобретённый экземпляр, произведение в общественном достоянии или иное законное основание. Ответственность за достоверность заверения я беру на себя."
+                />
+                <ConsentRow
+                  checked={consents.license}
+                  onChange={(license) => setConsents((current) => ({ ...current, license }))}
+                  label={
+                    <>
+                      Принимаю{" "}
+                      <Link className="lnk" href="/legal/upload">Условия загрузки произведения</Link>
+                    </>
+                  }
+                  sub="Предоставляю Ремарке ограниченную неисключительную лицензию на хранение, техническое воспроизведение, индексирование и анализ произведения — только для выдачи результата мне. Лицензия не даёт права публиковать или распространять файл."
+                />
+                <ConsentRow
+                  checked={consents.process}
+                  onChange={(process) => setConsents((current) => ({ ...current, process }))}
+                  label="Согласие на обработку и анализ"
+                  sub="Содержимое файла обрабатывается автоматически: извлечение текста, построение векторного индекса, формирование разбора. Книга не публикуется, не используется для обучения моделей и не попадает в общий каталог — она видна только мне."
+                />
               </div>
-              <div className="row" style={{ flexWrap: "wrap", justifyContent: "space-between", marginTop: 28 }}>
-                <Link className="lnk" href="/legal/upload">Условия загрузки произведения</Link>
-                <button className="btn btn-mark" disabled={!canStart} onClick={handleStartProcessing} style={{ opacity: canStart ? 1 : 0.5 }}>
-                  Начать анализ
+
+              <div className="row" style={{ justifyContent: "space-between", marginTop: 36 }}>
+                <button
+                  type="button"
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setStep("select");
+                    setSelectedFile(null);
+                    setError(null);
+                  }}
+                >
+                  Назад
+                </button>
+                <button
+                  type="button"
+                  className="btn btn-mark"
+                  disabled={!canStart}
+                  onClick={handleStartProcessing}
+                  style={{ opacity: canStart ? 1 : 0.5 }}
+                >
+                  Продолжить <ArrowRight size={14} />
                 </button>
               </div>
             </div>
           )}
 
           {step === "processing" && (
-            <div style={{ textAlign: "center" }}>
-              <Loader2 className="mx-auto animate-spin" size={34} style={{ color: "var(--mark)" }} />
-              <h2 style={{ fontSize: 32, marginTop: 18 }}>{analysisStatus?.overallState === "running" ? "Анализируем книгу" : "Запускаем анализ"}</h2>
-              <p className="muted" style={{ fontSize: 14, margin: "10px auto 0", maxWidth: 520 }}>
-                Книга станет доступна после завершения обработки. Можно оставить страницу открытой.
-              </p>
-              <div style={{ background: "var(--paper-3)", borderRadius: 999, height: 8, marginTop: 28, overflow: "hidden" }}>
-                <div style={{ background: "var(--mark)", height: "100%", transition: "width .25s ease", width: `${progress}%` }} />
+            <div className="card" style={{ padding: 48, textAlign: "center" }}>
+              <Loader2 className="animate-spin" size={28} style={{ color: "var(--mark)" }} />
+              <div
+                style={{
+                  color: "var(--mark)",
+                  fontFamily: "var(--font-serif)",
+                  fontSize: 52,
+                  lineHeight: 1,
+                  marginTop: 18,
+                }}
+              >
+                {progress}%
               </div>
-              <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 12 }}>{progress}%</div>
-              {error && <p style={{ color: "var(--mark)", fontSize: 13, marginTop: 18 }}>{error}</p>}
+              <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 8 }}>
+                {progressLabel(progress)}
+              </div>
+              <div
+                style={{
+                  background: "var(--paper-2)",
+                  borderRadius: 100,
+                  height: 6,
+                  marginTop: 32,
+                  overflow: "hidden",
+                }}
+              >
+                <div
+                  style={{
+                    background: "var(--mark)",
+                    height: "100%",
+                    transition: "width .25s ease",
+                    width: `${progress}%`,
+                  }}
+                />
+              </div>
+              {error && (
+                <p style={{ color: "var(--mark)", fontSize: 13, marginTop: 18 }}>{error}</p>
+              )}
             </div>
           )}
 
           {step === "complete" && (
-            <div style={{ textAlign: "center" }}>
-              <div className="complaint-check"><Check size={18} /></div>
-              <h2 style={{ fontSize: 32, marginTop: 18 }}>Книга готова</h2>
-              <p className="muted" style={{ marginTop: 10 }}>Переводим на страницу разбора.</p>
+            <div className="card" style={{ padding: 48, textAlign: "center" }}>
+              <div
+                style={{
+                  alignItems: "center",
+                  background: "var(--mark-soft)",
+                  borderRadius: "50%",
+                  color: "var(--mark)",
+                  display: "inline-flex",
+                  height: 64,
+                  justifyContent: "center",
+                  width: 64,
+                }}
+              >
+                <Check size={28} />
+              </div>
+              <h3 style={{ fontSize: 28, marginTop: 20 }}>Книга в вашей библиотеке</h3>
+              <p className="soft" style={{ fontSize: 15, marginTop: 12 }}>
+                Разбор построен, чат готов отвечать. Приятного чтения.
+              </p>
+              <div className="row" style={{ justifyContent: "center", marginTop: 28 }}>
+                <Link className="btn btn-ghost" href="/library">
+                  <Library size={16} /> В библиотеку
+                </Link>
+                <Link className="btn btn-mark" href={createdBookId ? `/book/${createdBookId}/chat` : "/library"}>
+                  <MessageCircle size={16} /> Открыть чат
+                </Link>
+              </div>
             </div>
           )}
         </motion.div>
@@ -169,11 +382,54 @@ export function UploadFlow() {
   );
 }
 
-function ConsentRow({ checked, onChange, label }: { checked: boolean; onChange: (checked: boolean) => void; label: string }) {
+interface ConsentRowProps {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  label: React.ReactNode;
+  sub: React.ReactNode;
+}
+
+function ConsentRow({ checked, onChange, label, sub }: ConsentRowProps) {
   return (
-    <label className="complaint-sworn" style={{ marginTop: 0 }}>
-      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
-      <span>{label}</span>
+    <label
+      style={{
+        background: checked ? "var(--mark-soft)" : "var(--cream)",
+        border: `1px solid ${checked ? "var(--mark)" : "var(--rule)"}`,
+        borderRadius: "var(--r)",
+        cursor: "pointer",
+        display: "grid",
+        gap: 14,
+        gridTemplateColumns: "28px 1fr",
+        padding: 20,
+        transition: "all .15s",
+      }}
+    >
+      <div
+        style={{
+          alignItems: "center",
+          background: checked ? "var(--mark)" : "transparent",
+          border: `2px solid ${checked ? "var(--mark)" : "var(--ink-faint)"}`,
+          borderRadius: 4,
+          color: "#fff",
+          display: "flex",
+          height: 20,
+          justifyContent: "center",
+          marginTop: 2,
+          width: 20,
+        }}
+      >
+        {checked && <Check size={12} strokeWidth={3} />}
+      </div>
+      <div>
+        <div style={{ color: "var(--ink)", fontFamily: "var(--font-serif)", fontSize: 16 }}>{label}</div>
+        <div className="soft" style={{ fontSize: 13, lineHeight: 1.55, marginTop: 4 }}>{sub}</div>
+      </div>
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={(event) => onChange(event.target.checked)}
+        style={{ display: "none" }}
+      />
     </label>
   );
 }

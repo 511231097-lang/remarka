@@ -11,27 +11,3 @@ export function appendBookDetailSource(path: string, source: BookDetailSource | 
   const separator = path.includes("?") ? "&" : "?";
   return `${path}${separator}from=${source}`;
 }
-
-export function resolveBookDetailBackTarget(
-  source: BookDetailSource | null,
-  fallbackSource: BookDetailSource = "explore"
-): {
-  source: BookDetailSource;
-  href: string;
-  label: string;
-} {
-  const resolved = source || fallbackSource;
-  if (resolved === "library") {
-    return {
-      source: resolved,
-      href: "/library",
-      label: "К моим книгам",
-    };
-  }
-
-  return {
-    source: resolved,
-    href: "/explore",
-    label: "К каталогу",
-  };
-}

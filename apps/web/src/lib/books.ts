@@ -23,6 +23,8 @@ import type {
 } from "@prisma/client";
 import type { BookChatToolName } from "./bookChatTools";
 
+export type { AnalyzingBookDTO } from "./libraryAnalyzing";
+
 export interface BookOwnerDTO {
   id: string;
   name: string;
@@ -81,6 +83,20 @@ export interface BookChapterDTO {
   orderIndex: number;
   title: string;
   summary: string | null;
+}
+
+export interface BookChapterParagraphDTO {
+  paragraphIndex: number;
+  text: string;
+}
+
+export interface BookChapterContentDTO {
+  id: string;
+  orderIndex: number;
+  title: string;
+  rawText: string;
+  paragraphs: BookChapterParagraphDTO[];
+  totalChapters: number;
 }
 
 export interface CharacterListItemDTO {
@@ -578,7 +594,6 @@ export interface BookChatStreamRequestDTO {
   topK?: number;
   sectionKey?: LiterarySectionKeyDTO;
   entryContext?: BookChatEntryContextDTO;
-  selectedTools?: BookChatToolName[];
 }
 
 export interface BookChatStreamFinalEventDTO {

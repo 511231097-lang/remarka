@@ -1,18 +1,8 @@
-"use client";
+// remarka — страницы юридических документов
 
-import Link from "next/link";
-import { useState } from "react";
-import { ArrowRight, Check } from "lucide-react";
+const { useState: useLP, useEffect: useLPE, useRef: useLPR } = React;
 
-type LegalKey = "terms" | "privacy" | "cookies" | "upload" | "copyright";
-
-const LEGAL_DOCS: Record<LegalKey, {
-  title: string;
-  eyebrow: string;
-  updated: string;
-  intro: string;
-  sections: Array<{ h: string; b: string }> | null;
-}> = {
+const LEGAL_DOCS = {
   terms: {
     title: "Пользовательское соглашение",
     eyebrow: "Оферта",
@@ -82,15 +72,16 @@ const LEGAL_DOCS: Record<LegalKey, {
     eyebrow: "Защита авторских прав",
     updated: "Редакция от 15 апреля 2026",
     intro: "Если вы считаете, что в ремарке кто-то неправомерно использует ваше произведение, направьте заявление по форме ниже или по электронной почте. Мы принимаем заявления в электронной форме.",
-    sections: null,
+    sections: null, // форма вместо секций
   },
 };
 
-const LEGAL_KEYS = Object.keys(LEGAL_DOCS) as LegalKey[];
+function ScreenLegal({ docKey, go }) {
+  const doc = LEGAL_DOCS[docKey] || LEGAL_DOCS.terms;
 
-export function LegalPage({ docKey }: { docKey: string }) {
-  const key = LEGAL_KEYS.includes(docKey as LegalKey) ? (docKey as LegalKey) : "terms";
-  const doc = LEGAL_DOCS[key];
+  if (docKey === "copyright") {
+    return <ScreenLegalCopyright doc={doc} go={go}/>;
+  }
 
   return (
     <div className="container legal-page screen-fade">
@@ -98,231 +89,138 @@ export function LegalPage({ docKey }: { docKey: string }) {
         <aside className="legal-toc">
           <div className="mono eyebrow" style={{ marginBottom: 12 }}>Документы</div>
           <div className="legal-toc-list">
-            {LEGAL_KEYS.map((item) => (
-              <Link
-                key={item}
-                className={`legal-toc-link ${item === key ? "active" : ""}`}
-                href={`/legal/${item}`}
-              >
-                {LEGAL_DOCS[item].title}
-              </Link>
+            {Object.entries(LEGAL_DOCS).map(([k, d]) => (
+              <a key={k} className={`legal-toc-link ${k === docKey ? "active" : ""}`}
+                onClick={() => go("legal", k)}>{d.title}</a>
             ))}
           </div>
-          <div className="hr" style={{ margin: "24px 0" }} />
-          <div style={{ color: "var(--ink-faint)", fontSize: 12, lineHeight: 1.6 }}>
-            {key === "copyright" ? "Прямой e-mail:" : "Вопросы по документам —"}
-            <br />
-            <a
-              href={`mailto:${key === "copyright" ? "abuse" : "hello"}@remarka.app`}
-              className="lnk"
-            >
-              {key === "copyright" ? "abuse@remarka.app" : "hello@remarka.app"}
-            </a>
+          <div className="hr" style={{ margin: "24px 0" }}/>
+          <div style={{ fontSize: 12, color: "var(--ink-faint)", lineHeight: 1.6 }}>
+            Вопросы по документам —<br/>
+            <a href="mailto:hello@remarka.app" className="lnk">hello@remarka.app</a>
           </div>
         </aside>
 
-        {key === "copyright" ? <CopyrightDoc doc={doc} /> : <TextDoc doc={doc} />}
+        <article className="legal-doc">
+          <div className="mono eyebrow">{doc.eyebrow}</div>
+          <h1 className="legal-title">{doc.title}</h1>
+          <div className="legal-updated">{doc.updated}</div>
+          <p className="legal-intro">{doc.intro}</p>
+
+          <div className="legal-sections">
+            {doc.sections.map((s, i) => (
+              <section key={i} className="legal-section">
+                <h3>{s.h}</h3>
+                <p>{s.b}</p>
+              </section>
+            ))}
+          </div>
+
+          <div className="legal-foot">
+            <div className="mono" style={{ color: "var(--ink-faint)" }}>{doc.updated} · redakcia.v4</div>
+            <button className="btn btn-plain btn-sm" onClick={() => go("landing")}>← На главную</button>
+          </div>
+        </article>
       </div>
     </div>
   );
 }
 
-function TextDoc({ doc }: { doc: (typeof LEGAL_DOCS)[LegalKey] }) {
-  return (
-    <article className="legal-doc">
-      <div className="mono eyebrow">{doc.eyebrow}</div>
-      <h1 className="legal-title">{doc.title}</h1>
-      <div className="legal-updated">{doc.updated}</div>
-      <p className="legal-intro">{doc.intro}</p>
-      <div className="legal-sections">
-        {doc.sections?.map((section) => (
-          <section key={section.h} className="legal-section">
-            <h3>{section.h}</h3>
-            <p>{section.b}</p>
-          </section>
-        ))}
-      </div>
-      <div className="legal-foot">
-        <div className="mono" style={{ color: "var(--ink-faint)" }}>
-          {doc.updated} · redakcia.v4
-        </div>
-        <Link className="btn btn-plain btn-sm" href="/">
-          ← На главную
-        </Link>
-      </div>
-    </article>
-  );
-}
-
-function CopyrightDoc({ doc }: { doc: (typeof LEGAL_DOCS)["copyright"] }) {
-  const [submitted, setSubmitted] = useState(false);
-  const [form, setForm] = useState({
-    name: "",
-    org: "",
-    email: "",
-    work: "",
-    url: "",
-    basis: "",
-    desc: "",
-    sworn: false,
-  });
-  const canSubmit = Boolean(
-    form.name && form.email && form.work && form.url && form.basis && form.desc && form.sworn,
-  );
+function ScreenLegalCopyright({ doc, go }) {
+  const [submitted, setSubmitted] = useLP(false);
+  const [form, setForm] = useLP({ name: "", org: "", email: "", work: "", url: "", basis: "", desc: "", sworn: false });
+  const canSubmit = form.name && form.email && form.work && form.url && form.basis && form.desc && form.sworn;
 
   return (
-    <article className="legal-doc">
-      <div className="mono eyebrow">{doc.eyebrow}</div>
-      <h1 className="legal-title">{doc.title}</h1>
-      <div className="legal-updated">{doc.updated}</div>
-      <p className="legal-intro">{doc.intro}</p>
-
-      {submitted ? (
-        <div className="complaint-done">
-          <div className="complaint-check">
-            <Check size={18} />
+    <div className="container legal-page screen-fade">
+      <div className="legal-grid">
+        <aside className="legal-toc">
+          <div className="mono eyebrow" style={{ marginBottom: 12 }}>Документы</div>
+          <div className="legal-toc-list">
+            {Object.entries(LEGAL_DOCS).map(([k, d]) => (
+              <a key={k} className={`legal-toc-link ${k === "copyright" ? "active" : ""}`}
+                onClick={() => go("legal", k)}>{d.title}</a>
+            ))}
           </div>
-          <h3 style={{ fontSize: 22, marginTop: 16 }}>Заявление принято</h3>
-          <p className="muted" style={{ margin: "10px auto 0", maxWidth: 440 }}>
-            Мы ответили копией на указанный вами e-mail. Срок рассмотрения — до 10 рабочих дней.
-            При очевидной обоснованности материал блокируется в течение 24 часов.
-          </p>
-          <button
-            className="btn btn-ghost btn-sm"
-            style={{ marginTop: 22 }}
-            onClick={() => {
-              setSubmitted(false);
-              setForm({ name: "", org: "", email: "", work: "", url: "", basis: "", desc: "", sworn: false });
-            }}
-          >
-            Подать ещё одно
-          </button>
-        </div>
-      ) : (
-        <form
-          className="complaint-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (canSubmit) setSubmitted(true);
-          }}
-        >
-          <div className="complaint-grid">
-            <LegalField label="Ф.И.О. заявителя" required>
-              <input
-                value={form.name}
-                onChange={(event) => setForm({ ...form, name: event.target.value })}
-                placeholder="Иванов Иван Иванович"
-              />
-            </LegalField>
-            <LegalField label="Организация" hint="если от имени юрлица">
-              <input
-                value={form.org}
-                onChange={(event) => setForm({ ...form, org: event.target.value })}
-                placeholder="ООО «Издательство»"
-              />
-            </LegalField>
-            <LegalField label="E-mail для ответа" required>
-              <input
-                type="email"
-                value={form.email}
-                onChange={(event) => setForm({ ...form, email: event.target.value })}
-                placeholder="legal@example.com"
-              />
-            </LegalField>
-            <LegalField label="Название произведения" required>
-              <input
-                value={form.work}
-                onChange={(event) => setForm({ ...form, work: event.target.value })}
-                placeholder="«Название», автор"
-              />
-            </LegalField>
-            <LegalField label="URL страницы / идентификатор книги в ремарке" required full>
-              <input
-                value={form.url}
-                onChange={(event) => setForm({ ...form, url: event.target.value })}
-                placeholder="https://remarka.app/book/... или bookId"
-              />
-            </LegalField>
-            <LegalField
-              label="Основание прав"
-              required
-              full
-              hint="Договор с автором, свидетельство о регистрации, авторство и т.п."
-            >
-              <input
-                value={form.basis}
-                onChange={(event) => setForm({ ...form, basis: event.target.value })}
-                placeholder="Договор № 12 от 01.01.2024 / автор произведения"
-              />
-            </LegalField>
-            <LegalField label="Описание нарушения" required full>
-              <textarea
-                rows={5}
-                value={form.desc}
-                onChange={(event) => setForm({ ...form, desc: event.target.value })}
-                placeholder="Какая часть произведения используется, как вы обнаружили, чем нарушены ваши права…"
-              />
-            </LegalField>
+          <div className="hr" style={{ margin: "24px 0" }}/>
+          <div style={{ fontSize: 12, color: "var(--ink-faint)", lineHeight: 1.6 }}>
+            Прямой e-mail:<br/>
+            <a href="mailto:abuse@remarka.app" className="lnk">abuse@remarka.app</a>
           </div>
+        </aside>
 
-          <label className="complaint-sworn">
-            <input
-              type="checkbox"
-              checked={form.sworn}
-              onChange={(event) => setForm({ ...form, sworn: event.target.checked })}
-            />
-            <span>
-              Подтверждаю, что сведения достоверны, я действую добросовестно и имею право
-              направлять это заявление от своего имени или по доверенности.
-            </span>
-          </label>
+        <article className="legal-doc">
+          <div className="mono eyebrow">{doc.eyebrow}</div>
+          <h1 className="legal-title">{doc.title}</h1>
+          <div className="legal-updated">{doc.updated}</div>
+          <p className="legal-intro">{doc.intro}</p>
 
-          <div
-            className="row"
-            style={{ flexWrap: "wrap", gap: 12, justifyContent: "space-between", marginTop: 20 }}
-          >
-            <div className="muted" style={{ fontSize: 13 }}>
-              Или отправьте заявление на{" "}
-              <a className="lnk" href="mailto:abuse@remarka.app">
-                abuse@remarka.app
-              </a>
+          {submitted ? (
+            <div className="complaint-done">
+              <div className="complaint-check"><Icon.Check/></div>
+              <h3 style={{ fontSize: 22, marginTop: 16 }}>Заявление принято</h3>
+              <p className="muted" style={{ marginTop: 10, maxWidth: 440 }}>
+                Мы ответили копией на указанный вами e-mail. Срок рассмотрения — до 10 рабочих дней. При очевидной обоснованности материал блокируется в течение 24 часов.
+              </p>
+              <button className="btn btn-ghost btn-sm" style={{ marginTop: 22 }} onClick={() => { setSubmitted(false); setForm({ name: "", org: "", email: "", work: "", url: "", basis: "", desc: "", sworn: false }); }}>
+                Подать ещё одно
+              </button>
             </div>
-            <button
-              type="submit"
-              className="btn btn-mark"
-              disabled={!canSubmit}
-              style={{ opacity: canSubmit ? 1 : 0.5 }}
-            >
-              Отправить заявление <ArrowRight size={14} />
-            </button>
-          </div>
-        </form>
-      )}
-    </article>
+          ) : (
+            <form className="complaint-form" onSubmit={(e) => { e.preventDefault(); if (canSubmit) setSubmitted(true); }}>
+              <div className="complaint-grid">
+                <LegalField label="Ф.И.О. заявителя" required>
+                  <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="Иванов Иван Иванович"/>
+                </LegalField>
+                <LegalField label="Организация" hint="если от имени юрлица">
+                  <input value={form.org} onChange={(e) => setForm({ ...form, org: e.target.value })} placeholder="ООО «Издательство»"/>
+                </LegalField>
+                <LegalField label="E-mail для ответа" required>
+                  <input type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="legal@example.com"/>
+                </LegalField>
+                <LegalField label="Название произведения" required>
+                  <input value={form.work} onChange={(e) => setForm({ ...form, work: e.target.value })} placeholder="«Название», автор"/>
+                </LegalField>
+                <LegalField label="URL страницы / идентификатор книги в ремарке" required full>
+                  <input value={form.url} onChange={(e) => setForm({ ...form, url: e.target.value })} placeholder="https://remarka.app/book/... или bookId"/>
+                </LegalField>
+                <LegalField label="Основание прав" required full hint="Договор с автором, свидетельство о регистрации, авторство и т.п.">
+                  <input value={form.basis} onChange={(e) => setForm({ ...form, basis: e.target.value })} placeholder="Договор № 12 от 01.01.2024 / автор произведения"/>
+                </LegalField>
+                <LegalField label="Описание нарушения" required full>
+                  <textarea rows={5} value={form.desc} onChange={(e) => setForm({ ...form, desc: e.target.value })} placeholder="Какая часть произведения используется, как вы обнаружили, чем нарушены ваши права…"/>
+                </LegalField>
+              </div>
+
+              <label className="complaint-sworn">
+                <input type="checkbox" checked={form.sworn} onChange={(e) => setForm({ ...form, sworn: e.target.checked })}/>
+                <span>Подтверждаю, что сведения достоверны, я действую добросовестно и имею право направлять это заявление от своего имени или по доверенности.</span>
+              </label>
+
+              <div className="row" style={{ justifyContent: "space-between", marginTop: 20, flexWrap: "wrap", gap: 12 }}>
+                <div className="muted" style={{ fontSize: 13 }}>Или отправьте заявление на <a className="lnk" href="mailto:abuse@remarka.app">abuse@remarka.app</a></div>
+                <button type="submit" className="btn btn-mark" disabled={!canSubmit} style={{ opacity: canSubmit ? 1 : 0.5 }}>
+                  Отправить заявление <Icon.Arrow/>
+                </button>
+              </div>
+            </form>
+          )}
+        </article>
+      </div>
+    </div>
   );
 }
 
-function LegalField({
-  label,
-  hint,
-  children,
-  required,
-  full,
-}: {
-  label: string;
-  hint?: string;
-  children: React.ReactNode;
-  required?: boolean;
-  full?: boolean;
-}) {
+function LegalField({ label, hint, children, required, full }) {
   return (
     <label className={`complaint-field ${full ? "full" : ""}`}>
       <div className="complaint-label">
-        {label}
-        {required && <span className="req"> *</span>}
+        {label}{required && <span className="req"> *</span>}
         {hint && <span className="complaint-hint"> — {hint}</span>}
       </div>
       {children}
     </label>
   );
 }
+
+Object.assign(window, { ScreenLegal, LEGAL_DOCS });

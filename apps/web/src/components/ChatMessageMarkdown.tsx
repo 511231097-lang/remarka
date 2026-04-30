@@ -7,10 +7,23 @@ import type { Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { BookChatInlineCitationAnchorDTO, BookQuoteTypeDTO } from "@/lib/books";
 
+export interface ParagraphRange {
+  start: number;
+  end?: number;
+}
+
+export interface RefCiteRange {
+  chapterOrderIndex: number;
+  /** One or more paragraph ranges within the chapter. Always ≥1 entry. */
+  paragraphRanges: ParagraphRange[];
+}
+
 interface ChatMessageMarkdownProps {
   content: string;
   className?: string;
   inlineCitations?: BookChatInlineCitationAnchorDTO[];
+  /** Called when user clicks a `[chN:pM]` ref-id badge in the markdown. */
+  onRefCite?: (ref: RefCiteRange) => void;
 }
 
 interface DesktopTooltipPosition {
@@ -32,6 +45,56 @@ function repairLegacyChatFormatting(content: string): string {
   }
 
   return text.replace(/\n{3,}/g, "\n\n").trim();
+}
+
+/**
+ * Convert raw `[chN:pM]`, `[chN:pM-pK]`, `[chN:pA-pB, pC-pD]` etc. ref-id tokens
+ * that the model emits in answers into clickable markdown links so the renderer
+ * can intercept them as small badges. Supports comma-separated multi-range
+ * citations. The `(?!\()` lookahead skips already-formed markdown links.
+ *
+ * Inside the `(ref:...)` URL we strip whitespace so the URL is space-free.
+ */
+function injectRefCiteLinks(text: string): string {
+  return text.replace(
+    /\[ch(\d+):(p\d+(?:-p\d+)?(?:\s*,\s*p\d+(?:-p\d+)?)*)\](?!\()/g,
+    (match, ch, ranges) => {
+      const display = match.slice(1, -1); // strip [ ]
+      const cleanRanges = String(ranges || "").replace(/\s+/g, "");
+      return `[${display}](ref:ch${ch}:${cleanRanges})`;
+    }
+  );
+}
+
+function parseRefCite(href: string): RefCiteRange | null {
+  if (!href.startsWith("ref:")) return null;
+  const body = href.slice("ref:".length);
+  const m = body.match(/^ch(\d+):(.+)$/);
+  if (!m) return null;
+  const chapterOrderIndex = Number.parseInt(m[1] || "0", 10);
+  // Chapter indices are 1-based in the model's ref-id format. Reject ch0 (or
+  // negatives if a hand-crafted URL slips through) — they would 400 from
+  // `/api/books/.../chapters/0` and confuse the reader modal.
+  if (!Number.isFinite(chapterOrderIndex) || chapterOrderIndex < 1) return null;
+
+  const segments = String(m[2] || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const paragraphRanges: ParagraphRange[] = [];
+  for (const segment of segments) {
+    const rm = segment.match(/^p(\d+)(?:-p(\d+))?$/);
+    if (!rm) continue;
+    const start = Number.parseInt(rm[1] || "0", 10);
+    if (!Number.isFinite(start) || start < 1) continue;
+    const endRaw = rm[2] ? Number.parseInt(rm[2], 10) : NaN;
+    // Drop reversed ranges like p10-p3 — they would highlight nothing and
+    // produce a misleading "10–3" label in the reader chip.
+    if (Number.isFinite(endRaw) && endRaw < start) continue;
+    paragraphRanges.push({
+      start,
+      end: Number.isFinite(endRaw) ? endRaw : undefined,
+    });
+  }
+  if (!paragraphRanges.length) return null;
+  return { chapterOrderIndex, paragraphRanges };
 }
 
 function resolveQuoteTypeLabel(type: BookQuoteTypeDTO): string {
@@ -275,8 +338,13 @@ function InlineCitationTrigger(props: {
   return <MobileInlineCitationTrigger citation={citation}>{props.children}</MobileInlineCitationTrigger>;
 }
 
-export function ChatMessageMarkdown({ content, className, inlineCitations = [] }: ChatMessageMarkdownProps) {
-  const value = repairLegacyChatFormatting(content);
+export function ChatMessageMarkdown({
+  content,
+  className,
+  inlineCitations = [],
+  onRefCite,
+}: ChatMessageMarkdownProps) {
+  const value = injectRefCiteLinks(repairLegacyChatFormatting(content));
   if (!value) return null;
 
   const components: Components = {
@@ -289,6 +357,30 @@ export function ChatMessageMarkdown({ content, className, inlineCitations = [] }
         );
       }
 
+      if (typeof href === "string" && href.startsWith("ref:")) {
+        const ref = parseRefCite(href);
+        if (!ref) {
+          return (
+            <span className="chat-ref-badge chat-ref-badge--inert">
+              {children}
+            </span>
+          );
+        }
+        const rangesLabel = ref.paragraphRanges
+          .map((r) => (r.end ? `${r.start}–${r.end}` : `${r.start}`))
+          .join(", ");
+        return (
+          <button
+            type="button"
+            className="chat-ref-badge"
+            onClick={() => onRefCite?.(ref)}
+            title={`Открыть главу ${ref.chapterOrderIndex}, параграф ${rangesLabel}`}
+          >
+            {children}
+          </button>
+        );
+      }
+
       return (
         <a href={href} {...props}>
           {children}
@@ -298,7 +390,7 @@ export function ChatMessageMarkdown({ content, className, inlineCitations = [] }
   };
 
   const urlTransform = (url: string) => {
-    if (url.startsWith("cite:")) return url;
+    if (url.startsWith("cite:") || url.startsWith("ref:")) return url;
     return defaultUrlTransform(url);
   };
 

@@ -1,7 +1,9 @@
 import type {
+  AnalyzingBookDTO,
   BookAnalysisStatusDTO,
   BookAnalyzerStatusDTO as BookAnalyzerStatusDTOValue,
   BookAnalyzerStateDTO,
+  BookChapterContentDTO,
   BookChapterDTO,
   BookChatCreateSessionResponseDTO,
   BookChatCreateSessionRequestDTO,
@@ -113,6 +115,19 @@ export async function getBookChapters(bookId: string): Promise<BookChapterDTO[]>
   return safe.json();
 }
 
+export async function getBookChapterContent(
+  bookId: string,
+  orderIndex: number
+): Promise<BookChapterContentDTO> {
+  const response = await fetch(`/api/books/${bookId}/chapters/${orderIndex}`, {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  const safe = await ensureOk(response, "Не удалось загрузить текст главы");
+  return safe.json();
+}
+
 export interface CreateBookInput {
   file: File;
 }
@@ -143,6 +158,17 @@ export async function getBookAnalysisStatus(bookId: string): Promise<BookAnalysi
 
   const safe = await ensureOk(response, "Не удалось загрузить статус анализа");
   return safe.json();
+}
+
+export async function listAnalyzingBooks(): Promise<AnalyzingBookDTO[]> {
+  const response = await fetch("/api/library/analyzing", {
+    method: "GET",
+    cache: "no-store",
+  });
+
+  const safe = await ensureOk(response, "Не удалось загрузить книги в анализе");
+  const payload = await safe.json();
+  return Array.isArray(payload) ? (payload as AnalyzingBookDTO[]) : [];
 }
 
 export async function listBookChatSessions(bookId: string): Promise<BookChatSessionDTO[]> {

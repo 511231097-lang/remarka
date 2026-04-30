@@ -21,6 +21,9 @@ COPY . .
 RUN npm run db:generate
 
 FROM base AS web-build
+# Bigger heap for Next.js build worker — defaults to ~1.5 GB and SIGTRAPs
+# on bundles with our chat/library screen sizes.
+ENV NODE_OPTIONS=--max-old-space-size=4096
 RUN npm run web:build
 
 FROM node:22-bookworm-slim AS web

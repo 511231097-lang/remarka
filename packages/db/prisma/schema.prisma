@@ -1810,6 +1810,14 @@ model BookChatTurnMetric {
   modelInputTokens    Int      @default(0)
   modelOutputTokens   Int      @default(0)
   modelTotalTokens    Int      @default(0)
+  // Subset of modelInputTokens that hit Vertex implicit/explicit cache. Cached
+  // tokens are billed at ~10% of normal input price (90% off). When >0 means
+  // implicit cache fired on this turn.
+  modelCachedInputTokens Int   @default(0)
+  // "Thinking" tokens for Gemini 3.x and 2.5 thinking models. Billed as output
+  // tokens but invisible in the final answer text. Tracking these separately
+  // lets us measure how much "internal reasoning" each turn consumed.
+  modelThoughtsTokens Int      @default(0)
   embeddingInputTokens Int     @default(0)
   chatCostUsd         Float    @default(0)
   embeddingCostUsd    Float    @default(0)

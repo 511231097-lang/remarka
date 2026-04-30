@@ -25,9 +25,15 @@ export function AppChrome({
   const pathname = usePathname();
   const chatRoute = isChatPath(pathname || "");
 
+  // TEMPORARY: until the subscription model exists, treat every authenticated
+  // user as Plus so the design's plan-pill, upload, and analysis flows are
+  // testable end-to-end. Replace with real `User.plan` resolution when the
+  // billing backend is wired up.
+  const plan: "free" | "plus" = "plus";
+
   return (
     <div className="page">
-      <SiteHeader userName={userName} userImage={userImage} userRole={userRole} />
+      <SiteHeader userName={userName} userImage={userImage} userRole={userRole} plan={plan} />
       <main className="grow">{children}</main>
       {!chatRoute && <SiteFooter />}
     </div>

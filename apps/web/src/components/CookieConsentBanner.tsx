@@ -33,58 +33,6 @@ function persistCookieConsent(prefs: CookiePrefs) {
   window.localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
 }
 
-function CookieSettings({
-  initial,
-  onClose,
-  onSave,
-}: {
-  initial: CookiePrefs;
-  onClose: () => void;
-  onSave: (prefs: CookiePrefs) => void;
-}) {
-  const [analytics, setAnalytics] = useState(initial.analytics);
-  const [perso, setPerso] = useState(initial.perso);
-
-  return (
-    <div className="overlay" onClick={onClose}>
-      <div className="dialog" style={{ maxWidth: 520 }} onClick={(event) => event.stopPropagation()}>
-        <div className="row" style={{ alignItems: "flex-start", justifyContent: "space-between", marginBottom: 18 }}>
-          <div>
-            <div className="mono eyebrow">Cookie-файлы</div>
-            <h2 style={{ fontSize: 24, marginTop: 6 }}>Настройки cookie-файлов</h2>
-          </div>
-          <button className="btn-plain" style={{ padding: 6 }} onClick={onClose} aria-label="Закрыть">
-            <X size={16} />
-          </button>
-        </div>
-        <div className="stack">
-          <CookieRow title="Необходимые" locked desc="Авторизация, сессия, защита от CSRF. Без них сайт не работает." />
-          <CookieRow
-            title="Аналитика"
-            checked={analytics}
-            onChange={setAnalytics}
-            desc="Помогают понять, какие разделы полезны, а какие - нет. Обезличенные."
-          />
-          <CookieRow
-            title="Персонализация"
-            checked={perso}
-            onChange={setPerso}
-            desc="Рекомендации книг, недавние чаты, предпочтения отображения."
-          />
-        </div>
-        <div className="row" style={{ flexWrap: "wrap", gap: 10, justifyContent: "flex-end", marginTop: 24 }}>
-          <button className="btn btn-plain btn-sm" onClick={() => onSave({ analytics: false, perso: false })}>
-            Отклонить всё
-          </button>
-          <button className="btn btn-primary btn-sm" onClick={() => onSave({ analytics, perso })}>
-            Сохранить выбор
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function CookieRow({
   title,
   desc,
@@ -99,20 +47,120 @@ function CookieRow({
   locked?: boolean;
 }) {
   return (
-    <div style={{ background: "var(--paper-2)", border: "1px solid var(--rule)", borderRadius: "var(--r)", display: "flex", gap: 16, padding: "16px 18px" }}>
+    <div
+      style={{
+        display: "flex",
+        gap: 16,
+        padding: "16px 18px",
+        background: "var(--paper-2)",
+        border: "1px solid var(--rule)",
+        borderRadius: "var(--r)",
+      }}
+    >
       <div className="grow">
-        <div style={{ fontSize: 15, fontWeight: 500 }}>{title}</div>
-        <div style={{ color: "var(--ink-muted)", fontSize: 13, lineHeight: 1.5, marginTop: 4 }}>{desc}</div>
+        <div style={{ fontWeight: 500, fontSize: 15 }}>{title}</div>
+        <div style={{ fontSize: 13, color: "var(--ink-muted)", marginTop: 4, lineHeight: 1.5 }}>
+          {desc}
+        </div>
       </div>
       <div style={{ flexShrink: 0 }}>
         {locked ? (
-          <div className="chip active" style={{ fontSize: 11 }}>Всегда</div>
+          <div className="chip active" style={{ fontSize: 11 }}>
+            Всегда
+          </div>
         ) : (
           <label className="switch">
-            <input type="checkbox" checked={Boolean(checked)} onChange={(event) => onChange?.(event.target.checked)} />
+            <input
+              type="checkbox"
+              checked={Boolean(checked)}
+              onChange={(event) => onChange?.(event.target.checked)}
+            />
             <span className="switch-track" />
           </label>
         )}
+      </div>
+    </div>
+  );
+}
+
+function CookieSettings({
+  initial,
+  onClose,
+  onSave,
+}: {
+  initial: CookiePrefs;
+  onClose: () => void;
+  onSave: (prefs: CookiePrefs) => void;
+}) {
+  const [analytics, setAnalytics] = useState(initial.analytics);
+  const [perso, setPerso] = useState(initial.perso);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  return (
+    <div className="overlay" onClick={onClose}>
+      <div
+        className="dialog"
+        style={{ maxWidth: 520 }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "flex-start",
+            marginBottom: 18,
+          }}
+        >
+          <div>
+            <div className="mono eyebrow">Cookie-файлы</div>
+            <h2 style={{ fontSize: 24, marginTop: 6 }}>Настройки cookie-файлов</h2>
+          </div>
+          <button
+            className="btn-plain"
+            style={{ padding: 6 }}
+            onClick={onClose}
+            aria-label="Закрыть"
+          >
+            <X size={16} />
+          </button>
+        </div>
+        <div className="stack">
+          <CookieRow
+            title="Необходимые"
+            locked
+            desc="Авторизация, сессия, защита от CSRF. Без них сайт не работает."
+          />
+          <CookieRow
+            title="Аналитика"
+            checked={analytics}
+            onChange={setAnalytics}
+            desc="Помогают понять, какие разделы полезны, а какие — нет. Обезличенные."
+          />
+          <CookieRow
+            title="Персонализация"
+            checked={perso}
+            onChange={setPerso}
+            desc="Рекомендации книг, недавние чаты, предпочтения отображения."
+          />
+        </div>
+        <div className="row" style={{ justifyContent: "flex-end", gap: 10, marginTop: 24 }}>
+          <button
+            className="btn btn-plain btn-sm"
+            onClick={() => onSave({ analytics: false, perso: false })}
+          >
+            Отклонить всё
+          </button>
+          <button className="btn btn-primary btn-sm" onClick={() => onSave({ analytics, perso })}>
+            Сохранить выбор
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -147,25 +195,43 @@ export function CookieConsentBanner() {
       {visible && (
         <div className="cookie-banner">
           <div className="grow">
-            <div style={{ color: "var(--ink)", fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Про cookie-файлы</div>
-            <div style={{ color: "var(--ink-muted)", fontSize: 13, lineHeight: 1.5 }}>
-              Необходимые cookie-файлы включены всегда - без них не работает вход и сессия. Аналитику и персонализацию
-              включаем только по вашему согласию.{" "}
-              <Link className="lnk" href="/legal/cookies">О cookie-файлах</Link>{" · "}
-              <Link className="lnk" href="/legal/privacy">Политика ПДн</Link>
+            <div
+              style={{ fontSize: 14, color: "var(--ink)", marginBottom: 4, fontWeight: 500 }}
+            >
+              Про cookie-файлы
+            </div>
+            <div style={{ fontSize: 13, color: "var(--ink-muted)", lineHeight: 1.5 }}>
+              Необходимые cookie-файлы включены всегда — без них не работает вход и сессия.
+              Аналитику и персонализацию включаем только по вашему согласию.{" "}
+              <Link className="lnk" href="/legal/cookies">
+                О cookie-файлах
+              </Link>
+              {" · "}
+              <Link className="lnk" href="/legal/privacy">
+                Политика ПДн
+              </Link>
             </div>
           </div>
           <div className="row-sm" style={{ flexShrink: 0, flexWrap: "wrap", gap: 8 }}>
             <button className="btn btn-plain btn-sm" onClick={() => setSettingsOpen(true)}>
               Настроить
             </button>
-            <button className="btn btn-primary btn-sm" onClick={() => save({ analytics: true, perso: true })}>
+            <button
+              className="btn btn-primary btn-sm"
+              onClick={() => save({ analytics: true, perso: true })}
+            >
               Принять всё
             </button>
           </div>
         </div>
       )}
-      {settingsOpen && <CookieSettings initial={prefs} onClose={() => setSettingsOpen(false)} onSave={save} />}
+      {settingsOpen && (
+        <CookieSettings
+          initial={prefs}
+          onClose={() => setSettingsOpen(false)}
+          onSave={save}
+        />
+      )}
     </>
   );
 }
