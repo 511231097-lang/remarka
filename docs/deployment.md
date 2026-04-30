@@ -114,19 +114,44 @@ psql "$DATABASE_URL" -f /srv/remarka/current/scripts/deploy/postgres-bootstrap.s
 
 `postgres-bootstrap.sql` идемпотентен: повторный запуск после миграций не сломает индексы.
 
-## 5. Первый деплой
+## 5. Деплой через GitHub Actions
 
-Через GitHub Actions:
+Раскат разделён на **три** workflow — каждый виден отдельной кнопкой в Actions:
 
-1. В Settings → Secrets добавить `SSH_DEPLOY_KEY` (приватный ключ, парный к `~/.ssh/remarka_deploy.pub`), `WEB_HOST` (`91.186.196.205`), `WORKER_HOST` (IPv6 воркера).
-2. Push в ветку `deploy/main` либо вручную: Actions → Deploy → Run workflow.
+1. **Build** — триггерится автоматически на `push в main` (или вручную). Билдит бандл, типчекает, гоняет тесты, кладёт результат в `/srv/remarka/releases/<id>/` на web и worker, делает `npm ci --omit=dev` + `db:generate`. **Не трогает `current` symlink, не рестартит сервисы.** Прод продолжает работать на старой версии.
+2. **Migrate** — manual `workflow_dispatch`. По умолчанию выбирает последний staged релиз и запускает `prisma migrate deploy` оттуда. Идемпотентен — на уже мигрированной БД no-op.
+3. **Deploy** — manual `workflow_dispatch`. Переключает symlink `current` → `releases/<id>` на web/worker (выбор через input `target`), рестартит systemd, делает health-check.
 
-Что делает workflow:
+### Обычный flow
 
-- `npm ci`, typecheck, unit-тесты, `web:build`.
-- Складывает бандл (исключая `node_modules`, `.next/cache`, `evals`, `.git`) в артефакт.
-- На web: rsync в `/srv/remarka/releases/<id>/`, `npm ci --omit=dev`, `db:generate`, `ln -snfT current`, `systemctl restart remarka-web`, проверяет `/api/health`, чистит старые релизы.
-- На worker: то же через ProxyJump.
+```
+git push origin main          ← Build стартует автоматом
+  ↓ (Actions, ждём зелёного)
+Click "Run workflow" в Migrate ← если PR содержал миграции
+Click "Run workflow" в Deploy ← переключаем код
+```
+
+Если миграций в PR нет — `Migrate` можно пропускать, идти сразу в `Deploy`.
+
+### Secrets
+
+В Settings → Secrets уже должны быть:
+- `SSH_DEPLOY_KEY` — приватный ключ, парный к `~/.ssh/remarka_deploy.pub`
+- `WEB_HOST` — IP или hostname web VPS
+- `WORKER_HOST` — IP воркера (доступен через ProxyJump через web)
+
+### Откат
+
+Если новый Deploy сломал — откатываемся на предыдущий релиз:
+
+```bash
+ssh remarka-web 'sudo -u remarka bash -lc "
+  PREV=$(ls -1t /srv/remarka/releases | sed -n 2p)
+  ln -snfT /srv/remarka/releases/$PREV /srv/remarka/current
+" && sudo systemctl restart remarka-web'
+```
+
+Build хранит **5 последних** релизов, deploy не чистит ничего сам — есть запас на быстрый откат.
 
 Ручной деплой (если CI лежит):
 
