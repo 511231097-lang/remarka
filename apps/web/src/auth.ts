@@ -2,9 +2,10 @@ import type { NextAuthOptions } from "next-auth";
 import YandexProvider from "next-auth/providers/yandex";
 import { PrismaAdapter } from "@auth/prisma-adapter";
 import { prisma } from "@remarka/db";
+import { AUTH_SECRET } from "@/lib/runtimeEnv";
 
 // Авторизация — только через Yandex ID (RU-домашний провайдер).
-// Google OAuth удалён в legal-edition v1.2 — privacy policy теперь
+// Legacy foreign OAuth provider удалён в legal-edition v1.2 — privacy policy теперь
 // декларирует, что идентификационные данные пользователя в США не
 // передаются, и Yandex остаётся единственным каналом auth.
 //
@@ -40,7 +41,7 @@ export const authOptions: NextAuthOptions = {
   pages: {
     signIn: "/signin",
   },
-  secret: process.env.AUTH_SECRET || "dev-insecure-secret",
+  secret: AUTH_SECRET,
   session: {
     strategy: "jwt",
   },

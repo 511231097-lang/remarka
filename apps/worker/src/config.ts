@@ -18,6 +18,15 @@ function getRequiredEnvIf(name: string, required: boolean): string {
   return value;
 }
 
+function getSecretEnv(name: string, devFallback: string): string {
+  const value = getOptionalEnv(name);
+  if (value) return value;
+  if (String(process.env.NODE_ENV || "").trim().toLowerCase() === "production") {
+    throw new Error(`${name} is required in production`);
+  }
+  return devFallback;
+}
+
 function getIntEnv(name: string, fallback: number): number {
   const raw = String(process.env[name] || "").trim();
   if (!raw) return fallback;
@@ -186,7 +195,7 @@ export const workerConfig = {
     baseUrl: String(process.env.SHOWCASE_INTERNAL_API_BASE_URL || "http://web:3000")
       .trim()
       .replace(/\/+$/, ""),
-    token: String(process.env.INTERNAL_WORKER_TOKEN || "remarka-internal-dev-token").trim(),
+    token: getSecretEnv("INTERNAL_WORKER_TOKEN", "remarka-internal-dev-token"),
     timeoutMs: getIntEnv("SHOWCASE_INTERNAL_API_TIMEOUT_MS", 45_000),
     maxRetries: getIntEnv("SHOWCASE_INTERNAL_API_MAX_RETRIES", 2),
   },

@@ -2,10 +2,11 @@ import { prisma } from "@remarka/db";
 import { NextResponse } from "next/server";
 import { z } from "zod";
 import { answerBookChatQuestion, BookChatError, runBookChatToolboxTool } from "@/lib/bookChatService";
+import { INTERNAL_WORKER_TOKEN } from "@/lib/runtimeEnv";
 
 export const runtime = "nodejs";
 
-const INTERNAL_TOKEN = String(process.env.INTERNAL_WORKER_TOKEN || "remarka-internal-dev-token").trim();
+const INTERNAL_TOKEN = INTERNAL_WORKER_TOKEN;
 
 type ShowcaseBlockName = "summary" | "themes" | "characters" | "events" | "quotes";
 
