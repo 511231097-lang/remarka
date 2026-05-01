@@ -301,8 +301,20 @@ export async function POST(request: Request) {
     remoteIp: ipAddress,
   });
   if (!captcha.ok) {
+    // Логируем конкретный код ошибки на сервере для дебага. Не выставляем
+    // его пользователю в виде user-message, но возвращаем в payload как
+    // captchaErrorCode, чтобы можно было увидеть в DevTools network tab.
+    console.warn("[copyright-complaint] captcha verification failed", {
+      error: captcha.error,
+      hadToken: Boolean(data.captchaToken),
+      tokenLength: data.captchaToken ? data.captchaToken.length : 0,
+      ipAddress,
+    });
     return NextResponse.json(
-      { error: "Не удалось пройти проверку captcha. Обновите страницу и попробуйте ещё раз." },
+      {
+        error: "Не удалось пройти проверку captcha. Обновите страницу и попробуйте ещё раз.",
+        captchaErrorCode: captcha.error || "unknown",
+      },
       { status: 400 },
     );
   }

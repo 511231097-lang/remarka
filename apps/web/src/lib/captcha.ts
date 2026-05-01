@@ -1,14 +1,19 @@
-// Серверная верификация captcha-токенов. Сейчас поддерживаем
-// Cloudflare Turnstile (бесплатный, privacy-friendly, без обязательной
-// галки для большинства пользователей). Захотим заменить на hCaptcha
-// или Yandex SmartCaptcha — переключаем по env CAPTCHA_PROVIDER.
+// Серверная верификация captcha-токенов. Поддерживаем:
+//  - Cloudflare Turnstile (CAPTCHA_PROVIDER=turnstile)
+//  - Yandex SmartCaptcha (CAPTCHA_PROVIDER=smartcaptcha) — RU-домашний
+//    провайдер, не добавляет trans-border передачу ПДн
 //
 // Без env'ов — verifyCaptcha возвращает { ok: true } и пропускает запрос.
-// Это режим dev/локалки, чтобы не нужно было заводить тестовые ключи. На
-// проде значения CAPTCHA_PROVIDER + CAPTCHA_SECRET_KEY обязаны быть
+// Это режим dev/локалки, чтобы не нужно было заводить тестовые ключи.
+// На проде значения CAPTCHA_PROVIDER + CAPTCHA_SECRET_KEY обязаны быть
 // заданы — иначе форма открывается всем ботам.
+//
+// CAPTCHA_SECRET_KEY используется как server-side ключ независимо от
+// провайдера (Turnstile secret или SmartCaptcha server key). Site-key
+// (для виджета на клиенте) — NEXT_PUBLIC_CAPTCHA_SITE_KEY.
 
 const TURNSTILE_VERIFY_URL = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
+const SMARTCAPTCHA_VERIFY_URL = "https://smartcaptcha.yandexcloud.net/validate";
 
 export interface CaptchaResult {
   ok: boolean;
@@ -29,9 +34,14 @@ export function getCaptchaSiteKey(): string | null {
   return key || null;
 }
 
-export function getCaptchaProvider(): "turnstile" | "none" {
+export type CaptchaProvider = "turnstile" | "smartcaptcha" | "none";
+
+export function getCaptchaProvider(): CaptchaProvider {
   const provider = String(process.env.CAPTCHA_PROVIDER || "").trim().toLowerCase();
   if (provider === "turnstile") return "turnstile";
+  if (provider === "smartcaptcha" || provider === "smart_captcha" || provider === "yandex_smartcaptcha") {
+    return "smartcaptcha";
+  }
   return "none";
 }
 
@@ -84,6 +94,45 @@ export async function verifyCaptcha(params: {
       return {
         ok: false,
         error: error instanceof Error ? `turnstile_network:${error.message}` : "turnstile_network",
+      };
+    }
+  }
+
+  if (provider === "smartcaptcha") {
+    // Yandex SmartCaptcha — server validation через GET с query params.
+    // Документация: https://yandex.cloud/ru/docs/smartcaptcha/operations/validate-captcha
+    const secret = String(process.env.CAPTCHA_SECRET_KEY || "").trim();
+    if (!secret) {
+      return { ok: false, error: "captcha_not_configured" };
+    }
+
+    const url = new URL(SMARTCAPTCHA_VERIFY_URL);
+    url.searchParams.set("secret", secret);
+    url.searchParams.set("token", token);
+    if (params.remoteIp) url.searchParams.set("ip", params.remoteIp);
+
+    try {
+      const response = await fetch(url.toString(), {
+        method: "GET",
+        signal: AbortSignal.timeout(5_000),
+      });
+      const json = (await response.json().catch(() => null)) as {
+        status?: "ok" | "failed";
+        message?: string;
+      } | null;
+
+      if (json?.status === "ok") {
+        return { ok: true };
+      }
+      const message = json?.message || `status=${json?.status || "unknown"}`;
+      return { ok: false, error: `smartcaptcha_failed:${message}` };
+    } catch (error) {
+      return {
+        ok: false,
+        error:
+          error instanceof Error
+            ? `smartcaptcha_network:${error.message}`
+            : "smartcaptcha_network",
       };
     }
   }

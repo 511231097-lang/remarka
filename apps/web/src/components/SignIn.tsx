@@ -7,26 +7,29 @@ import { X } from "lucide-react";
 import { useState } from "react";
 import { logLegalConsent } from "@/lib/legalConsentClient";
 
-function GoogleIcon() {
+function YandexIcon() {
+  // Иконическая буква «Я» Yandex'а в его фирменном красном квадрате.
+  // Делается inline-стилем — без SVG-зависимостей и без image hotlinking.
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
-      <path
-        fill="#4285F4"
-        d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.76h3.57c2.08-1.92 3.27-4.74 3.27-8.09z"
-      />
-      <path
-        fill="#34A853"
-        d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.76c-.99.66-2.25 1.06-3.71 1.06-2.86 0-5.29-1.93-6.15-4.53H2.17v2.84A11 11 0 0 0 12 23z"
-      />
-      <path
-        fill="#FBBC05"
-        d="M5.85 14.1a6.6 6.6 0 0 1 0-4.2V7.07H2.17a11 11 0 0 0 0 9.87l3.68-2.84z"
-      />
-      <path
-        fill="#EA4335"
-        d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.1 14.97 1 12 1 7.7 1 3.99 3.47 2.17 7.07l3.68 2.84C6.71 7.3 9.14 5.38 12 5.38z"
-      />
-    </svg>
+    <span
+      aria-hidden="true"
+      style={{
+        alignItems: "center",
+        background: "#FC3F1D",
+        borderRadius: 4,
+        color: "#fff",
+        display: "inline-flex",
+        flexShrink: 0,
+        fontSize: 13,
+        fontWeight: 700,
+        height: 18,
+        justifyContent: "center",
+        lineHeight: 1,
+        width: 18,
+      }}
+    >
+      Я
+    </span>
   );
 }
 
@@ -36,12 +39,12 @@ export function SignIn() {
 
   const handleSignIn = () => {
     if (!consent) return;
-    // Log the consent BEFORE the OAuth redirect — even if the user
-    // never finishes Google flow, we have a record that they ticked
-    // the box. Endpoint links by userId post-hoc when session exists.
+    // Log the consent BEFORE the OAuth redirect — даже если пользователь
+    // не завершит OAuth flow, у нас будет запись что галку он поставил.
+    // Endpoint связывает по userId post-hoc когда session появится.
     void logLegalConsent({ consentType: "signin_acceptance" });
     const callbackUrl = searchParams.get("callbackUrl") || "/explore";
-    void signIn("google", { callbackUrl });
+    void signIn("yandex", { callbackUrl });
   };
 
   return (
@@ -82,7 +85,7 @@ export function SignIn() {
             className="muted"
             style={{ fontSize: 14, lineHeight: 1.55, marginTop: 10, textWrap: "balance" }}
           >
-            Вход через Google — без паролей. Библиотека и история чата сохранятся между устройствами.
+            Вход через Яндекс ID — без паролей. Библиотека и история чата сохранятся между устройствами.
           </p>
         </div>
 
@@ -98,7 +101,7 @@ export function SignIn() {
             opacity: consent ? 1 : 0.55,
           }}
         >
-          <GoogleIcon /> Войти через Google
+          <YandexIcon /> Войти через Яндекс
         </button>
 
         <div style={{ marginTop: 18 }}>
@@ -128,13 +131,31 @@ export function SignIn() {
               <Link className="lnk" href="/legal/privacy">
                 Политику обработки персональных данных
               </Link>
-              . Я согласен(-на) на передачу моих идентификационных данных (имя, e-mail,
-              ID Google-аккаунта) и фрагментов моих запросов компании Google LLC (США) для
-              работы авторизации и AI-ассистента — это трансграничная передача персональных
-              данных в страну, не входящую в перечень государств с адекватной защитой прав
-              субъектов персональных данных.
+              . Я согласен(-на) на передачу содержимого моих запросов и фрагментов
+              загруженных файлов компании Google LLC (США) для работы AI-ассистента — это
+              трансграничная передача персональных данных в страну, не входящую в перечень
+              государств с адекватной защитой прав субъектов персональных данных.
+              Идентификационные данные (имя, e-mail) при этом в США не передаются.
             </span>
           </label>
+        </div>
+
+        <div
+          className="muted"
+          style={{
+            color: "var(--ink-faint)",
+            fontSize: 12,
+            lineHeight: 1.5,
+            marginTop: 16,
+            textAlign: "center",
+          }}
+        >
+          Защита от ботов работает на технологии Yandex SmartCaptcha. При прохождении
+          проверки обрабатываются IP-адрес и поведенческие сигналы — подробнее в{" "}
+          <Link className="lnk" href="/legal/privacy">
+            Политике обработки персональных данных
+          </Link>
+          .
         </div>
 
         <div
