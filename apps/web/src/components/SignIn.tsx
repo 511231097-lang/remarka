@@ -30,18 +30,48 @@ function GoogleIcon() {
   );
 }
 
+function YandexIcon() {
+  // Иконическая буква «Я» Yandex'а в его фирменном красном квадрате.
+  // Делается inline-стилем — без SVG-зависимостей и без image hotlinking.
+  return (
+    <span
+      aria-hidden="true"
+      style={{
+        alignItems: "center",
+        background: "#FC3F1D",
+        borderRadius: 4,
+        color: "#fff",
+        display: "inline-flex",
+        flexShrink: 0,
+        fontSize: 13,
+        fontWeight: 700,
+        height: 18,
+        justifyContent: "center",
+        lineHeight: 1,
+        width: 18,
+      }}
+    >
+      Я
+    </span>
+  );
+}
+
+type AuthProvider = "google" | "yandex";
+
 export function SignIn() {
   const searchParams = useSearchParams();
   const [consent, setConsent] = useState(false);
 
-  const handleSignIn = () => {
+  const handleSignIn = (provider: AuthProvider) => {
     if (!consent) return;
-    // Log the consent BEFORE the OAuth redirect — even if the user
-    // never finishes Google flow, we have a record that they ticked
-    // the box. Endpoint links by userId post-hoc when session exists.
+    // Log the consent BEFORE the OAuth redirect — даже если пользователь
+    // не завершит OAuth flow, у нас будет запись что галку он поставил.
+    // Endpoint связывает по userId post-hoc когда session появится.
+    // Тип consent_type один и тот же для обеих провайдеров — текст галки
+    // покрывает оба варианта (см. SIGNIN_CONSENT_TEXT).
     void logLegalConsent({ consentType: "signin_acceptance" });
     const callbackUrl = searchParams.get("callbackUrl") || "/explore";
-    void signIn("google", { callbackUrl });
+    void signIn(provider, { callbackUrl });
   };
 
   return (
@@ -86,20 +116,36 @@ export function SignIn() {
           </p>
         </div>
 
-        <button
-          type="button"
-          className={`btn btn-lg btn-block ${consent ? "btn-ghost" : ""}`}
-          disabled={!consent}
-          onClick={handleSignIn}
-          style={{
-            cursor: consent ? "pointer" : "not-allowed",
-            gap: 12,
-            justifyContent: "center",
-            opacity: consent ? 1 : 0.55,
-          }}
-        >
-          <GoogleIcon /> Войти через Google
-        </button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <button
+            type="button"
+            className={`btn btn-lg btn-block ${consent ? "btn-ghost" : ""}`}
+            disabled={!consent}
+            onClick={() => handleSignIn("yandex")}
+            style={{
+              cursor: consent ? "pointer" : "not-allowed",
+              gap: 12,
+              justifyContent: "center",
+              opacity: consent ? 1 : 0.55,
+            }}
+          >
+            <YandexIcon /> Войти через Яндекс
+          </button>
+          <button
+            type="button"
+            className={`btn btn-lg btn-block ${consent ? "btn-ghost" : ""}`}
+            disabled={!consent}
+            onClick={() => handleSignIn("google")}
+            style={{
+              cursor: consent ? "pointer" : "not-allowed",
+              gap: 12,
+              justifyContent: "center",
+              opacity: consent ? 1 : 0.55,
+            }}
+          >
+            <GoogleIcon /> Войти через Google
+          </button>
+        </div>
 
         <div style={{ marginTop: 18 }}>
           <label
@@ -129,10 +175,11 @@ export function SignIn() {
                 Политику обработки персональных данных
               </Link>
               . Я согласен(-на) на передачу моих идентификационных данных (имя, e-mail,
-              ID Google-аккаунта) и фрагментов моих запросов компании Google LLC (США) для
-              работы авторизации и AI-ассистента — это трансграничная передача персональных
-              данных в страну, не входящую в перечень государств с адекватной защитой прав
-              субъектов персональных данных.
+              идентификатор учётной записи) выбранному мной провайдеру авторизации — Google LLC
+              (США) или ООО «ЯНДЕКС» (Российская Федерация), а также на передачу фрагментов
+              моих запросов компании Google LLC (США) для работы AI-ассистента. Передача в
+              США является трансграничной — США не входят в перечень государств, обеспечивающих
+              адекватную защиту прав субъектов персональных данных.
             </span>
           </label>
         </div>
