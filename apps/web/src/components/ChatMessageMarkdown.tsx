@@ -12,10 +12,16 @@ export interface ParagraphRange {
   end?: number;
 }
 
+export interface RefCiteFragment extends ParagraphRange {
+  chapterOrderIndex: number;
+}
+
 export interface RefCiteRange {
   chapterOrderIndex: number;
   /** One or more paragraph ranges within the chapter. Always ≥1 entry. */
   paragraphRanges: ParagraphRange[];
+  /** One or more paragraph ranges with chapter attached. Always ≥1 entry. */
+  fragments: RefCiteFragment[];
 }
 
 interface ChatMessageMarkdownProps {
@@ -48,53 +54,80 @@ function repairLegacyChatFormatting(content: string): string {
 }
 
 /**
- * Convert raw `[chN:pM]`, `[chN:pM-pK]`, `[chN:pA-pB, pC-pD]` etc. ref-id tokens
- * that the model emits in answers into clickable markdown links so the renderer
- * can intercept them as small badges. Supports comma-separated multi-range
- * citations. The `(?!\()` lookahead skips already-formed markdown links.
+ * Convert raw `[chN:pM]`, `[chN:pM-pK]`, `[chN:pA-pB, pC-pD]`,
+ * `[chN:pA, chK:pB]` etc. ref-id tokens that the model emits in answers
+ * into clickable markdown links so the renderer can intercept them as small
+ * badges. The `(?!\()` lookahead skips already-formed markdown links.
  *
  * Inside the `(ref:...)` URL we strip whitespace so the URL is space-free.
  */
 function injectRefCiteLinks(text: string): string {
-  return text.replace(
-    /\[ch(\d+):(p\d+(?:-p\d+)?(?:\s*,\s*p\d+(?:-p\d+)?)*)\](?!\()/g,
-    (match, ch, ranges) => {
-      const display = match.slice(1, -1); // strip [ ]
-      const cleanRanges = String(ranges || "").replace(/\s+/g, "");
-      return `[${display}](ref:ch${ch}:${cleanRanges})`;
+  return text.replace(/\[([^\]\n]*\bch\d+:p\d+[^\]\n]*)\](?!\()/g, (match, rawBody) => {
+    const segments = String(rawBody || "")
+      .split(",")
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+    if (!segments.length) return match;
+
+    const refs: Array<{ chapter: string; paragraph: string; display: string; explicitChapter: boolean }> = [];
+    let currentChapter: string | null = null;
+    for (const segment of segments) {
+      const parsed = segment.match(/^(?:ch(\d+):)?(p\d+(?:-p\d+)?)$/);
+      if (!parsed) return match;
+      const explicitChapter = Boolean(parsed[1]);
+      if (parsed[1]) currentChapter = parsed[1];
+      if (!currentChapter) return match;
+      const paragraph = parsed[2] || "";
+      refs.push({
+        chapter: currentChapter,
+        paragraph,
+        display: explicitChapter ? `ch${currentChapter}:${paragraph}` : paragraph,
+        explicitChapter,
+      });
     }
-  );
+
+    const display = refs.map((ref, index) => (index === 0 && !ref.explicitChapter ? `ch${ref.chapter}:${ref.paragraph}` : ref.display)).join(", ");
+    const cleanRefs = refs
+      .map((ref, index) => (index === 0 || ref.explicitChapter ? `ch${ref.chapter}:${ref.paragraph}` : ref.paragraph))
+      .join(",");
+    return `[${display}](ref:${cleanRefs})`;
+  });
 }
 
 function parseRefCite(href: string): RefCiteRange | null {
   if (!href.startsWith("ref:")) return null;
   const body = href.slice("ref:".length);
-  const m = body.match(/^ch(\d+):(.+)$/);
-  if (!m) return null;
-  const chapterOrderIndex = Number.parseInt(m[1] || "0", 10);
-  // Chapter indices are 1-based in the model's ref-id format. Reject ch0 (or
-  // negatives if a hand-crafted URL slips through) — they would 400 from
-  // `/api/books/.../chapters/0` and confuse the reader modal.
-  if (!Number.isFinite(chapterOrderIndex) || chapterOrderIndex < 1) return null;
-
-  const segments = String(m[2] || "").split(",").map((s) => s.trim()).filter(Boolean);
-  const paragraphRanges: ParagraphRange[] = [];
+  const segments = String(body || "").split(",").map((s) => s.trim()).filter(Boolean);
+  const fragments: RefCiteFragment[] = [];
+  let currentChapter: number | null = null;
   for (const segment of segments) {
-    const rm = segment.match(/^p(\d+)(?:-p(\d+))?$/);
+    const rm = segment.match(/^(?:ch(\d+):)?p(\d+)(?:-p(\d+))?$/);
     if (!rm) continue;
-    const start = Number.parseInt(rm[1] || "0", 10);
+    if (rm[1]) {
+      currentChapter = Number.parseInt(rm[1], 10);
+    }
+    if (!Number.isFinite(currentChapter) || currentChapter == null || currentChapter < 1) continue;
+    const start = Number.parseInt(rm[2] || "0", 10);
     if (!Number.isFinite(start) || start < 1) continue;
-    const endRaw = rm[2] ? Number.parseInt(rm[2], 10) : NaN;
+    const endRaw = rm[3] ? Number.parseInt(rm[3], 10) : NaN;
     // Drop reversed ranges like p10-p3 — they would highlight nothing and
     // produce a misleading "10–3" label in the reader chip.
     if (Number.isFinite(endRaw) && endRaw < start) continue;
-    paragraphRanges.push({
+    fragments.push({
+      chapterOrderIndex: currentChapter,
       start,
       end: Number.isFinite(endRaw) ? endRaw : undefined,
     });
   }
-  if (!paragraphRanges.length) return null;
-  return { chapterOrderIndex, paragraphRanges };
+  if (!fragments.length) return null;
+  const chapterOrderIndex = fragments[0]!.chapterOrderIndex;
+  return {
+    chapterOrderIndex,
+    paragraphRanges: fragments
+      .filter((fragment) => fragment.chapterOrderIndex === chapterOrderIndex)
+      .map(({ start, end }) => ({ start, end })),
+    fragments,
+  };
 }
 
 function resolveQuoteTypeLabel(type: BookQuoteTypeDTO): string {

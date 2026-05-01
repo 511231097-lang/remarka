@@ -12,6 +12,10 @@ export interface ReaderParagraphRange {
   end?: number;
 }
 
+export interface ReaderCiteFragment extends ReaderParagraphRange {
+  chapterOrderIndex: number;
+}
+
 export interface ReaderCite {
   /** Snippet text from the book to highlight inside the chapter. Optional — use either snippet or paragraphRanges. */
   snippet?: string;
@@ -23,6 +27,8 @@ export interface ReaderCite {
    * them via fragment-jump buttons in the modal foot.
    */
   paragraphRanges?: ReaderParagraphRange[];
+  /** Optional paragraph ranges across one or more chapters. */
+  fragments?: ReaderCiteFragment[];
   /** Optional human label like "Глава 5" or evidence kind. */
   label?: string | null;
 }
@@ -35,6 +41,10 @@ interface BookReaderProps {
 }
 
 const PARAGRAPH_SPLIT = /\n\s*\n+/;
+
+type RenderParagraphRange = ReaderParagraphRange & {
+  fragmentIndex: number;
+};
 
 /**
  * Tokenize a paragraph and find the snippet inside (substring match, case-insensitive
@@ -104,10 +114,10 @@ function locateSnippet(paragraph: string, snippet: string):
 }
 
 /** Returns the index of the range that contains paragraphIndex, or -1. */
-function findRangeIndex(ranges: readonly ReaderParagraphRange[], paragraphIndex: number): number {
+function findRangeIndex(ranges: readonly RenderParagraphRange[], paragraphIndex: number): number {
   for (let i = 0; i < ranges.length; i += 1) {
     const r = ranges[i]!;
-    if (paragraphIndex >= r.start && paragraphIndex <= (r.end ?? r.start)) return i;
+    if (paragraphIndex >= r.start && paragraphIndex <= (r.end ?? r.start)) return r.fragmentIndex;
   }
   return -1;
 }
@@ -116,7 +126,7 @@ interface ParagraphRenderProps {
   paragraph: string;
   paragraphIndex: number | null;
   snippet: string | null;
-  paragraphRanges: readonly ReaderParagraphRange[] | null;
+  paragraphRanges: readonly RenderParagraphRange[] | null;
   /** Index of the currently focused fragment — its first paragraph gets the scroll ref. */
   activeFragmentIndex: number;
   fragmentRefs: React.MutableRefObject<Array<HTMLSpanElement | null>>;
@@ -197,6 +207,15 @@ export function BookReader({ open, book, cite, onClose }: BookReaderProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const fragmentRefs = useRef<Array<HTMLSpanElement | null>>([]);
   const [mounted, setMounted] = useState(false);
+  const fragments = useMemo<ReaderCiteFragment[]>(() => {
+    if (!cite) return [];
+    if (cite.fragments?.length) return cite.fragments;
+    return (cite.paragraphRanges ?? []).map((range) => ({
+      chapterOrderIndex: cite.chapterOrderIndex,
+      start: range.start,
+      end: range.end,
+    }));
+  }, [cite]);
 
   useEffect(() => {
     setMounted(true);
@@ -209,6 +228,13 @@ export function BookReader({ open, book, cite, onClose }: BookReaderProps) {
       setActiveFragmentIndex(0);
     }
   }, [open, cite]);
+
+  useEffect(() => {
+    if (!open) return;
+    const activeFragment = fragments[activeFragmentIndex];
+    if (!activeFragment) return;
+    setOrderIndex(activeFragment.chapterOrderIndex);
+  }, [open, activeFragmentIndex, fragments]);
 
   // Fetch chapter content when orderIndex changes
   useEffect(() => {
@@ -254,6 +280,7 @@ export function BookReader({ open, book, cite, onClose }: BookReaderProps) {
     activeFragmentIndex,
     cite?.snippet,
     cite?.paragraphRanges,
+    cite?.fragments,
   ]);
 
   // Keyboard nav: Esc / arrows. Arrows navigate chapters; Alt+arrows navigate
@@ -276,7 +303,7 @@ export function BookReader({ open, book, cite, onClose }: BookReaderProps) {
   }, [maxChapter]);
 
   const ranges = cite?.paragraphRanges ?? null;
-  const fragmentCount = ranges?.length ?? 0;
+  const fragmentCount = fragments.length;
 
   useEffect(() => {
     if (!open) return undefined;
@@ -324,7 +351,14 @@ export function BookReader({ open, book, cite, onClose }: BookReaderProps) {
 
   const isHighlightChapter = chapter && cite && chapter.orderIndex === cite.chapterOrderIndex;
   const snippetForChapter = isHighlightChapter ? cite.snippet || null : null;
-  const rangesForChapter = isHighlightChapter && ranges && ranges.length > 0 ? ranges : null;
+  const rangesForChapter =
+    chapter && fragments.length > 0
+      ? fragments
+          .map((fragment, fragmentIndex) => ({ ...fragment, fragmentIndex }))
+          .filter((fragment) => fragment.chapterOrderIndex === chapter.orderIndex)
+      : isHighlightChapter && ranges && ranges.length > 0
+        ? ranges.map((range, fragmentIndex) => ({ ...range, fragmentIndex }))
+        : null;
 
   // Per-render flag — only the first matching paragraph (snippet path) gets highlighted.
   const alreadyHighlighted = { current: false };
@@ -336,10 +370,10 @@ export function BookReader({ open, book, cite, onClose }: BookReaderProps) {
   const totalChapters = maxChapter;
   const canPrevChapter = orderIndex != null && orderIndex > 1;
   const canNextChapter = orderIndex != null && totalChapters != null && orderIndex < totalChapters;
-  const showFragmentNav = (rangesForChapter?.length ?? 0) > 1;
+  const showFragmentNav = fragmentCount > 1;
 
-  const formatRangeLabel = (r: ReaderParagraphRange) =>
-    r.end ? `${r.start}–${r.end}` : `${r.start}`;
+  const formatRangeLabel = (r: ReaderCiteFragment) =>
+    `Глава ${r.chapterOrderIndex} · ${r.end ? `${r.start}–${r.end}` : `${r.start}`}`;
 
   return createPortal(
     <div className="reader-root" role="dialog" aria-modal="true" aria-label={`Чтение: ${book.title}`}>
@@ -432,16 +466,16 @@ export function BookReader({ open, book, cite, onClose }: BookReaderProps) {
             {orderIndex != null && orderIndex > 1 ? `Глава ${orderIndex - 1}` : "—"}
           </button>
 
-          {showFragmentNav && rangesForChapter ? (
+          {showFragmentNav ? (
             <div className="reader-fragment-nav">
               <span className="mono" style={{ color: "var(--ink-muted)" }}>Фрагменты:</span>
-              {rangesForChapter.map((r, i) => (
+              {fragments.map((r, i) => (
                 <button
-                  key={`${r.start}-${r.end ?? r.start}-${i}`}
+                  key={`${r.chapterOrderIndex}-${r.start}-${r.end ?? r.start}-${i}`}
                   type="button"
                   className={`reader-fragment-chip ${i === activeFragmentIndex ? "is-active" : ""}`}
                   onClick={() => setActiveFragmentIndex(i)}
-                  title={`Параграф ${formatRangeLabel(r)}`}
+                  title={formatRangeLabel(r)}
                 >
                   {i + 1}
                 </button>

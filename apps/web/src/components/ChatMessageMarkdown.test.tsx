@@ -42,3 +42,12 @@ test("ChatMessageMarkdown leaves cite text plain when inline citations are missi
   assert.match(html, /Внутренний перелом/);
   assert.doesNotMatch(html, /<button/);
 });
+
+test("ChatMessageMarkdown renders multi-chapter ref citations as one grouped trigger", () => {
+  const html = renderToStaticMarkup(
+    <ChatMessageMarkdown content="См. [ch3:p1, ch6:p177, ch6:p186]." onRefCite={() => undefined} />
+  );
+
+  assert.match(html, /<button[^>]*>ch3:p1, ch6:p177, ch6:p186<\/button>/);
+  assert.equal((html.match(/<button/g) || []).length, 1);
+});

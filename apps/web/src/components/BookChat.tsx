@@ -682,18 +682,27 @@ export function BookChat() {
   const openReaderForRef = (ref: {
     chapterOrderIndex: number;
     paragraphRanges: Array<{ start: number; end?: number }>;
+    fragments?: Array<{ chapterOrderIndex: number; start: number; end?: number }>;
   }) => {
-    if (!ref.paragraphRanges.length) return;
+    const fragments = ref.fragments?.length
+      ? ref.fragments
+      : ref.paragraphRanges.map((range) => ({ ...range, chapterOrderIndex: ref.chapterOrderIndex }));
+    if (!fragments.length) return;
     const ranges = ref.paragraphRanges;
     const formatRange = (r: { start: number; end?: number }) =>
       r.end ? `${r.start}–${r.end}` : String(r.start);
-    const label =
-      ranges.length === 1
+    const chapters = new Set(fragments.map((fragment) => fragment.chapterOrderIndex));
+    const label = chapters.size === 1
+      ? ranges.length === 1
         ? `Глава ${ref.chapterOrderIndex} · параграф${ranges[0]!.end ? "ы" : ""} ${formatRange(ranges[0]!)}`
-        : `Глава ${ref.chapterOrderIndex} · ${ranges.length} фрагмента: ${ranges.map(formatRange).join(", ")}`;
+        : `Глава ${ref.chapterOrderIndex} · ${ranges.length} фрагмента: ${ranges.map(formatRange).join(", ")}`
+      : `${fragments.length} фрагмента: ${fragments
+          .map((fragment) => `гл. ${fragment.chapterOrderIndex}, ${formatRange(fragment)}`)
+          .join(", ")}`;
     setReaderCite({
       chapterOrderIndex: ref.chapterOrderIndex,
       paragraphRanges: ranges,
+      fragments,
       label,
     });
   };
@@ -1277,7 +1286,11 @@ function AssistantMessage({
 }: {
   message: UiMessage;
   onCite: (cite: ActiveCite) => void;
-  onRefCite?: (ref: { chapterOrderIndex: number; paragraphRanges: Array<{ start: number; end?: number }> }) => void;
+  onRefCite?: (ref: {
+    chapterOrderIndex: number;
+    paragraphRanges: Array<{ start: number; end?: number }>;
+    fragments?: Array<{ chapterOrderIndex: number; start: number; end?: number }>;
+  }) => void;
 }) {
   const evidence = Array.isArray(message.evidence) ? message.evidence : [];
   const usedSources = Array.isArray(message.usedSources) ? message.usedSources : [];
