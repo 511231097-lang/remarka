@@ -203,7 +203,7 @@ systemctl restart remarka-web
 EOF
 ```
 
-> **Note on Next.js standalone**: `apps/web/next.config.mjs` сейчас не выставляет `output: 'standalone'`. systemd unit (`web.service`) ожидает standalone-сборку. Перед первым деплоем добавьте `output: 'standalone'` в `next.config.mjs` (или поменяйте `ExecStart` на `npx next start` — но тогда нужны все `node_modules` на сервере, что мы уже делаем через `npm ci --omit=dev`, так что оба варианта рабочие).
+> **Note on Next.js standalone**: `apps/web/next.config.mjs` уже выставляет `output: 'standalone'`. systemd unit (`web.service`) ожидает standalone-сборку и запускает `.next/standalone/apps/web/server.js`.
 
 ## 6. Миграция данных из dev (docker compose) в прод
 
@@ -308,6 +308,5 @@ ssh remarka-web 'systemctl restart remarka-web'
 
 ## 9. Что осталось вручную
 
-- Поднять `output: 'standalone'` в `apps/web/next.config.mjs` ИЛИ оставить как есть и запускать `next start` (тогда `web.service` `ExecStart` нужно поправить на `/srv/remarka/current/node_modules/.bin/next start`).
 - Переменная `INTERNAL_WORKER_TOKEN` должна совпадать на web и worker — сгенерируйте один раз и положите в оба env.
-- `NEXTAUTH_URL` должен указывать на тот же домен, что и в Google Cloud OAuth client → Authorized redirect URIs `https://<DOMAIN>/api/auth/callback/google`.
+- `NEXTAUTH_URL` должен указывать на тот же домен, что и в Yandex ID OAuth client → Redirect URI `https://<DOMAIN>/api/auth/callback/yandex`.

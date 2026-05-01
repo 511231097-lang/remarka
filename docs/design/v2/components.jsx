@@ -177,10 +177,10 @@ function AuthModal({ onClose, onSuccess }) {
           ремарка<span className="dot">.</span>
         </div>
         <h2 style={{ fontSize: 24, marginTop: 14, textWrap: "balance" }}>Войдите, чтобы начать разговор с книгой</h2>
-        <p className="muted" style={{ fontSize: 14, marginTop: 10, textWrap: "balance" }}>Вход через Google — без паролей. Ваша библиотека и история чата сохранятся между устройствами.</p>
+        <p className="muted" style={{ fontSize: 14, marginTop: 10, textWrap: "balance" }}>Вход через Яндекс — без паролей. Ваша библиотека и история чата сохранятся между устройствами.</p>
       </div>
       <button className="btn btn-ghost btn-lg btn-block" onClick={() => consent && onSuccess()} style={{ justifyContent: "center", gap: 12 }}>
-        <Icon.Google/> Войти через Google
+        <span style={{ fontWeight: 800 }}>Я</span> Войти через Яндекс
       </button>
       <div style={{ marginTop: 20 }}>
         <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer", fontSize: 13, color: "var(--ink-soft)", lineHeight: 1.5 }}>

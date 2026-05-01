@@ -78,7 +78,7 @@ export async function POST(request: Request) {
   const documentVersionHash = hashConsentText(text);
 
   // userId — best effort. signin_acceptance может прийти ДО создания
-  // юзера в БД (между галкой и Google OAuth callback'ом), поэтому
+  // юзера в БД (между галкой и Yandex ID callback'ом), поэтому
   // допускаем null. Для upload/cookie на залогиненом пользователе —
   // userId всегда есть.
   const authUser = await resolveAuthUser();

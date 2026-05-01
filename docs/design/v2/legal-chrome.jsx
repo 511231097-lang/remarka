@@ -81,7 +81,7 @@ function AuthModalV2({ onClose, onSuccess, go }) {
         </div>
         <h2 style={{ fontSize: 24, marginTop: 14, textWrap: "balance" }}>Войдите, чтобы начать разговор с книгой</h2>
         <p className="muted" style={{ fontSize: 14, marginTop: 10, textWrap: "balance" }}>
-          Вход через Google — без паролей. Библиотека и история чата сохранятся между устройствами.
+          Вход через Яндекс — без паролей. Библиотека и история чата сохранятся между устройствами.
         </p>
       </div>
 
@@ -89,7 +89,7 @@ function AuthModalV2({ onClose, onSuccess, go }) {
         disabled={!consent}
         onClick={() => consent && onSuccess()}
         style={{ justifyContent: "center", gap: 12, opacity: consent ? 1 : 0.55, cursor: consent ? "pointer" : "not-allowed" }}>
-        <Icon.Google/> Войти через Google
+        <span style={{ fontWeight: 800 }}>Я</span> Войти через Яндекс
       </button>
 
       <div style={{ marginTop: 18 }}>

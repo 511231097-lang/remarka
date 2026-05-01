@@ -10,7 +10,7 @@ import { useTheme } from "@/lib/ThemeContext";
 // when a paid tier is live. For now we hard-code "free" since billing is
 // not wired yet. The display name/email fallbacks below kick in only when
 // the authenticated user record has empty fields, which shouldn't happen
-// with Google OAuth — they are belt-and-suspenders defaults.
+// with Yandex ID — they are belt-and-suspenders defaults.
 const currentUser: { name: string; email: string; plan: { type: "free" | "plus" } } = {
   name: "Аноним",
   email: "",

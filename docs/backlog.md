@@ -97,20 +97,6 @@ S3/Timeweb-совместимая раздача, nginx caching, fallback для
 
 ---
 
-### Legal/export context под Yandex-only auth
-
-**Записано:** 2026-05-01
-
-**Проблема:** В personal data export и части handoff-документов ещё могут
-оставаться формулировки про Google OAuth, хотя авторизация переведена на
-Yandex ID.
-
-**Почему это blocker:** Выгрузка данных выглядит как юридически значимый
-документ. Она должна соответствовать фактической архитектуре: Yandex для
-auth/captcha, Google/Vertex только там, где он реально используется.
-
----
-
 ### Consent audit proof
 
 **Записано:** 2026-05-01
