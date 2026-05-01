@@ -113,6 +113,48 @@ NextAuth и SSR совместимость.
 2. Переписать legal-доки так, что rerank тоже идёт через Google Vertex US.
 3. Временно отключить Vertex Ranking (`VERTEX_RANKING_ENABLED=false`).
 
+**Эксперимент по опции 1 проведён 2026-05-02 — свёрнут как преждевременный.**
+
+Развернули `bge-reranker-v2-m3` (INT8 ONNX) на Timeweb VPS 4×3.3 ГГц QEMU
+virtual / 4 GB / 80 GB за 1800 ₽/мес. FastAPI + onnxruntime, systemd unit,
+доступ только из приватной сети по jump-host. Smoke на en/ru подтвердил что
+модель работает корректно.
+
+A/B провалилось по latency. На QEMU virtual CPU **отсутствует AVX-512/VNNI**,
+поэтому INT8 на CPU не даёт ускорения. Реальные цифры:
+- Vertex Ranking: avg 586 ms, p50 500 ms, p95 1190 ms (369 живых вызовов
+  в продовой истории).
+- Self-hosted на этом железе: ~20 секунд на batch 30 docs, иногда хуже
+  при параллельных запросах (накопительная очередь).
+
+В результате каждый rerank-запрос упирался в `RERANK_TIMEOUT_MS=5000` →
+catch в `rankRecords()` → fallback на pre-rerank scores. Чат отвечал, но
+эффективно без rerank'а.
+
+**Экономика на текущем volume не оправдывает self-host:**
+- Сейчас (~22 turn/день, мы на стенде): Vertex ~$4/мес ≈ 450 ₽.
+- Закрытая beta (10-50 users): Vertex ~600 ₽/мес.
+- Free beta (200-500 users): Vertex ~2 000 ₽/мес.
+- Break-even с High CPU VPS 5 390 ₽/мес — **~300 turn/день**, что
+  соответствует ~600 active users в месяц.
+
+**Что вернёт эксперимент в работу:**
+1. Volume стабильно превысит ~300 turn/день, ИЛИ
+2. Появится compliance-клиент, требующий «всё в РФ» как hard requirement, ИЛИ
+3. Vertex Ranking сломает наш golden eval после очередного `latest`-апдейта
+   (регрессия precision >5%).
+
+При повторе нужно сразу брать **High CPU 4×5 ГГц** (5 390 ₽/мес) или
+**Dedicated CPU** с реальным процессором — на cheap QEMU bge-reranker не
+тянет. Подробности и план реализации — `docs/research/rag-audit-2026-04-30.md`
+секция T8 (план остаётся валидным, упирается только в железо).
+
+**Решение по legal-блокеру до пересмотра:** опция 2 — переписать
+privacy §6/§7 так, чтобы они отражали фактическую архитектуру (rerank
+через Vertex AI US). Это технически не новый канал передачи: фрагменты
+параграфов и так уезжают в Vertex Gemini для генерации ответа, rerank
+ходит туда же.
+
 ---
 
 ### Consent audit proof
