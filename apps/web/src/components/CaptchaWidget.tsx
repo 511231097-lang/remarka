@@ -6,9 +6,9 @@ import { useEffect, useRef, useState } from "react";
 //  - Cloudflare Turnstile (NEXT_PUBLIC_CAPTCHA_PROVIDER=turnstile)
 //  - Yandex SmartCaptcha (NEXT_PUBLIC_CAPTCHA_PROVIDER=smartcaptcha) — RU-домашний
 //
-// Inert если NEXT_PUBLIC_CAPTCHA_SITE_KEY не задан (dev/local) — тогда сразу
-// зовёт onVerify(null), и серверная верификация в /lib/captcha.ts тоже становится no-op.
-// На проде siteKey + provider должны быть выставлены.
+// Если siteKey или провайдер не заданы — рендерим null и сразу зовём
+// onVerify(null), серверная верификация в /lib/captcha.ts тоже работает в
+// no-op режиме при отсутствии CAPTCHA_SECRET_KEY. Удобно для dev/локалки.
 //
 // Ref API: вызывающий код может прокинуть resetRef и потом сделать
 // resetRef.current?.() чтобы перерисовать widget после ошибки сабмита.
@@ -42,21 +42,22 @@ interface SmartCaptchaGlobal {
     options: {
       sitekey: string;
       callback?: (token: string) => void;
-      // У SmartCaptcha есть additional options: hl (язык), test, webview, и т.д.
       hl?: "ru" | "en" | "be" | "kk" | "tt" | "uk" | "uz" | "tr";
       invisible?: boolean;
-      shieldPosition?: "top-left" | "center-left" | "bottom-left" | "top-right" | "center-right" | "bottom-right";
+      shieldPosition?:
+        | "top-left"
+        | "center-left"
+        | "bottom-left"
+        | "top-right"
+        | "center-right"
+        | "bottom-right";
       hideShield?: boolean;
+      test?: boolean;
     },
   ) => number;
   reset: (widgetId?: number) => void;
   destroy: (widgetId?: number) => void;
   getResponse: (widgetId?: number) => string;
-  subscribe: (
-    widgetId: number,
-    eventName: "challenge-visible" | "challenge-hidden" | "network-error" | "success" | "token-expired",
-    callback: (data?: unknown) => void,
-  ) => () => void;
 }
 
 declare global {
@@ -66,7 +67,11 @@ declare global {
   }
 }
 
-function loadScript(src: string, id: string, globalKey: "turnstile" | "smartCaptcha"): Promise<void> {
+function loadScript(
+  src: string,
+  id: string,
+  globalKey: "turnstile" | "smartCaptcha",
+): Promise<void> {
   if (typeof window === "undefined") return Promise.resolve();
   if (window[globalKey]) return Promise.resolve();
   if (document.getElementById(id)) {
@@ -94,7 +99,7 @@ function loadScript(src: string, id: string, globalKey: "turnstile" | "smartCapt
   });
 }
 
-function resolveProvider(): CaptchaProvider | null {
+function resolveProvider(siteKey: string | null): CaptchaProvider | null {
   const raw = String(process.env.NEXT_PUBLIC_CAPTCHA_PROVIDER || "")
     .trim()
     .toLowerCase();
@@ -102,9 +107,9 @@ function resolveProvider(): CaptchaProvider | null {
   if (raw === "smartcaptcha" || raw === "smart_captcha" || raw === "yandex_smartcaptcha") {
     return "smartcaptcha";
   }
-  // Heuristic fallback — некоторые форматы site-key безошибочно
-  // идентифицируют провайдера. SmartCaptcha начинаются с ysc1_, Turnstile —
-  // с 0x. Не полагаемся слепо, но фолбэк удобный.
+  // Heuristic fallback по префиксу site-key. SmartCaptcha — ysc1_, Turnstile — 0x.
+  if (siteKey?.startsWith("ysc1_")) return "smartcaptcha";
+  if (siteKey?.startsWith("0x")) return "turnstile";
   return null;
 }
 
@@ -120,18 +125,9 @@ export function CaptchaWidget({ siteKey, onVerify, resetRef }: CaptchaWidgetProp
   const smartCaptchaWidgetIdRef = useRef<number | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Определяем провайдера по env. Если не задан — пробуем распознать по
-  // префиксу site-key (ysc1_ → smartcaptcha, иначе turnstile).
-  const explicitProvider = resolveProvider();
-  const inferredFromKey: CaptchaProvider | null = siteKey?.startsWith("ysc1_")
-    ? "smartcaptcha"
-    : siteKey
-      ? "turnstile"
-      : null;
-  const provider = explicitProvider || inferredFromKey;
+  const provider = resolveProvider(siteKey);
 
   useEffect(() => {
-    // Без siteKey или без провайдера — сразу сообщаем "проверка пройдена" (dev mode).
     if (!siteKey || !provider) {
       onVerify(null);
       return;
@@ -179,7 +175,9 @@ export function CaptchaWidget({ siteKey, onVerify, resetRef }: CaptchaWidgetProp
           onVerify(null);
         };
       }
-    } else if (provider === "smartcaptcha") {
+    }
+
+    if (provider === "smartcaptcha") {
       loadScript(SMARTCAPTCHA_SCRIPT_SRC, SMARTCAPTCHA_SCRIPT_ID, "smartCaptcha")
         .then(() => {
           if (cancelled) return;
@@ -190,48 +188,32 @@ export function CaptchaWidget({ siteKey, onVerify, resetRef }: CaptchaWidgetProp
             return;
           }
 
-          const widgetId = smartCaptcha.render(container, {
+          // SmartCaptcha канонический способ получить токен — callback в render.
+          // subscribe API существует но больше для tracking-событий
+          // (challenge-visible/hidden, network-error). Token приходит в callback.
+          smartCaptchaWidgetIdRef.current = smartCaptcha.render(container, {
             sitekey: siteKey,
             hl: "ru",
+            callback: (token) => {
+              setError(null);
+              onVerify(token);
+            },
           });
-          smartCaptchaWidgetIdRef.current = widgetId;
-
-          // Подписки на события — предпочитаем subscribe API, callback option
-          // тоже работает но subscribe позволяет ловить token-expired.
-          const unsubSuccess = smartCaptcha.subscribe(widgetId, "success", (token) => {
-            setError(null);
-            onVerify(typeof token === "string" ? token : null);
-          });
-          const unsubExpired = smartCaptcha.subscribe(widgetId, "token-expired", () => {
-            onVerify(null);
-          });
-          const unsubError = smartCaptcha.subscribe(widgetId, "network-error", () => {
-            setError("Captcha не прошла. Обновите страницу и попробуйте ещё раз.");
-            onVerify(null);
-          });
-
-          // Сохраняем cleanup'ы в closure через ref
-          if (resetRef) {
-            resetRef.current = () => {
-              const sc = window.smartCaptcha;
-              if (sc && smartCaptchaWidgetIdRef.current !== null) {
-                sc.reset(smartCaptchaWidgetIdRef.current);
-              }
-              onVerify(null);
-            };
-          }
-
-          // Сохраняем для cleanup в return useEffect'a
-          (containerRef as { unsubscribers?: Array<() => void> }).unsubscribers = [
-            unsubSuccess,
-            unsubExpired,
-            unsubError,
-          ];
         })
         .catch((err) => {
           if (cancelled) return;
           setError(err instanceof Error ? err.message : "Не удалось загрузить captcha");
         });
+
+      if (resetRef) {
+        resetRef.current = () => {
+          const smartCaptcha = window.smartCaptcha;
+          if (smartCaptcha && smartCaptchaWidgetIdRef.current !== null) {
+            smartCaptcha.reset(smartCaptchaWidgetIdRef.current);
+          }
+          onVerify(null);
+        };
+      }
     }
 
     return () => {
@@ -249,16 +231,6 @@ export function CaptchaWidget({ siteKey, onVerify, resetRef }: CaptchaWidgetProp
       }
       if (provider === "smartcaptcha") {
         const smartCaptcha = window.smartCaptcha;
-        const subs = (containerRef as { unsubscribers?: Array<() => void> }).unsubscribers;
-        if (subs) {
-          for (const unsub of subs) {
-            try {
-              unsub();
-            } catch {
-              // best-effort
-            }
-          }
-        }
         if (smartCaptcha && smartCaptchaWidgetIdRef.current !== null) {
           try {
             smartCaptcha.destroy(smartCaptchaWidgetIdRef.current);
