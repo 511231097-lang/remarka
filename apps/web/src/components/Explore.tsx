@@ -12,6 +12,7 @@ import { appendBookDetailSource } from "@/lib/bookDetailNavigation";
 type SortBy = "recent" | "popular";
 
 const ITEMS_PER_PAGE = 10;
+const SEARCH_DEBOUNCE_MS = 350;
 const CATEGORIES = [
   "Все жанры",
   "Русская классика",
@@ -31,9 +32,14 @@ function resolveBooksCountLabel(count: number): string {
   return "книг";
 }
 
-export function Explore() {
+interface ExploreProps {
+  isAuthenticated?: boolean;
+}
+
+export function Explore({ isAuthenticated = false }: ExploreProps) {
   const [sortBy, setSortBy] = useState<SortBy>("popular");
-  const [searchQuery, setSearchQuery] = useState("");
+  const [searchInput, setSearchInput] = useState("");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
   const [activeCategory, setActiveCategory] = useState("Все жанры");
   const [libraryPendingIds, setLibraryPendingIds] = useState<Set<string>>(new Set());
@@ -46,7 +52,15 @@ export function Explore() {
 
   useEffect(() => {
     setCurrentPage(1);
-  }, [searchQuery, sortBy]);
+  }, [debouncedSearchQuery, sortBy]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchInput.trim());
+    }, SEARCH_DEBOUNCE_MS);
+
+    return () => window.clearTimeout(timer);
+  }, [searchInput]);
 
   useEffect(() => {
     let active = true;
@@ -56,7 +70,7 @@ export function Explore() {
       try {
         const response = await listBooks({
           scope: "explore",
-          q: searchQuery || undefined,
+          q: debouncedSearchQuery || undefined,
           sort: sortBy,
           page: currentPage,
           pageSize: ITEMS_PER_PAGE,
@@ -77,7 +91,7 @@ export function Explore() {
     return () => {
       active = false;
     };
-  }, [currentPage, searchQuery, sortBy]);
+  }, [currentPage, debouncedSearchQuery, sortBy]);
 
   const toggleLibrary = async (book: BookCardDTO) => {
     if (!book.canAddToLibrary && !book.canRemoveFromLibrary) return;
@@ -145,6 +159,12 @@ export function Explore() {
   };
 
   const totalLabel = `${total} ${resolveBooksCountLabel(total)}`;
+  const hasSearchInput = Boolean(searchInput.trim());
+
+  const clearSearch = () => {
+    setSearchInput("");
+    setDebouncedSearchQuery("");
+  };
 
   return (
     <div className="screen-fade">
@@ -164,8 +184,8 @@ export function Explore() {
               <Search size={16} className="search-icon" />
               <input
                 className="input"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
+                value={searchInput}
+                onChange={(event) => setSearchInput(event.target.value)}
                 placeholder="Название или автор"
                 style={{ paddingLeft: 40 }}
               />
@@ -220,12 +240,14 @@ export function Explore() {
             <h3 style={{ fontSize: 22 }}>Ничего не нашлось</h3>
             <p className="muted" style={{ marginTop: 8 }}>Попробуйте загрузить книгу сами — мы её разберём.</p>
             <div className="row" style={{ gap: 12, justifyContent: "center", marginTop: 20 }}>
-              {searchQuery ? (
-                <button className="btn btn-plain" onClick={() => setSearchQuery("")}>Очистить поиск</button>
+              {hasSearchInput ? (
+                <button className="btn btn-plain" onClick={clearSearch}>Очистить поиск</button>
               ) : null}
-              <Link className="btn btn-mark" href="/upload">
-                <Upload size={16} /> Загрузить книгу
-              </Link>
+              {isAuthenticated ? (
+                <Link className="btn btn-mark" href="/upload">
+                  <Upload size={16} /> Загрузить книгу
+                </Link>
+              ) : null}
             </div>
           </div>
         ) : null}
@@ -234,13 +256,14 @@ export function Explore() {
             <div className="explore-grid">
               {books.map((book, index) => {
                 const disabled = (!book.canAddToLibrary && !book.canRemoveFromLibrary) || libraryPendingIds.has(book.id);
+                const showLibraryAction = isAuthenticated && !book.isOwner && !book.isInLibrary && book.canAddToLibrary;
                 return (
                   <motion.div key={book.id} initial={{ opacity: 0, y: 12 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.03 }}>
                     <BookGalleryCard
                       book={book}
                       href={appendBookDetailSource(`/book/${book.id}`, "explore")}
                       action={
-                        !book.isOwner && !book.isInLibrary ? (
+                        showLibraryAction ? (
                           <button
                             className="badge"
                             disabled={disabled}

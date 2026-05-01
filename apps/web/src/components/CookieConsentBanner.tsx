@@ -184,6 +184,12 @@ export function CookieConsentBanner() {
     }
   }, []);
 
+  useEffect(() => {
+    const openSettings = () => setSettingsOpen(true);
+    window.addEventListener("remarka:open-cookie-settings", openSettings);
+    return () => window.removeEventListener("remarka:open-cookie-settings", openSettings);
+  }, []);
+
   if (!visible && !settingsOpen) return null;
 
   const save = (nextPrefs: CookiePrefs) => {

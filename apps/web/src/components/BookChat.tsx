@@ -58,6 +58,9 @@ interface ActiveCite {
 }
 
 const MAX_STREAM_REASONING_CHARS = 480;
+const USER_MESSAGE_COLLAPSE_CHARS = 900;
+const USER_MESSAGE_PREVIEW_CHARS = 520;
+const USER_MESSAGE_COLLAPSE_LINES = 14;
 const RUSSIAN_REASONING_PLACEHOLDER = "Анализирую запрос, сверяю факты по книге и подбираю релевантные фрагменты.";
 
 const SUGGESTED_PROMPTS_BOOK = [
@@ -1245,6 +1248,15 @@ function ChatWelcome({ book }: { book: BookCoreDTO }) {
 }
 
 function UserMessage({ content, createdAt }: { content: string; createdAt: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const shouldCollapse =
+    content.length > USER_MESSAGE_COLLAPSE_CHARS ||
+    content.split(/\r?\n/).length > USER_MESSAGE_COLLAPSE_LINES;
+  const visibleContent =
+    shouldCollapse && !expanded
+      ? `${content.slice(0, USER_MESSAGE_PREVIEW_CHARS).trimEnd()}...`
+      : content;
+
   return (
     <div style={{ textAlign: "right" }}>
       <div className="mono" style={{ color: "var(--ink-faint)", marginBottom: 6 }}>Вы</div>
@@ -1260,9 +1272,32 @@ function UserMessage({ content, createdAt }: { content: string; createdAt: strin
           maxWidth: "85%",
           padding: "14px 18px",
           textAlign: "left",
+          overflowWrap: "anywhere",
         }}
       >
-        <ChatMessageMarkdown content={content} className="text-primary-foreground" />
+        <ChatMessageMarkdown content={visibleContent} className="text-primary-foreground" />
+        {shouldCollapse ? (
+          <button
+            type="button"
+            onClick={() => setExpanded((value) => !value)}
+            className="mono"
+            style={{
+              background: "transparent",
+              border: 0,
+              color: "inherit",
+              cursor: "pointer",
+              display: "block",
+              fontSize: 11,
+              marginTop: 10,
+              opacity: 0.72,
+              padding: 0,
+              textDecoration: "underline",
+              textUnderlineOffset: 3,
+            }}
+          >
+            {expanded ? "Свернуть" : "Показать ещё"}
+          </button>
+        ) : null}
         <span
           style={{
             display: "block",

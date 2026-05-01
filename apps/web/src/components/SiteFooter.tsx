@@ -1,6 +1,10 @@
 import Link from "next/link";
 
-export function SiteFooter() {
+interface SiteFooterProps {
+  isAuthenticated?: boolean;
+}
+
+export function SiteFooter({ isAuthenticated = false }: SiteFooterProps) {
   const year = new Date().getFullYear();
 
   return (
@@ -20,8 +24,12 @@ export function SiteFooter() {
         <div className="footer-col">
           <div className="footer-title">Продукт</div>
           <Link href="/explore">Каталог</Link>
-          <Link href="/library">Мои книги</Link>
-          <Link href="/upload">Загрузить книгу</Link>
+          {isAuthenticated ? (
+            <>
+              <Link href="/library">Мои книги</Link>
+              <Link href="/upload">Загрузить книгу</Link>
+            </>
+          ) : null}
           <Link href="/plans">Тарифы</Link>
         </div>
 
@@ -31,7 +39,7 @@ export function SiteFooter() {
           <Link href="/legal/privacy">Политика обработки ПДн</Link>
           <Link href="/legal/cookies">Cookie-файлы</Link>
           <Link href="/legal/upload">Условия загрузки произведений</Link>
-          <Link href="/legal/copyright">Жалоба правообладателя</Link>
+          <Link href="/legal/copyright">Правообладателям</Link>
         </div>
 
         <div className="footer-col">
@@ -41,7 +49,7 @@ export function SiteFooter() {
           <div className="footer-line">ИНН «000000000000»</div>
           <div className="footer-line">Плательщик НПД</div>
           <a href="mailto:hello@remarka.app">hello@remarka.app</a>
-          <a href="mailto:abuse@remarka.app">abuse@remarka.app — жалобы</a>
+          <a href="mailto:abuse@remarka.app">abuse@remarka.app</a>
         </div>
       </div>
 
@@ -68,7 +76,7 @@ export function ChatSidebarLegal() {
         <span>·</span>
         <Link href="/legal/cookies">Cookie</Link>
         <span>·</span>
-        <Link href="/legal/copyright">Жалоба</Link>
+        <Link href="/legal/copyright">Правообладателям</Link>
       </div>
       <div className="mono chat-legal-mini">© {new Date().getFullYear()} ремарка</div>
     </div>
