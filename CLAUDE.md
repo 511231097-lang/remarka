@@ -71,13 +71,26 @@ The chat uses a hybrid retriever (pgvector semantic + lexical RRF fusion + Verte
 - Paragraph-hits dedupe (drop хитов уже покрытых evidence-группами) + slice budget 18k → 8k
 - `selectedTools` user-control убран (закрывает QUALITY #1 другим путём)
 - Vertex 2.5-flash тестировали → откатили (галлюцинации на сложных цепочках)
+- **Anthropic-style contextual retrieval — внедрён** (закрывает старые backlog-айтемы T5/T6):
+  - **Paragraph embeddings** строятся из enriched text `Глава: <title>\nСцена: <sceneCard>\n\n<paragraph.text>` (`runEnrichedParagraphEmbeddingStage` в `analysisPipeline.npz.ts`). То есть paragraph embeddings зависят от scene LLM stage — не параллелятся.
+  - **Scene embeddings** включают полный иерархический контекст: `Книга → Глава → sceneCard → facts → event labels → participants → entities → unresolvedForms → location → time → excerpt`, clamp до 2400 chars (`buildSceneEmbeddingText`).
+- Scene tools (`search_scenes`, `get_scene_context`) — включены по умолчанию после PR #18; killswitch `BOOK_CHAT_SCENE_TOOLS_ENABLED=false` остался как kill-switch на регрессию.
+- `BookScene` модель снесена (PR #19) — была фантомным fossil'ом, реальная сцена-таблица всегда была `BookAnalysisScene`.
 
 **Backlog (приоритет ROI):**
 - **TOP — Tighten Pro-tier router в planner prompt** (`bookChatService.ts:3398-3401`). Сейчас слишком часто рутит на Pro; ужесточить до `complexity=hard AND multi-group`. **Главная экономическая ручка: −30 до −47% LLM-стоимости.**
 - **Gate `search_scenes`** когда `complexity=simple` — закрывает T3 over-search.
-- **Alias expansion** — модель `BookEntityAlias` была удалена в PR #15 (никогда не наполнялась). Если возьмёмся — нужно сначала восстановить таблицу или взять alias-источник из `BookEntity` показывающего characters/aliases в анализе.
-- **Scene `contextSummary`** (Anthropic-style contextual retrieval) — большой трек, требует доработки analysis pipeline.
-- **Paragraph hierarchical context injection** — большой трек, требует переэмбеддинга всех книг.
+- **Alias expansion** — модель `BookEntityAlias` была удалена в PR #15 (никогда не наполнялась). Если возьмёмся — нужно сначала восстановить таблицу или взять alias-источник из `BookAnalysisScene.participantsJson` / `mentionedEntitiesJson` (там уже LLM-extracted alias'ы).
+
+### Pipeline ускорение (отдельный track от RAG-качества)
+
+Узкое место — **scene LLM call'ы**, ~70% wall-time. Низкорискованные ручки на стенде:
+
+- `ANALYSIS_CHUNK_CONCURRENCY=8` (default 4) — параллелизм LLM-вызовов внутри главы. Vertex API не упирается в rate-limit.
+- `ANALYSIS_CHAPTER_CONCURRENCY=8` (default 4) — параллелизм глав. Проверить память воркера (8 GiB).
+- Dedup paragraph embeddings по `textHash(enriched_text)` — для книг с шаблонными колонтитулами 5-15% экономия.
+
+Не трогать без эвала: SCENE_CHUNK_SIZE=20, SCENE_CHUNK_OVERLAP=2, scene-LLM prompt — фундаментальные параметры качества разбиения.
 
 ## Eval / Golden Set
 

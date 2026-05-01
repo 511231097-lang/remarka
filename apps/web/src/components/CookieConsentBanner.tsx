@@ -135,30 +135,30 @@ function CookieSettings({
           <CookieRow
             title="Необходимые"
             locked
-            desc="Авторизация, сессия, защита от CSRF. Без них сайт не работает."
+            desc="Обеспечивают вход, защиту от CSRF и базовую работу сервиса. Без них сервис не работает."
           />
           <CookieRow
-            title="Аналитика"
+            title="Аналитические"
             checked={analytics}
             onChange={setAnalytics}
-            desc="Помогают понять, какие разделы полезны, а какие — нет. Обезличенные."
+            desc="Помогают нам понять, какими разделами вы пользуетесь чаще. Данные обезличены."
           />
           <CookieRow
             title="Персонализация"
             checked={perso}
             onChange={setPerso}
-            desc="Рекомендации книг, недавние чаты, предпочтения отображения."
+            desc="Запоминают ваши предпочтения каталога, недавние чаты, язык интерфейса."
           />
         </div>
         <div className="row" style={{ justifyContent: "flex-end", gap: 10, marginTop: 24 }}>
-          <button
-            className="btn btn-plain btn-sm"
-            onClick={() => onSave({ analytics: false, perso: false })}
-          >
-            Отклонить всё
-          </button>
-          <button className="btn btn-primary btn-sm" onClick={() => onSave({ analytics, perso })}>
+          <button className="btn btn-plain btn-sm" onClick={() => onSave({ analytics, perso })}>
             Сохранить выбор
+          </button>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => onSave({ analytics: true, perso: true })}
+          >
+            Принять всё
           </button>
         </div>
       </div>
@@ -169,7 +169,9 @@ function CookieSettings({
 export function CookieConsentBanner() {
   const [visible, setVisible] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [prefs, setPrefs] = useState<CookiePrefs>({ analytics: true, perso: true });
+  // Default-OFF for analytics/perso — required by legal review:
+  // analytics & perso cookies must NOT be set without explicit opt-in.
+  const [prefs, setPrefs] = useState<CookiePrefs>({ analytics: false, perso: false });
 
   useEffect(() => {
     setVisible(!hasCookieConsent());
@@ -177,7 +179,7 @@ export function CookieConsentBanner() {
       const saved = window.localStorage.getItem(PREFS_KEY);
       if (saved) setPrefs(JSON.parse(saved));
     } catch {
-      setPrefs({ analytics: true, perso: true });
+      setPrefs({ analytics: false, perso: false });
     }
   }, []);
 
@@ -198,21 +200,25 @@ export function CookieConsentBanner() {
             <div
               style={{ fontSize: 14, color: "var(--ink)", marginBottom: 4, fontWeight: 500 }}
             >
-              Про cookie-файлы
+              Cookie-файлы
             </div>
             <div style={{ fontSize: 13, color: "var(--ink-muted)", lineHeight: 1.5 }}>
-              Необходимые cookie-файлы включены всегда — без них не работает вход и сессия.
-              Аналитику и персонализацию включаем только по вашему согласию.{" "}
+              Мы используем cookie-файлы, необходимые для работы сервиса, и — с вашего
+              согласия — для аналитики и персонализации. Без вашего согласия аналитические
+              и персонализирующие cookie не используются. Подробнее в{" "}
               <Link className="lnk" href="/legal/cookies">
-                О cookie-файлах
+                Политике использования cookie-файлов
               </Link>
-              {" · "}
-              <Link className="lnk" href="/legal/privacy">
-                Политика ПДн
-              </Link>
+              .
             </div>
           </div>
           <div className="row-sm" style={{ flexShrink: 0, flexWrap: "wrap", gap: 8 }}>
+            <button
+              className="btn btn-plain btn-sm"
+              onClick={() => save({ analytics: false, perso: false })}
+            >
+              Отклонить всё
+            </button>
             <button className="btn btn-plain btn-sm" onClick={() => setSettingsOpen(true)}>
               Настроить
             </button>

@@ -1066,6 +1066,23 @@ export function BookChat() {
                     )}
                   </div>
                 </div>
+                {/* AI-disclaimer per legal review (mandatory inline notice). */}
+                <div
+                  style={{
+                    color: "var(--ink-faint)",
+                    fontSize: 11,
+                    lineHeight: 1.5,
+                    marginTop: 10,
+                    textAlign: "center",
+                  }}
+                >
+                  Ответы ассистента генерируются AI и могут содержать ошибки. Не используйте
+                  их как профессиональную консультацию.{" "}
+                  <a className="lnk" href="/legal/terms#section-11" target="_blank" rel="noreferrer">
+                    Подробнее
+                  </a>
+                  .
+                </div>
               </div>
             </div>
           </>
