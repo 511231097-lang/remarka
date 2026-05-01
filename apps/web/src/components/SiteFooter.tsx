@@ -46,7 +46,10 @@ export function SiteFooter() {
       </div>
 
       <div className="container footer-bottom">
-        <div className="mono footer-mini">© {year} ремарка</div>
+        {/* TODO: при запуске заменить заглушки в нижней строке на реальные ФИО / ИНН. */}
+        <div className="mono footer-mini">
+          © {year} Самозанятый «Ф.И.О.», ИНН «000000000000»
+        </div>
         <div className="mono footer-mini">
           Сервис анализирует тексты, но не предоставляет лицензии на произведения.
         </div>
