@@ -1,4 +1,4 @@
-import { LocalBlobStore, S3BlobStore, createArtifactBlobStoreFromEnv } from "@remarka/db";
+import { LocalBlobStore, S3BlobStore, createArtifactBlobStoreFromEnv, createBookTextCorpusBlobStoreFromEnv } from "@remarka/db";
 
 // Helpers for purging the blob storage that hangs off a book — extracted so
 // both the per-book DELETE route and the account-deletion route can reuse
@@ -79,6 +79,16 @@ export async function deleteBookBlob(params: {
   }
 }
 
+export async function deleteBookTextCorpusBlob(params: {
+  storageKey: string | null | undefined;
+}): Promise<void> {
+  const storageKey = String(params.storageKey || "").trim();
+  if (!storageKey) return;
+
+  const store = createBookTextCorpusBlobStoreFromEnv();
+  await store.delete(storageKey);
+}
+
 /**
  * Remove derived artifact payloads (analysis run intermediates, chat-run
  * traces) for a given bookId. Uses Promise.allSettled so a partial failure
@@ -89,5 +99,23 @@ export async function deleteArtifactPayloadsForBook(bookId: string): Promise<voi
   await Promise.allSettled([
     store.deletePrefix(`analysis-runs/${bookId}`),
     store.deletePrefix(`chat-runs/${bookId}`),
+  ]);
+}
+
+export async function deleteBookStoragePayloads(params: {
+  bookId: string;
+  storageProvider: string;
+  storageKey: string;
+  textCorpusStorageKey?: string | null;
+}): Promise<void> {
+  await Promise.allSettled([
+    deleteBookBlob({
+      storageProvider: params.storageProvider,
+      storageKey: params.storageKey,
+    }),
+    deleteBookTextCorpusBlob({
+      storageKey: params.textCorpusStorageKey,
+    }),
+    deleteArtifactPayloadsForBook(params.bookId),
   ]);
 }

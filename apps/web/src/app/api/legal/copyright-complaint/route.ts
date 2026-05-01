@@ -12,6 +12,11 @@ import {
   LEGAL_DOC_VERSION,
 } from "@/lib/legalDocumentVersions";
 import { checkRateLimit, getClientIpFromRequest } from "@/lib/rateLimit";
+import {
+  MultipartUploadError,
+  parseStreamingMultipart,
+  type TempUploadedFile,
+} from "@/lib/streamingMultipart";
 
 // POST /api/legal/copyright-complaint
 //
@@ -67,7 +72,8 @@ interface ValidationOk {
     description: string;
     sworn: boolean;
     captchaToken: string | null;
-    files: File[];
+    files: TempUploadedFile[];
+    cleanupTempFiles: () => Promise<void>;
   };
 }
 
@@ -78,14 +84,14 @@ interface ValidationErr {
   field?: string;
 }
 
-function getString(formData: FormData, name: string, maxLen: number): string {
-  const raw = formData.get(name);
+function getString(fields: Map<string, string[]>, name: string, maxLen: number): string {
+  const raw = fields.get(name)?.[0];
   if (typeof raw !== "string") return "";
   return raw.trim().slice(0, maxLen);
 }
 
-function getOptionalString(formData: FormData, name: string, maxLen: number): string | null {
-  const value = getString(formData, name, maxLen);
+function getOptionalString(fields: Map<string, string[]>, name: string, maxLen: number): string | null {
+  const value = getString(fields, name, maxLen);
   return value || null;
 }
 
@@ -111,130 +117,104 @@ async function parseAndValidate(request: Request): Promise<ValidationOk | Valida
     };
   }
 
-  let formData: FormData;
+  let upload: Awaited<ReturnType<typeof parseStreamingMultipart>>;
   try {
-    formData = await request.formData();
-  } catch {
+    upload = await parseStreamingMultipart(request, {
+      fileFieldNames: ["attachments"],
+      maxFiles: MAX_ATTACHMENT_COUNT,
+      maxFileSizeBytes: MAX_ATTACHMENT_SIZE_BYTES,
+      tempPrefix: "remarka-copyright-complaint",
+      maxFieldSizeBytes: FIELD_MAX_LENGTHS.description,
+    });
+  } catch (error) {
+    if (error instanceof MultipartUploadError) {
+      return { ok: false, status: error.status, error: error.message, field: error.field };
+    }
     return { ok: false, status: 400, error: "Failed to parse multipart body" };
   }
 
-  const claimantTypeRaw = String(formData.get("claimantType") || "").trim();
+  const fail = async (status: number, error: string, field?: string): Promise<ValidationErr> => {
+    await upload.cleanup();
+    return { ok: false, status, error, field };
+  };
+
+  const claimantTypeRaw = getString(upload.fields, "claimantType", 100);
   if (!CLAIMANT_TYPES.includes(claimantTypeRaw as ClaimantType)) {
-    return {
-      ok: false,
-      status: 400,
-      error: `claimantType must be one of: ${CLAIMANT_TYPES.join(", ")}`,
-      field: "claimantType",
-    };
+    return fail(400, `claimantType must be one of: ${CLAIMANT_TYPES.join(", ")}`, "claimantType");
   }
   const claimantType = claimantTypeRaw as ClaimantType;
 
-  const claimantName = getString(formData, "claimantName", FIELD_MAX_LENGTHS.claimantName);
+  const claimantName = getString(upload.fields, "claimantName", FIELD_MAX_LENGTHS.claimantName);
   if (!claimantName) {
-    return { ok: false, status: 400, error: "claimantName is required", field: "claimantName" };
+    return fail(400, "claimantName is required", "claimantName");
   }
 
   const claimantOrganization = getOptionalString(
-    formData,
+    upload.fields,
     "claimantOrganization",
     FIELD_MAX_LENGTHS.claimantOrganization,
   );
 
-  const claimantEmail = getString(formData, "claimantEmail", FIELD_MAX_LENGTHS.claimantEmail);
+  const claimantEmail = getString(upload.fields, "claimantEmail", FIELD_MAX_LENGTHS.claimantEmail);
   if (!claimantEmail || !isValidEmail(claimantEmail)) {
-    return { ok: false, status: 400, error: "claimantEmail is invalid", field: "claimantEmail" };
+    return fail(400, "claimantEmail is invalid", "claimantEmail");
   }
 
-  const workTitle = getString(formData, "workTitle", FIELD_MAX_LENGTHS.workTitle);
+  const workTitle = getString(upload.fields, "workTitle", FIELD_MAX_LENGTHS.workTitle);
   if (!workTitle) {
-    return { ok: false, status: 400, error: "workTitle is required", field: "workTitle" };
+    return fail(400, "workTitle is required", "workTitle");
   }
 
-  const disputedUrls = getString(formData, "disputedUrls", FIELD_MAX_LENGTHS.disputedUrls);
+  const disputedUrls = getString(upload.fields, "disputedUrls", FIELD_MAX_LENGTHS.disputedUrls);
   if (!disputedUrls) {
-    return {
-      ok: false,
-      status: 400,
-      error: "disputedUrls is required",
-      field: "disputedUrls",
-    };
+    return fail(400, "disputedUrls is required", "disputedUrls");
   }
 
-  const rightsBasis = getString(formData, "rightsBasis", FIELD_MAX_LENGTHS.rightsBasis);
+  const rightsBasis = getString(upload.fields, "rightsBasis", FIELD_MAX_LENGTHS.rightsBasis);
   if (!rightsBasis) {
-    return { ok: false, status: 400, error: "rightsBasis is required", field: "rightsBasis" };
+    return fail(400, "rightsBasis is required", "rightsBasis");
   }
 
   const powerOfAttorneyDetails = getOptionalString(
-    formData,
+    upload.fields,
     "powerOfAttorneyDetails",
     FIELD_MAX_LENGTHS.powerOfAttorneyDetails,
   );
   if (claimantType === "authorized_person" && !powerOfAttorneyDetails) {
-    return {
-      ok: false,
-      status: 400,
-      error: "powerOfAttorneyDetails is required when claimantType=authorized_person",
-      field: "powerOfAttorneyDetails",
-    };
+    return fail(
+      400,
+      "powerOfAttorneyDetails is required when claimantType=authorized_person",
+      "powerOfAttorneyDetails",
+    );
   }
 
-  const description = getString(formData, "description", FIELD_MAX_LENGTHS.description);
+  const description = getString(upload.fields, "description", FIELD_MAX_LENGTHS.description);
   if (!description) {
-    return { ok: false, status: 400, error: "description is required", field: "description" };
+    return fail(400, "description is required", "description");
   }
 
-  const swornRaw = String(formData.get("sworn") || "").trim().toLowerCase();
+  const swornRaw = getString(upload.fields, "sworn", 20).toLowerCase();
   const sworn = swornRaw === "true" || swornRaw === "1" || swornRaw === "on";
   if (!sworn) {
-    return {
-      ok: false,
-      status: 400,
-      error: "Acknowledgement of добросовестность is required",
-      field: "sworn",
-    };
+    return fail(400, "Acknowledgement of добросовестность is required", "sworn");
   }
 
-  const captchaTokenRaw = formData.get("captchaToken");
-  const captchaToken =
-    typeof captchaTokenRaw === "string" && captchaTokenRaw.trim()
-      ? captchaTokenRaw.trim()
-      : null;
+  const captchaToken = getOptionalString(upload.fields, "captchaToken", 4096);
 
-  const files: File[] = [];
-  for (const entry of formData.getAll("attachments")) {
-    if (!(entry instanceof File)) continue;
-    if (entry.size === 0) continue;
-    files.push(entry);
-  }
+  const files = upload.files.filter((file) => file.fieldName === "attachments" && file.sizeBytes > 0);
 
   if (files.length > MAX_ATTACHMENT_COUNT) {
-    return {
-      ok: false,
-      status: 400,
-      error: `Too many attachments. Max ${MAX_ATTACHMENT_COUNT}`,
-      field: "attachments",
-    };
+    return fail(400, `Too many attachments. Max ${MAX_ATTACHMENT_COUNT}`, "attachments");
   }
 
   for (const file of files) {
-    if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
-      return {
-        ok: false,
-        status: 413,
-        error: `Attachment "${file.name}" exceeds 20 MB limit`,
-        field: "attachments",
-      };
+    if (file.sizeBytes > MAX_ATTACHMENT_SIZE_BYTES) {
+      return fail(413, `Attachment "${file.fileName}" exceeds 20 MB limit`, "attachments");
     }
-    const ext = fileExtension(file.name);
-    const mime = String(file.type || "").toLowerCase();
+    const ext = fileExtension(file.fileName);
+    const mime = String(file.mimeType || "").toLowerCase();
     if (!ALLOWED_EXTENSIONS.has(ext) || (mime && !ALLOWED_MIME_TYPES.has(mime))) {
-      return {
-        ok: false,
-        status: 415,
-        error: `Attachment "${file.name}" has unsupported type. Allowed: PDF, JPG, PNG.`,
-        field: "attachments",
-      };
+      return fail(415, `Attachment "${file.fileName}" has unsupported type. Allowed: PDF, JPG, PNG.`, "attachments");
     }
   }
 
@@ -253,6 +233,7 @@ async function parseAndValidate(request: Request): Promise<ValidationOk | Valida
       sworn,
       captchaToken,
       files,
+      cleanupTempFiles: upload.cleanup,
     },
   };
 }
@@ -293,121 +274,124 @@ export async function POST(request: Request) {
   }
   const { data } = validation;
 
-  // Captcha — после валидации формы (чтобы можно было сразу показать
-  // ошибки полей без consume'нья captcha-токена), но до тяжёлых I/O
-  // (S3-upload, БД-вставка).
-  const captcha = await verifyCaptcha({
-    token: data.captchaToken,
-    remoteIp: ipAddress,
-  });
-  if (!captcha.ok) {
-    // Логируем конкретный код ошибки на сервере для дебага. Не выставляем
-    // его пользователю в виде user-message, но возвращаем в payload как
-    // captchaErrorCode, чтобы можно было увидеть в DevTools network tab.
-    console.warn("[copyright-complaint] captcha verification failed", {
-      error: captcha.error,
-      hadToken: Boolean(data.captchaToken),
-      tokenLength: data.captchaToken ? data.captchaToken.length : 0,
-      ipAddress,
-    });
-    return NextResponse.json(
-      {
-        error: "Не удалось пройти проверку captcha. Обновите страницу и попробуйте ещё раз.",
-        captchaErrorCode: captcha.error || "unknown",
-      },
-      { status: 400 },
-    );
-  }
-
-  const swornHash = createHash("sha256")
-    .update(COPYRIGHT_COMPLAINT_SWORN_TEXT, "utf8")
-    .digest("hex");
-
-  // Загружаем вложения в S3. Если хоть одно упадёт — стопаем, лучше
-  // отказать заявителю, чем создать жалобу с потерянным договором.
-  const blobStore = resolveCopyrightComplaintsBlobStore();
-  const uploadedAttachments: CopyrightAttachmentRecord[] = [];
-
   try {
-    for (const file of data.files) {
-      const bytes = new Uint8Array(await file.arrayBuffer());
-      const stored = await blobStore.put({
-        bytes,
-        fileName: file.name,
-        prefix: new Date().toISOString().slice(0, 7).replace("-", "/"),
-      });
-      uploadedAttachments.push({
-        storageProvider: stored.provider,
-        storageKey: stored.storageKey,
-        fileName: file.name.slice(0, 200),
-        mimeType: file.type || "application/octet-stream",
-        sizeBytes: stored.sizeBytes,
-        sha256: stored.sha256,
-        uploadedAt: new Date().toISOString(),
-      });
-    }
-  } catch (error) {
-    // Откатываем уже залитые файлы — не оставляем их висеть.
-    for (const att of uploadedAttachments) {
-      try {
-        await blobStore.delete(att.storageKey);
-      } catch {
-        // best-effort cleanup
-      }
-    }
-    console.error("[copyright-complaint] failed to upload attachments", error);
-    return NextResponse.json(
-      { error: "Не удалось загрузить файлы. Попробуйте позже." },
-      { status: 500 },
-    );
-  }
-
-  try {
-    const complaint = await prisma.copyrightComplaint.create({
-      data: {
-        status: "new",
-        claimantType: data.claimantType,
-        claimantName: data.claimantName,
-        claimantOrganization: data.claimantOrganization,
-        claimantEmail: data.claimantEmail,
-        workTitle: data.workTitle,
-        disputedUrls: data.disputedUrls,
-        rightsBasis: data.rightsBasis,
-        powerOfAttorneyDetails: data.powerOfAttorneyDetails,
-        description: data.description,
-        swornStatementHash: swornHash,
-        swornStatementLabel: LEGAL_DOC_VERSION,
-        attachmentsJson: uploadedAttachments as unknown as Prisma.InputJsonValue,
-        ipAddress: ipAddress?.slice(0, 100) || null,
-        userAgent,
-      },
-      select: { id: true, createdAt: true },
+    // Captcha — после валидации формы (чтобы можно было сразу показать
+    // ошибки полей без consume'нья captcha-токена), но до тяжёлых I/O
+    // (S3-upload, БД-вставка).
+    const captcha = await verifyCaptcha({
+      token: data.captchaToken,
+      remoteIp: ipAddress,
     });
-
-    return NextResponse.json(
-      {
-        complaintId: complaint.id,
-        createdAt: complaint.createdAt.toISOString(),
-        message:
-          "Заявление зарегистрировано. Мы рассмотрим его в срок до 10 рабочих дней. " +
-          "Дополнительные документы можно прислать на abuse@remarka.app с указанием номера заявки.",
-      },
-      { status: 201 },
-    );
-  } catch (error) {
-    // Если БД вставка упала после загрузки в S3 — чистим хвосты, чтобы
-    // не оставлять orphan-вложения.
-    for (const att of uploadedAttachments) {
-      try {
-        await blobStore.delete(att.storageKey);
-      } catch {
-        // best-effort
-      }
+    if (!captcha.ok) {
+      // Логируем конкретный код ошибки на сервере для дебага. Не выставляем
+      // его пользователю в виде user-message, но возвращаем в payload как
+      // captchaErrorCode, чтобы можно было увидеть в DevTools network tab.
+      console.warn("[copyright-complaint] captcha verification failed", {
+        error: captcha.error,
+        hadToken: Boolean(data.captchaToken),
+        tokenLength: data.captchaToken ? data.captchaToken.length : 0,
+        ipAddress,
+      });
+      return NextResponse.json(
+        {
+          error: "Не удалось пройти проверку captcha. Обновите страницу и попробуйте ещё раз.",
+          captchaErrorCode: captcha.error || "unknown",
+        },
+        { status: 400 },
+      );
     }
-    console.error("[copyright-complaint] failed to persist complaint", error);
-    return NextResponse.json(
-      { error: "Не удалось сохранить заявление. Попробуйте позже." },
-      { status: 500 },
-    );
+
+    const swornHash = createHash("sha256")
+      .update(COPYRIGHT_COMPLAINT_SWORN_TEXT, "utf8")
+      .digest("hex");
+
+    // Загружаем вложения в S3. Если хоть одно упадёт — стопаем, лучше
+    // отказать заявителю, чем создать жалобу с потерянным договором.
+    const blobStore = resolveCopyrightComplaintsBlobStore();
+    const uploadedAttachments: CopyrightAttachmentRecord[] = [];
+
+    try {
+      for (const file of data.files) {
+        const stored = await blobStore.putFile({
+          filePath: file.tempPath,
+          fileName: file.fileName,
+          prefix: new Date().toISOString().slice(0, 7).replace("-", "/"),
+        });
+        uploadedAttachments.push({
+          storageProvider: stored.provider,
+          storageKey: stored.storageKey,
+          fileName: file.fileName.slice(0, 200),
+          mimeType: file.mimeType || "application/octet-stream",
+          sizeBytes: stored.sizeBytes,
+          sha256: stored.sha256,
+          uploadedAt: new Date().toISOString(),
+        });
+      }
+    } catch (error) {
+      // Откатываем уже залитые файлы — не оставляем их висеть.
+      for (const att of uploadedAttachments) {
+        try {
+          await blobStore.delete(att.storageKey);
+        } catch {
+          // best-effort cleanup
+        }
+      }
+      console.error("[copyright-complaint] failed to upload attachments", error);
+      return NextResponse.json(
+        { error: "Не удалось загрузить файлы. Попробуйте позже." },
+        { status: 500 },
+      );
+    }
+
+    try {
+      const complaint = await prisma.copyrightComplaint.create({
+        data: {
+          status: "new",
+          claimantType: data.claimantType,
+          claimantName: data.claimantName,
+          claimantOrganization: data.claimantOrganization,
+          claimantEmail: data.claimantEmail,
+          workTitle: data.workTitle,
+          disputedUrls: data.disputedUrls,
+          rightsBasis: data.rightsBasis,
+          powerOfAttorneyDetails: data.powerOfAttorneyDetails,
+          description: data.description,
+          swornStatementHash: swornHash,
+          swornStatementLabel: LEGAL_DOC_VERSION,
+          attachmentsJson: uploadedAttachments as unknown as Prisma.InputJsonValue,
+          ipAddress: ipAddress?.slice(0, 100) || null,
+          userAgent,
+        },
+        select: { id: true, createdAt: true },
+      });
+
+      return NextResponse.json(
+        {
+          complaintId: complaint.id,
+          createdAt: complaint.createdAt.toISOString(),
+          message:
+            "Заявление зарегистрировано. Мы рассмотрим его в срок до 10 рабочих дней. " +
+            "Дополнительные документы можно прислать на abuse@remarka.app с указанием номера заявки.",
+        },
+        { status: 201 },
+      );
+    } catch (error) {
+      // Если БД вставка упала после загрузки в S3 — чистим хвосты, чтобы
+      // не оставлять orphan-вложения.
+      for (const att of uploadedAttachments) {
+        try {
+          await blobStore.delete(att.storageKey);
+        } catch {
+          // best-effort
+        }
+      }
+      console.error("[copyright-complaint] failed to persist complaint", error);
+      return NextResponse.json(
+        { error: "Не удалось сохранить заявление. Попробуйте позже." },
+        { status: 500 },
+      );
+    }
+  } finally {
+    await data.cleanupTempFiles();
   }
 }

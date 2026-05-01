@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { createReadStream } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import {
@@ -17,6 +18,12 @@ export interface BlobPutInput {
   prefix?: string;
 }
 
+export interface BlobPutFileInput {
+  filePath: string;
+  fileName: string;
+  prefix?: string;
+}
+
 export interface BlobPutResult {
   provider: string;
   storageKey: string;
@@ -26,6 +33,7 @@ export interface BlobPutResult {
 
 export interface BlobStore {
   put(input: BlobPutInput): Promise<BlobPutResult>;
+  putFile(input: BlobPutFileInput): Promise<BlobPutResult>;
   get(storageKey: string): Promise<Uint8Array>;
   delete(storageKey: string): Promise<void>;
   deletePrefix(prefix: string): Promise<void>;
@@ -93,6 +101,17 @@ async function getS3BodyBytes(body: GetObjectCommandOutput["Body"]): Promise<Uin
   throw new Error("Unsupported S3 response body type");
 }
 
+async function sha256File(filePath: string): Promise<string> {
+  const hash = createHash("sha256");
+  await new Promise<void>((resolve, reject) => {
+    const stream = createReadStream(filePath);
+    stream.on("data", (chunk) => hash.update(chunk));
+    stream.on("error", reject);
+    stream.on("end", resolve);
+  });
+  return hash.digest("hex");
+}
+
 export class LocalBlobStore implements BlobStore {
   private readonly rootDir: string;
   private readonly provider: string;
@@ -130,6 +149,26 @@ export class LocalBlobStore implements BlobStore {
       storageKey,
       sizeBytes: bytes.byteLength,
       sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
+  }
+
+  async putFile(input: BlobPutFileInput): Promise<BlobPutResult> {
+    const safeName = sanitizeFileName(input.fileName);
+    const prefix =
+      normalizePrefix(input.prefix) || new Date().toISOString().slice(0, 10).replace(/-/g, "/");
+    const storageKey = path.posix.join(prefix, `${randomUUID()}-${safeName}`);
+    const absolutePath = this.resolveAbsolute(storageKey);
+    const sourcePath = path.resolve(input.filePath);
+    const [stat, sha256] = await Promise.all([fs.stat(sourcePath), sha256File(sourcePath)]);
+
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.copyFile(sourcePath, absolutePath);
+
+    return {
+      provider: this.provider,
+      storageKey,
+      sizeBytes: stat.size,
+      sha256,
     };
   }
 
@@ -217,6 +256,31 @@ export class S3BlobStore implements BlobStore {
       storageKey,
       sizeBytes: bytes.byteLength,
       sha256: createHash("sha256").update(bytes).digest("hex"),
+    };
+  }
+
+  async putFile(input: BlobPutFileInput): Promise<BlobPutResult> {
+    const safeName = sanitizeFileName(input.fileName);
+    const prefix =
+      normalizePrefix(input.prefix) || new Date().toISOString().slice(0, 10).replace(/-/g, "/");
+    const storageKey = this.toStorageKey(path.posix.join(prefix, `${randomUUID()}-${safeName}`));
+    const sourcePath = path.resolve(input.filePath);
+    const [stat, sha256] = await Promise.all([fs.stat(sourcePath), sha256File(sourcePath)]);
+
+    await this.client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: storageKey,
+        Body: createReadStream(sourcePath),
+        ContentLength: stat.size,
+      })
+    );
+
+    return {
+      provider: this.provider,
+      storageKey,
+      sizeBytes: stat.size,
+      sha256,
     };
   }
 

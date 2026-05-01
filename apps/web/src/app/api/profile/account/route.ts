@@ -1,7 +1,7 @@
 import { prisma } from "@remarka/db";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
-import { deleteArtifactPayloadsForBook, deleteBookBlob } from "@/lib/bookStorageCleanup";
+import { deleteBookStoragePayloads } from "@/lib/bookStorageCleanup";
 
 // Account deletion. Honors the right-to-erasure declared in the Privacy
 // policy (152-FZ art. 14 + GDPR art. 17 analogue).
@@ -11,8 +11,8 @@ import { deleteArtifactPayloadsForBook, deleteBookBlob } from "@/lib/bookStorage
 //   2. Require an explicit confirmation token in the body — protects
 //      against accidental deletion via misclick / replay / CSRF chain.
 //   3. Walk all books owned by the user and purge their blob storage
-//      (original file + analysis-run + chat-run artifacts). DB cascade
-//      handles every BookChapter / BookScene / BookEntity / etc.
+//      (original file + parsed text corpus + analysis/chat artifacts).
+//      DB cascade handles every BookChapter / BookScene / BookEntity / etc.
 //   4. Delete the User row. The schema has onDelete: Cascade on Account,
 //      Session, Book, BookLike, BookChatSession, and BookChatThread, so
 //      everything DB-side cleans up in one statement.
@@ -55,24 +55,17 @@ export async function DELETE(request: Request) {
       id: true,
       storageProvider: true,
       storageKey: true,
+      textCorpusStorageKey: true,
     },
   });
 
   for (const book of ownedBooks) {
-    try {
-      await deleteBookBlob({
-        storageProvider: book.storageProvider,
-        storageKey: book.storageKey,
-      });
-    } catch {
-      // Don't block on blob cleanup; orphaned objects are preferable to
-      // refusing the erasure request.
-    }
-    try {
-      await deleteArtifactPayloadsForBook(book.id);
-    } catch {
-      // Same rationale as above.
-    }
+    await deleteBookStoragePayloads({
+      bookId: book.id,
+      storageProvider: book.storageProvider,
+      storageKey: book.storageKey,
+      textCorpusStorageKey: book.textCorpusStorageKey,
+    });
   }
 
   await prisma.user.delete({
