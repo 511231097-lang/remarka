@@ -802,6 +802,61 @@ model LegalConsent {
   @@index([relatedResourceId])
 }
 
+// Жалоба правообладателя (DMCA-style notice). Поступает через форму
+// /legal/copyright или резервно по почте abuse@. Структурированная запись
+// для соблюдения процедуры по ст. 1253.1 ГК РФ и ст. 15.7 ФЗ «Об
+// информации». Каждая жалоба фиксирует:
+//   - claimant identity + contact
+//   - какое произведение и где (URLs/bookId)
+//   - правовое основание (договор, авторство, доверенность)
+//   - подтверждение добросовестности (sworn) с хешем текста
+//   - IP/UA для возможных регрессов при заведомо ложных жалобах
+//   - вложения (договор, свидетельства) — стораджятся в S3
+//
+// status — workflow: new → under_review → accepted/rejected; counter_received
+// если пришёл встречный отвод от пользователя, чей контент заблокирован.
+enum CopyrightComplaintStatus {
+  new
+  under_review
+  accepted
+  rejected
+  counter_received
+}
+
+enum CopyrightClaimantType {
+  rightsholder
+  authorized_person
+  org_representative
+}
+
+model CopyrightComplaint {
+  id                       String                   @id @default(cuid())
+  status                   CopyrightComplaintStatus @default(new)
+  claimantType             CopyrightClaimantType
+  claimantName             String
+  claimantOrganization     String?
+  claimantEmail            String
+  workTitle                String
+  disputedUrls             String                   @db.Text
+  rightsBasis              String                   @db.Text
+  powerOfAttorneyDetails   String?                  @db.Text
+  description              String                   @db.Text
+  swornStatementHash       String
+  swornStatementLabel      String
+  attachmentsJson          Json                     @default("[]")
+  ipAddress                String?
+  userAgent                String?
+  reviewerNotes            String?                  @db.Text
+  reviewedAt               DateTime?
+  reviewedByUserId         String?
+  createdAt                DateTime                 @default(now())
+  updatedAt                DateTime                 @updatedAt
+
+  @@index([status, createdAt])
+  @@index([claimantEmail, createdAt])
+  @@index([createdAt])
+}
+
 model Account {
   id                String  @id @default(cuid())
   userId            String

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { BarChart3, BookOpen, ClipboardList, Search, Users } from "lucide-react";
+import { BarChart3, BookOpen, ClipboardList, Scale, Search, Users } from "lucide-react";
 
 interface AdminShellProps {
   children: React.ReactNode;
@@ -38,6 +38,12 @@ const NAV_ITEMS = [
     label: "Поиск по книге",
     icon: Search,
     activePrefixes: ["/admin/book-search"],
+  },
+  {
+    href: "/admin/copyright-complaints",
+    label: "Жалобы правообладателей",
+    icon: Scale,
+    activePrefixes: ["/admin/copyright-complaints"],
   },
 ] as const;
 
