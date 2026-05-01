@@ -81,6 +81,7 @@ The chat uses a hybrid retriever (pgvector semantic + lexical RRF fusion + Verte
 - **TOP — Tighten Pro-tier router в planner prompt** (`bookChatService.ts:3398-3401`). Сейчас слишком часто рутит на Pro; ужесточить до `complexity=hard AND multi-group`. **Главная экономическая ручка: −30 до −47% LLM-стоимости.**
 - **Gate `search_scenes`** когда `complexity=simple` — закрывает T3 over-search.
 - **Alias expansion** — модель `BookEntityAlias` была удалена в PR #15 (никогда не наполнялась). Если возьмёмся — нужно сначала восстановить таблицу или взять alias-источник из `BookAnalysisScene.participantsJson` / `mentionedEntitiesJson` (там уже LLM-extracted alias'ы).
+- **Self-hosted reranker (T8)** — заменить Vertex Ranking на `BAAI/bge-reranker-v2-m3` (INT8) на отдельной CPU VPS (~700 ₽/мес). Закрывает один trans-border канал, latency −60%, контроль модели вместо `latest`-drift. Точка безубыточности по деньгам — ~1 800 ranks/мес (≈ 600 chat-turn'ов/мес). Подробности и план — `docs/research/rag-audit-2026-04-30.md` секция T8. Триггер: когда volume > 600 turn'ов/мес или появится потребность в GPU-инстансе для дообучения.
 
 ### Pipeline ускорение (отдельный track от RAG-качества)
 
