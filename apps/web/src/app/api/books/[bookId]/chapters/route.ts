@@ -8,10 +8,9 @@ interface RouteContext {
 }
 
 export async function GET(_request: Request, context: RouteContext) {
+  // TOC доступен анонимам для public-книг (нужен для navigation внутри
+  // обзора + reader). Чат сидит за auth и тут не задействован.
   const authUser = await resolveAuthUser();
-  if (!authUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
 
   const params = await context.params;
   const bookId = String(params.bookId || "").trim();
@@ -32,7 +31,7 @@ export async function GET(_request: Request, context: RouteContext) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
 
-  if (!book.isPublic && book.ownerUserId !== authUser.id) {
+  if (!book.isPublic && book.ownerUserId !== authUser?.id) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
 

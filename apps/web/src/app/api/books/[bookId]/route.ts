@@ -2,7 +2,7 @@ import { prisma } from "@remarka/db";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
 import { toBookCoreDTO } from "@/lib/books";
-import { deleteArtifactPayloadsForBook, deleteBookBlob } from "@/lib/bookStorageCleanup";
+import { deleteBookStoragePayloads } from "@/lib/bookStorageCleanup";
 
 interface RouteContext {
   params: Promise<{ bookId: string }>;
@@ -42,16 +42,17 @@ async function resolveBook(context: RouteContext) {
 }
 
 export async function GET(_request: Request, context: RouteContext) {
+  // Анонимам отдаём только public-книги (обзор: метаданные + библиотечные
+  // флажки). Авторизованные могут видеть свои приватные тоже. Чат, upload
+  // и прочие write-операции остаются под auth (отдельные роуты + layout).
   const authUser = await resolveAuthUser();
-  if (!authUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
 
   const resolved = await resolveBook(context);
   if (resolved.error) return resolved.error;
   const { book } = resolved;
 
-  if (!book.isPublic && book.ownerUserId !== authUser.id) {
+  const isOwner = Boolean(authUser && book.ownerUserId === authUser.id);
+  if (!book.isPublic && !isOwner) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
 
@@ -60,24 +61,26 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 
   // Library state — mirror BookCardDTO semantics so the book detail
-  // page can drive the same add/remove flow as Explore.
-  const isOwner = book.ownerUserId === authUser.id;
-  const existingLike = await prisma.bookLike.findUnique({
-    where: {
-      bookId_userId: {
-        bookId: book.id,
-        userId: authUser.id,
-      },
-    },
-    select: { bookId: true },
-  });
+  // page can drive the same add/remove flow as Explore. Для анонима
+  // флажки isInLibrary/can* остаются false — клиент не покажет кнопки.
+  const existingLike = authUser
+    ? await prisma.bookLike.findUnique({
+        where: {
+          bookId_userId: {
+            bookId: book.id,
+            userId: authUser.id,
+          },
+        },
+        select: { bookId: true },
+      })
+    : null;
   const hasLibraryEntry = Boolean(existingLike);
 
   const dto = toBookCoreDTO(book);
   dto.canManage = isOwner;
   dto.isInLibrary = isOwner || hasLibraryEntry;
-  dto.canAddToLibrary = !isOwner && book.isPublic && !hasLibraryEntry;
-  dto.canRemoveFromLibrary = !isOwner && hasLibraryEntry;
+  dto.canAddToLibrary = Boolean(authUser) && !isOwner && book.isPublic && !hasLibraryEntry;
+  dto.canRemoveFromLibrary = Boolean(authUser) && !isOwner && hasLibraryEntry;
   dto.libraryUsersCount = book._count.likes;
   return NextResponse.json(dto);
 }
@@ -100,20 +103,12 @@ export async function DELETE(_request: Request, context: RouteContext) {
     where: { id: bookId },
   });
 
-  try {
-    await deleteBookBlob({
-      storageProvider: book.storageProvider,
-      storageKey: book.storageKey,
-    });
-  } catch {
-    // Blob cleanup failures should not block successful book deletion.
-  }
-
-  try {
-    await deleteArtifactPayloadsForBook(bookId);
-  } catch {
-    // Artifact payload cleanup failures should not block successful book deletion.
-  }
+  await deleteBookStoragePayloads({
+    bookId,
+    storageProvider: book.storageProvider,
+    storageKey: book.storageKey,
+    textCorpusStorageKey: book.textCorpusStorageKey,
+  });
 
   return new NextResponse(null, { status: 204 });
 }

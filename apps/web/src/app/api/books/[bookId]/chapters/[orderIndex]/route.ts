@@ -8,10 +8,9 @@ interface RouteContext {
 }
 
 export async function GET(_request: Request, context: RouteContext) {
+  // Содержимое глав доступно анонимам для public-книг (читалка внутри
+  // обзора). Чат и инструменты по содержимому идут через auth-only роуты.
   const authUser = await resolveAuthUser();
-  if (!authUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
 
   const params = await context.params;
   const bookId = String(params.bookId || "").trim();
@@ -33,7 +32,7 @@ export async function GET(_request: Request, context: RouteContext) {
   if (!book) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
-  if (!book.isPublic && book.ownerUserId !== authUser.id) {
+  if (!book.isPublic && book.ownerUserId !== authUser?.id) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
 
