@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { X } from "lucide-react";
+import { logLegalConsent } from "@/lib/legalConsentClient";
 
 const COOKIE_NAME = "remarka_cookie_consent";
 const COOKIE_VALUE = "saved";
@@ -190,6 +191,12 @@ export function CookieConsentBanner() {
     persistCookieConsent(nextPrefs);
     setVisible(false);
     setSettingsOpen(false);
+    // Log the cookie consent. Captures which categories the user
+    // opted into — required by the legal review's audit trail.
+    void logLegalConsent({
+      consentType: "cookie_settings",
+      cookieCategories: nextPrefs,
+    });
   };
 
   return (

@@ -764,8 +764,42 @@ model User {
   books         Book[]
   bookLikes     BookLike[]
   chatThreads   BookChatThread[]
+  legalConsents LegalConsent[]
 
   @@index([role])
+}
+
+// Audit log of every юридически-significant acceptance — registration
+// galka, upload galka, cookie settings save. Lets us prove what exactly
+// the user saw at the moment of consent (documentVersionHash) and what
+// they consented to (consentType + payload). Required by legal review.
+//
+// Designed to be append-only: never UPDATE rows, only INSERT new ones.
+// Old document versions stay attached to their original consents even
+// after we ship a new redaction.
+enum LegalConsentType {
+  signin_acceptance
+  upload_acceptance
+  cookie_settings
+}
+
+model LegalConsent {
+  id                   String           @id @default(cuid())
+  userId               String?
+  consentType          LegalConsentType
+  acceptedAt           DateTime         @default(now())
+  documentVersionHash  String
+  documentVersionLabel String
+  ipAddress            String?
+  userAgent            String?
+  relatedResourceId    String?
+  cookieCategoriesJson Json?
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([userId, acceptedAt])
+  @@index([consentType, acceptedAt])
+  @@index([relatedResourceId])
 }
 
 model Account {

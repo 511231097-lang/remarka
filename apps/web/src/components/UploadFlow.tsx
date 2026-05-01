@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createBook, getBookAnalysisStatus } from "@/lib/booksClient";
 import type { BookAnalysisStatusDTO } from "@/lib/books";
+import { logLegalConsent } from "@/lib/legalConsentClient";
 
 type UploadStep = "select" | "consents" | "processing" | "complete";
 
@@ -139,6 +140,12 @@ export function UploadFlow() {
     try {
       const created = await createBook({ file: selectedFile.file });
       setCreatedBookId(created.id);
+      // Log the upload acceptance with the bookId so we can prove
+      // exactly WHICH file the user consented to upload at this time.
+      void logLegalConsent({
+        consentType: "upload_acceptance",
+        relatedResourceId: created.id,
+      });
     } catch (createError) {
       setError(createError instanceof Error ? createError.message : "Не удалось загрузить книгу");
       setStep("consents");

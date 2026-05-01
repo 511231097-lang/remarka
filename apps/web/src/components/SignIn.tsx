@@ -5,6 +5,7 @@ import { useSearchParams } from "next/navigation";
 import { signIn } from "next-auth/react";
 import { X } from "lucide-react";
 import { useState } from "react";
+import { logLegalConsent } from "@/lib/legalConsentClient";
 
 function GoogleIcon() {
   return (
@@ -35,6 +36,10 @@ export function SignIn() {
 
   const handleSignIn = () => {
     if (!consent) return;
+    // Log the consent BEFORE the OAuth redirect — even if the user
+    // never finishes Google flow, we have a record that they ticked
+    // the box. Endpoint links by userId post-hoc when session exists.
+    void logLegalConsent({ consentType: "signin_acceptance" });
     const callbackUrl = searchParams.get("callbackUrl") || "/explore";
     void signIn("google", { callbackUrl });
   };
