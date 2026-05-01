@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
-import { ArrowRight, Check } from "lucide-react";
+import { useRef, useState } from "react";
+import { ArrowRight, Check, Loader2, Paperclip, X } from "lucide-react";
+import { CaptchaWidget } from "@/components/CaptchaWidget";
 
 type LegalKey = "terms" | "privacy" | "cookies" | "upload" | "copyright";
 
@@ -174,21 +175,201 @@ function TextDoc({ doc }: { doc: (typeof LEGAL_DOCS)[LegalKey] }) {
   );
 }
 
+type ClaimantType = "rightsholder" | "authorized_person" | "org_representative";
+
+const CLAIMANT_TYPE_OPTIONS: Array<{ value: ClaimantType; label: string; hint: string }> = [
+  {
+    value: "rightsholder",
+    label: "Правообладатель лично",
+    hint: "Я — автор/композитор/иной правообладатель.",
+  },
+  {
+    value: "authorized_person",
+    label: "Доверенное лицо",
+    hint: "Действую по доверенности (понадобятся реквизиты).",
+  },
+  {
+    value: "org_representative",
+    label: "Представитель организации",
+    hint: "Издательство, лейбл, агентство — на основании устава или внутреннего полномочия.",
+  },
+];
+
+const MAX_ATTACHMENT_COUNT = 5;
+const MAX_ATTACHMENT_SIZE_BYTES = 20 * 1024 * 1024;
+const ALLOWED_ATTACHMENT_ACCEPT = ".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png";
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} Б`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} КБ`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} МБ`;
+}
+
+interface SubmitResultOk {
+  ok: true;
+  complaintId: string;
+}
+
 function CopyrightDoc({ doc }: { doc: (typeof LEGAL_DOCS)["copyright"] }) {
-  const [submitted, setSubmitted] = useState(false);
+  const [submitted, setSubmitted] = useState<SubmitResultOk | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
   const [form, setForm] = useState({
-    name: "",
-    org: "",
-    email: "",
-    work: "",
-    url: "",
-    basis: "",
-    desc: "",
+    claimantType: "rightsholder" as ClaimantType,
+    claimantName: "",
+    claimantOrganization: "",
+    claimantEmail: "",
+    workTitle: "",
+    disputedUrls: "",
+    rightsBasis: "",
+    powerOfAttorneyDetails: "",
+    description: "",
     sworn: false,
   });
-  const canSubmit = Boolean(
-    form.name && form.email && form.work && form.url && form.basis && form.desc && form.sworn,
-  );
+  const [files, setFiles] = useState<File[]>([]);
+  const [filesError, setFilesError] = useState<string | null>(null);
+  const [captchaToken, setCaptchaToken] = useState<string | null>(null);
+  const captchaResetRef = useRef<(() => void) | null>(null);
+
+  const captchaSiteKey = process.env.NEXT_PUBLIC_CAPTCHA_SITE_KEY || null;
+  // Если сайт-ключ задан — требуем непустой токен. Если нет (dev) —
+  // пускаем сабмит без токена; серверная сторона тоже работает в no-op
+  // режиме при отсутствии CAPTCHA_SECRET_KEY.
+  const captchaReady = captchaSiteKey ? Boolean(captchaToken) : true;
+
+  const requiresPoa = form.claimantType === "authorized_person";
+  const canSubmit =
+    !submitting &&
+    Boolean(
+      form.claimantName &&
+        form.claimantEmail &&
+        form.workTitle &&
+        form.disputedUrls &&
+        form.rightsBasis &&
+        form.description &&
+        form.sworn &&
+        (!requiresPoa || form.powerOfAttorneyDetails) &&
+        captchaReady,
+    );
+
+  function resetForm() {
+    setForm({
+      claimantType: "rightsholder",
+      claimantName: "",
+      claimantOrganization: "",
+      claimantEmail: "",
+      workTitle: "",
+      disputedUrls: "",
+      rightsBasis: "",
+      powerOfAttorneyDetails: "",
+      description: "",
+      sworn: false,
+    });
+    setFiles([]);
+    setFilesError(null);
+    setSubmitError(null);
+    setCaptchaToken(null);
+    captchaResetRef.current?.();
+  }
+
+  function handleFilesAdd(picked: FileList | null) {
+    if (!picked || picked.length === 0) return;
+    const existing = files.slice();
+    const errors: string[] = [];
+
+    for (const file of Array.from(picked)) {
+      if (existing.length >= MAX_ATTACHMENT_COUNT) {
+        errors.push(`Максимум ${MAX_ATTACHMENT_COUNT} файлов.`);
+        break;
+      }
+      if (file.size > MAX_ATTACHMENT_SIZE_BYTES) {
+        errors.push(`«${file.name}» больше 20 МБ.`);
+        continue;
+      }
+      const lowerName = file.name.toLowerCase();
+      const acceptable =
+        lowerName.endsWith(".pdf") ||
+        lowerName.endsWith(".jpg") ||
+        lowerName.endsWith(".jpeg") ||
+        lowerName.endsWith(".png");
+      if (!acceptable) {
+        errors.push(`«${file.name}» — неподдерживаемый формат. Только PDF, JPG, PNG.`);
+        continue;
+      }
+      existing.push(file);
+    }
+
+    setFiles(existing);
+    setFilesError(errors.length > 0 ? errors.join(" ") : null);
+  }
+
+  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!canSubmit) return;
+
+    setSubmitting(true);
+    setSubmitError(null);
+
+    const body = new FormData();
+    body.set("claimantType", form.claimantType);
+    body.set("claimantName", form.claimantName);
+    if (form.claimantOrganization) body.set("claimantOrganization", form.claimantOrganization);
+    body.set("claimantEmail", form.claimantEmail);
+    body.set("workTitle", form.workTitle);
+    body.set("disputedUrls", form.disputedUrls);
+    body.set("rightsBasis", form.rightsBasis);
+    if (form.powerOfAttorneyDetails) {
+      body.set("powerOfAttorneyDetails", form.powerOfAttorneyDetails);
+    }
+    body.set("description", form.description);
+    body.set("sworn", "true");
+    if (captchaToken) body.set("captchaToken", captchaToken);
+    for (const file of files) {
+      body.append("attachments", file);
+    }
+
+    try {
+      const response = await fetch("/api/legal/copyright-complaint", {
+        method: "POST",
+        body,
+      });
+
+      const json = (await response.json().catch(() => null)) as
+        | { complaintId?: string; error?: string }
+        | null;
+
+      if (!response.ok) {
+        const message =
+          json?.error ||
+          (response.status === 429
+            ? "Слишком много заявлений за короткое время. Попробуйте позже."
+            : "Не удалось отправить заявление. Попробуйте ещё раз или напишите на abuse@remarka.app.");
+        setSubmitError(message);
+        // На любую ошибку — ресетим captcha, чтобы пользователь смог отправить
+        // снова с новым токеном (Turnstile не позволяет переиспользовать).
+        captchaResetRef.current?.();
+        setCaptchaToken(null);
+        return;
+      }
+
+      if (!json?.complaintId) {
+        setSubmitError("Сервер вернул некорректный ответ. Попробуйте ещё раз.");
+        return;
+      }
+
+      setSubmitted({ ok: true, complaintId: json.complaintId });
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error
+          ? `Сетевая ошибка: ${error.message}`
+          : "Сетевая ошибка. Попробуйте ещё раз.",
+      );
+      captchaResetRef.current?.();
+      setCaptchaToken(null);
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   return (
     <article className="legal-doc">
@@ -202,65 +383,127 @@ function CopyrightDoc({ doc }: { doc: (typeof LEGAL_DOCS)["copyright"] }) {
           <div className="complaint-check">
             <Check size={18} />
           </div>
-          <h3 style={{ fontSize: 22, marginTop: 16 }}>Заявление принято</h3>
-          <p className="muted" style={{ margin: "10px auto 0", maxWidth: 440 }}>
-            Мы ответили копией на указанный вами e-mail. Срок рассмотрения — до 10 рабочих дней.
-            При очевидной обоснованности материал блокируется в течение 24 часов.
+          <h3 style={{ fontSize: 22, marginTop: 16 }}>Заявление зарегистрировано</h3>
+          <p className="muted" style={{ margin: "10px auto 0", maxWidth: 480 }}>
+            Номер обращения:{" "}
+            <span className="mono" style={{ fontSize: 13 }}>
+              {submitted.complaintId}
+            </span>
+            <br />
+            Срок рассмотрения — до 10 рабочих дней. При очевидной обоснованности материал
+            блокируется в течение 24 часов.
+          </p>
+          <p className="muted" style={{ margin: "12px auto 0", maxWidth: 480, fontSize: 13 }}>
+            Дополнительные документы можно прислать на{" "}
+            <a className="lnk" href={`mailto:abuse@remarka.app?subject=${encodeURIComponent(`Жалоба ${submitted.complaintId}`)}`}>
+              abuse@remarka.app
+            </a>
+            {" "}с указанием номера заявки.
           </p>
           <button
+            type="button"
             className="btn btn-ghost btn-sm"
             style={{ marginTop: 22 }}
             onClick={() => {
-              setSubmitted(false);
-              setForm({ name: "", org: "", email: "", work: "", url: "", basis: "", desc: "", sworn: false });
+              setSubmitted(null);
+              resetForm();
             }}
           >
             Подать ещё одно
           </button>
         </div>
       ) : (
-        <form
-          className="complaint-form"
-          onSubmit={(event) => {
-            event.preventDefault();
-            if (canSubmit) setSubmitted(true);
-          }}
-        >
-          <div className="complaint-grid">
+        <form className="complaint-form" onSubmit={handleSubmit} noValidate>
+          <div className="complaint-claimant-type">
+            <div className="complaint-label" style={{ marginBottom: 10 }}>
+              Я подаю заявление как<span className="req"> *</span>
+            </div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {CLAIMANT_TYPE_OPTIONS.map((option) => {
+                const checked = form.claimantType === option.value;
+                return (
+                  <label
+                    key={option.value}
+                    style={{
+                      alignItems: "flex-start",
+                      background: checked ? "var(--paper-2)" : "transparent",
+                      border: `1px solid ${checked ? "var(--ink)" : "var(--rule)"}`,
+                      borderRadius: "var(--r)",
+                      cursor: "pointer",
+                      display: "flex",
+                      gap: 10,
+                      padding: "10px 12px",
+                      transition: "border-color 120ms",
+                    }}
+                  >
+                    <input
+                      type="radio"
+                      name="claimantType"
+                      value={option.value}
+                      checked={checked}
+                      onChange={() => setForm({ ...form, claimantType: option.value })}
+                      style={{ marginTop: 3 }}
+                    />
+                    <span style={{ fontSize: 14 }}>
+                      <span style={{ color: "var(--ink)", fontWeight: 500 }}>{option.label}</span>
+                      <span className="muted" style={{ display: "block", fontSize: 12, marginTop: 2 }}>
+                        {option.hint}
+                      </span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="complaint-grid" style={{ marginTop: 16 }}>
             <LegalField label="Ф.И.О. заявителя" required>
               <input
-                value={form.name}
-                onChange={(event) => setForm({ ...form, name: event.target.value })}
+                value={form.claimantName}
+                onChange={(event) => setForm({ ...form, claimantName: event.target.value })}
                 placeholder="Иванов Иван Иванович"
+                maxLength={200}
               />
             </LegalField>
             <LegalField label="Организация" hint="если от имени юрлица">
               <input
-                value={form.org}
-                onChange={(event) => setForm({ ...form, org: event.target.value })}
+                value={form.claimantOrganization}
+                onChange={(event) =>
+                  setForm({ ...form, claimantOrganization: event.target.value })
+                }
                 placeholder="ООО «Издательство»"
+                maxLength={200}
               />
             </LegalField>
             <LegalField label="E-mail для ответа" required>
               <input
                 type="email"
-                value={form.email}
-                onChange={(event) => setForm({ ...form, email: event.target.value })}
+                value={form.claimantEmail}
+                onChange={(event) => setForm({ ...form, claimantEmail: event.target.value })}
                 placeholder="legal@example.com"
+                maxLength={200}
               />
             </LegalField>
             <LegalField label="Название произведения" required>
               <input
-                value={form.work}
-                onChange={(event) => setForm({ ...form, work: event.target.value })}
+                value={form.workTitle}
+                onChange={(event) => setForm({ ...form, workTitle: event.target.value })}
                 placeholder="«Название», автор"
+                maxLength={500}
               />
             </LegalField>
-            <LegalField label="URL страницы / идентификатор книги в ремарке" required full>
-              <input
-                value={form.url}
-                onChange={(event) => setForm({ ...form, url: event.target.value })}
-                placeholder="https://remarka.app/book/... или bookId"
+            <LegalField
+              label="URL страницы / идентификатор книги в ремарке"
+              required
+              full
+              hint="Можно несколько — каждый с новой строки"
+            >
+              <textarea
+                rows={3}
+                value={form.disputedUrls}
+                onChange={(event) => setForm({ ...form, disputedUrls: event.target.value })}
+                placeholder={"https://remarka.app/book/...\nили bookId-cuid"}
+                maxLength={4000}
               />
             </LegalField>
             <LegalField
@@ -270,19 +513,125 @@ function CopyrightDoc({ doc }: { doc: (typeof LEGAL_DOCS)["copyright"] }) {
               hint="Договор с автором, свидетельство о регистрации, авторство и т.п."
             >
               <input
-                value={form.basis}
-                onChange={(event) => setForm({ ...form, basis: event.target.value })}
+                value={form.rightsBasis}
+                onChange={(event) => setForm({ ...form, rightsBasis: event.target.value })}
                 placeholder="Договор № 12 от 01.01.2024 / автор произведения"
+                maxLength={2000}
               />
             </LegalField>
+            {requiresPoa && (
+              <LegalField
+                label="Реквизиты доверенности"
+                required
+                full
+                hint="Номер, дата, кем выдана, объём полномочий"
+              >
+                <textarea
+                  rows={3}
+                  value={form.powerOfAttorneyDetails}
+                  onChange={(event) =>
+                    setForm({ ...form, powerOfAttorneyDetails: event.target.value })
+                  }
+                  placeholder="Доверенность № 42 от 01.03.2026, выдана автором Ивановым И.И., полномочия включают подачу претензий и заявлений о нарушении"
+                  maxLength={2000}
+                />
+              </LegalField>
+            )}
             <LegalField label="Описание нарушения" required full>
               <textarea
                 rows={5}
-                value={form.desc}
-                onChange={(event) => setForm({ ...form, desc: event.target.value })}
+                value={form.description}
+                onChange={(event) => setForm({ ...form, description: event.target.value })}
                 placeholder="Какая часть произведения используется, как вы обнаружили, чем нарушены ваши права…"
+                maxLength={8000}
               />
             </LegalField>
+          </div>
+
+          <div className="complaint-attachments">
+            <div className="complaint-label" style={{ marginBottom: 8 }}>
+              Подтверждающие документы
+              <span className="complaint-hint">
+                {" "}— PDF / JPG / PNG, до {MAX_ATTACHMENT_COUNT} файлов, 20 МБ каждый
+              </span>
+            </div>
+            <label
+              style={{
+                alignItems: "center",
+                border: "1px dashed var(--rule)",
+                borderRadius: "var(--r)",
+                color: "var(--ink-muted)",
+                cursor: "pointer",
+                display: "flex",
+                fontSize: 13,
+                gap: 10,
+                justifyContent: "center",
+                padding: "14px 16px",
+              }}
+            >
+              <Paperclip size={16} />
+              <span>
+                Прикрепить файлы — договор, свидетельство, скан паспорта автора и т.п.
+              </span>
+              <input
+                type="file"
+                multiple
+                accept={ALLOWED_ATTACHMENT_ACCEPT}
+                onChange={(event) => {
+                  handleFilesAdd(event.target.files);
+                  event.target.value = "";
+                }}
+                style={{ display: "none" }}
+              />
+            </label>
+            {files.length > 0 && (
+              <ul
+                style={{
+                  display: "grid",
+                  gap: 6,
+                  listStyle: "none",
+                  margin: "10px 0 0",
+                  padding: 0,
+                }}
+              >
+                {files.map((file, idx) => (
+                  <li
+                    key={`${file.name}-${idx}`}
+                    style={{
+                      alignItems: "center",
+                      background: "var(--paper-2)",
+                      borderRadius: "var(--r-sm)",
+                      display: "flex",
+                      fontSize: 13,
+                      gap: 10,
+                      padding: "8px 10px",
+                    }}
+                  >
+                    <Paperclip size={14} />
+                    <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      {file.name}
+                    </span>
+                    <span className="muted" style={{ fontSize: 12 }}>
+                      {formatBytes(file.size)}
+                    </span>
+                    <button
+                      type="button"
+                      className="btn-plain"
+                      style={{ borderRadius: 4, padding: 4 }}
+                      onClick={() => setFiles(files.filter((_, i) => i !== idx))}
+                      aria-label={`Убрать ${file.name}`}
+                    >
+                      <X size={14} />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {filesError && (
+              <div style={{ color: "var(--danger, #c53030)", fontSize: 12, marginTop: 8 }}>
+                {filesError}
+              </div>
+            )}
           </div>
 
           <label className="complaint-sworn">
@@ -296,6 +645,28 @@ function CopyrightDoc({ doc }: { doc: (typeof LEGAL_DOCS)["copyright"] }) {
               направлять это заявление от своего имени или по доверенности.
             </span>
           </label>
+
+          <CaptchaWidget
+            siteKey={captchaSiteKey}
+            onVerify={setCaptchaToken}
+            resetRef={captchaResetRef}
+          />
+
+          {submitError && (
+            <div
+              style={{
+                background: "var(--danger-bg, rgba(197,48,48,0.08))",
+                border: "1px solid var(--danger, #c53030)",
+                borderRadius: "var(--r)",
+                color: "var(--danger, #c53030)",
+                fontSize: 13,
+                marginTop: 16,
+                padding: "10px 12px",
+              }}
+            >
+              {submitError}
+            </div>
+          )}
 
           <div
             className="row"
@@ -313,7 +684,16 @@ function CopyrightDoc({ doc }: { doc: (typeof LEGAL_DOCS)["copyright"] }) {
               disabled={!canSubmit}
               style={{ opacity: canSubmit ? 1 : 0.5 }}
             >
-              Отправить заявление <ArrowRight size={14} />
+              {submitting ? (
+                <>
+                  <Loader2 size={14} style={{ animation: "spin 1s linear infinite" }} />{" "}
+                  Отправляем…
+                </>
+              ) : (
+                <>
+                  Отправить заявление <ArrowRight size={14} />
+                </>
+              )}
             </button>
           </div>
         </form>

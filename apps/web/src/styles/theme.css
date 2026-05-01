@@ -1423,6 +1423,7 @@
   animation: fadein .18s ease;
 }
 @keyframes fadein { from { opacity: 0; } to { opacity: 1; } }
+@keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 .reader-backdrop {
   position: absolute; inset: 0;
   background: oklch(20% 0.015 60 / 0.55);
