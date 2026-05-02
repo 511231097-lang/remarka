@@ -12,7 +12,12 @@
  * See `docs/research/sse-event-channel.md` §5.3.
  */
 
-import { Client as PgClient } from "pg";
+// pg is intentionally imported dynamically. instrumentation.ts is bundled by
+// Next.js for both Edge and Node runtimes, and webpack can't statically follow
+// pg's native-bound import graph (pgpass → require('stream'/'fs'/'path')).
+// Dynamic import keeps it out of the bundle until the bridge actually starts,
+// which only happens on the Node runtime path.
+type PgClient = import("pg").Client;
 
 import { eventBus } from "./bus";
 import { nextEventId } from "./eventId";
@@ -62,7 +67,17 @@ class ListenBridge {
     this.stopped = false;
 
     try {
-      const client = new PgClient({ connectionString });
+      // webpackIgnore tells Next's webpack to leave this as a runtime require
+      // — pg's import graph (pgpass → require('stream'/'fs')) can't be bundled.
+      const pgModule = (await import(/* webpackIgnore: true */ "pg")) as {
+        default?: { Client: new (config: { connectionString: string }) => PgClient };
+        Client?: new (config: { connectionString: string }) => PgClient;
+      };
+      const PgClientCtor = pgModule.default?.Client ?? pgModule.Client;
+      if (!PgClientCtor) {
+        throw new Error("pg module did not expose a Client constructor");
+      }
+      const client = new PgClientCtor({ connectionString });
       this.bindClient(client, connectionString);
       await client.connect();
       await client.query(`LISTEN ${USER_EVENTS_CHANNEL}`);

@@ -6,6 +6,11 @@ const nextConfig = {
   output: "standalone",
   // Keep transpilePackages so monorepo workspace deps are inlined into the build.
   transpilePackages: ["@remarka/contracts", "@remarka/db"],
+  // pg uses native modules / dynamic require patterns that webpack can't statically
+  // resolve (`pgpass` does `require("stream")` at the top of pg's import graph).
+  // Marking it external makes Next.js leave it as a runtime require() in the
+  // server bundle. Used by lib/events/listenBridge.ts for Postgres LISTEN.
+  serverExternalPackages: ["pg"],
   experimental: {
     serverActions: {
       bodySizeLimit: "50mb",
