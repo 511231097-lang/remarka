@@ -7,7 +7,7 @@ import { getBucketUsage } from "@/lib/bucketUsage";
  *
  * Returns the authenticated user's subscription tier, current billing
  * period window, per-bucket usage, and static tier-level limits (library
- * slot count, history retention, upload max size).
+ * slot count, upload max size).
  *
  * Powers UI counters (analysis X/N, pro X/N, lite X/N) and is the source
  * of truth that gate-handlers consult before allowing chat / upload /

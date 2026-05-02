@@ -12,23 +12,21 @@ import {
 // projections and user-facing UI counters — drift here silently breaks
 // billing math. Changing any constant should be a deliberate review.
 
-test("Free tier limits match the published 0/0/40/5/14d/0MiB shape", () => {
+test("Free tier limits match the published 0/0/40/5/0MiB shape", () => {
   const free = getTierLimits("free");
   assert.equal(free.analyses, 0, "free has 0 analyses");
   assert.equal(free.pro, 0, "free has 0 pro");
   assert.equal(free.lite, 40, "free has 40 lite");
   assert.equal(free.librarySlots, 5, "free has 5 library slots");
-  assert.equal(free.historyRetentionDays, 14, "free has 14-day history");
   assert.equal(free.uploadMaxMiB, 0, "free has uploads locked");
 });
 
-test("Plus tier limits match the published 5/75/300/∞/∞/30MiB shape", () => {
+test("Plus tier limits match the published 5/75/300/∞/30MiB shape", () => {
   const plus = getTierLimits("plus");
   assert.equal(plus.analyses, 5);
   assert.equal(plus.pro, 75);
   assert.equal(plus.lite, 300);
   assert.equal(plus.librarySlots, null, "plus is unlimited library");
-  assert.equal(plus.historyRetentionDays, null, "plus is unlimited history");
   assert.equal(plus.uploadMaxMiB, 30);
 });
 

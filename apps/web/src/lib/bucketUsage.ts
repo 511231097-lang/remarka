@@ -52,7 +52,6 @@ export interface UsageSnapshot {
   // "5 books in library" even when nothing's been saved yet.
   staticLimits: {
     librarySlots: number | null;
-    historyRetentionDays: number | null;
     uploadMaxMiB: number;
   };
 }
@@ -126,7 +125,6 @@ export async function getBucketUsage(user: {
     },
     staticLimits: {
       librarySlots: limits.librarySlots,
-      historyRetentionDays: limits.historyRetentionDays,
       uploadMaxMiB: limits.uploadMaxMiB,
     },
   };

@@ -30,11 +30,15 @@ export interface TierLimits {
   lite: number;
   /** Max books in personal "Library" (saved/owned). null = unlimited. */
   librarySlots: number | null;
-  /** Chat history retention in days. null = unlimited. */
-  historyRetentionDays: number | null;
   /** Max upload file size in MiB. */
   uploadMaxMiB: number;
 }
+
+// History retention is intentionally NOT capped per tier: storage cost is
+// negligible (a year of 40 free turns/mo ≈ 600 KB/user) and silently
+// deleting user data is anti-pattern UX that hurts trust without driving
+// upgrades. Free users keep their threads forever like Plus does — only
+// the answer-volume buckets gate the experience.
 
 export const TIER_LIMITS: Record<UserTier, TierLimits> = {
   free: {
@@ -42,7 +46,6 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     pro: 0,
     lite: 40,
     librarySlots: 5,
-    historyRetentionDays: 14,
     uploadMaxMiB: 0, // upload itself locked
   },
   plus: {
@@ -50,7 +53,6 @@ export const TIER_LIMITS: Record<UserTier, TierLimits> = {
     pro: 75,
     lite: 300,
     librarySlots: null,
-    historyRetentionDays: null,
     uploadMaxMiB: 30,
   },
 };

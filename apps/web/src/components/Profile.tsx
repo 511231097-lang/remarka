@@ -363,7 +363,6 @@ interface UsageSnapshotResponse {
   };
   staticLimits: {
     librarySlots: number | null;
-    historyRetentionDays: number | null;
     uploadMaxMiB: number;
   };
 }
