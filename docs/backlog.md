@@ -19,6 +19,27 @@
 
 ## ✅ Shipped recently
 
+- **2026-05-03 — Tighten chat planner: tier router + adaptive reasoning + adaptive tool budget.**
+  TOP-пункт RAG-аудита закрыт. Двухосевое решение планнера: `modelTier`
+  (lite/pro) × `reasoningLevel` (minimal/low/medium). Расширены Pro-классы
+  (retrospective reveal + emotional subtext) с лексическими триггерами по
+  формулировкам. Tool budget теперь зависит от reasoningLevel:
+  pro=6, lite+low=5, lite+minimal=3 — это убирает галлюцинацию anchor IDs
+  на сложных Lite-вопросах (была root-причина: Lite не успевал собрать
+  evidence за 3 поиска и подкидывал ID наугад).
+
+  Эксперимент на 4 конфигурациях (BEFORE all-Pro / AFTER-v1 router-only /
+  AFTER-v2 full / B-only adaptive-tools-only), 9 вопросов HP-Azkaban,
+  ручная оценка по фактам (70%) + evidence (30%):
+  - **AFTER-v2 (full): 9.42/10, $0.272 / 10 turns** ← выбран
+  - BEFORE all-Pro: 9.36/10, $0.317 / 10 turns
+  - B-only adaptive-tools: 9.00/10, $0.069 / 10 turns
+  - AFTER-v1 router-only: 8.95/10, $0.065 / 10 turns
+
+  AFTER-v2 строго доминирует BEFORE: лучше качество AND дешевле. Pareto
+  improvement, не trade-off. См. `bookChatService.ts:3450-3520` (планнер
+  prompt) и `bookChatService.ts:486-503` (`resolveMaxToolExecutionsForDecision`).
+
 - **2026-05-02 — Per-user SSE event channel (`feat/sse-event-channel`).**
   Заменил inline chat streaming + 4-секундный поллинг анализа на единый
   `/api/events/stream` через Postgres LISTEN/NOTIFY. Закрыты:
@@ -537,3 +558,62 @@ backend от oversized payload.
 персональные кнопки — догружается клиентом после гидрации через лёгкий
 `/api/books/.../viewer-state` endpoint. Триггер: когда explore/book traffic
 поднимется выше ~50 RPS или появится Sentry-алерт по latency этих страниц.
+
+---
+
+### Чат: tighten time-loop / chronology reasoning
+
+**Записано:** 2026-05-03 (вышло из эксперимента planner-tightening)
+
+**Проблема:** На вопросах с time-loop / closed-loop chronology (Маховик
+времени и спасение Сириуса в HP/Azkaban) **все варианты конфигурации
+кроме чистого all-Pro** делают одну и ту же ошибку — пишут «Гарри и
+Гермиона освободили Клювокрыла **до** прихода комиссии». По тексту книги
+комиссия уже была внутри хижины Хагрида, когда они отвязали гиппогрифа.
+Это subtle event-ordering ошибка которую ловит только глубокий reasoning.
+
+Только Pro+low (default Pro) этот случай разбирает корректно. Pro+medium
+(retrospective reveal класс) и Lite+low — оба делают ошибку.
+
+**Гипотезы фикса:**
+1. Добавить класс «time-loop / closed-loop chronology» в Pro правила
+   с триггером `reasoningLevel: high` (мы пока high не используем).
+   Триггеры формулировки: «Маховик времени», «возвращение во времени»,
+   «как именно произошло X через путешествие во времени».
+2. Усилить system prompt главного chat-вызова: «при описании событий
+   с time-loop проверяй последовательность по тексту, не предполагай
+   причинно-следственную хронологию по умолчанию».
+
+Можно проверить вместе на golden-eval когда он будет работать стабильно.
+
+---
+
+### Чат: citation precision (cite-to-thesis exact match)
+
+**Записано:** 2026-05-03 (вышло из эксперимента planner-tightening)
+
+**Проблема:** Даже у лучшей конфигурации (AFTER-v2) evidence-балл 8.65/10.
+Модель цитирует **соседние** параграфы вместо точных, например:
+- Тезис «дементор в поезде» — модель ставит ch5:p259 (это сцена пира
+  Дамблдора, не дементор), хотя точный source — ch5:p194 («Дементор. —
+  Люпин раздавал шоколад»).
+- Тезис «имя Клювокрыл» — модель ставит ch16:p160 вместо ch16:p165
+  где имя реально звучит.
+- Тезис «официальная версия о Сириусе» — ставит ch10:p224, ch10:p228,
+  хотя ближе ch10:p225, ch10:p229, ch10:p231.
+
+Это не галлюцинация ID (параграфы реальные, главы правильные), это
+смещение на 1-3 параграфа от точного места. Скорее всего модель
+выбирает первый параграф из evidence-группы вместо параграфа с
+точной фразой.
+
+**Ожидаемо:** Несколько направлений:
+1. Усилить system prompt: «выбирай параграф где буквально звучит
+   ключевое слово из тезиса, не первый из найденной группы».
+2. В evidence pack маркировать «keyword anchor» — параграф где
+   нашёлся буквальный термин из query — отдельным тегом.
+3. Расширить window evidence-группы и просить модель выбрать
+   точный параграф из неё (вместо отдачи всей группы).
+
+ROI: 0.5-1 evidence point (8.65 → 9.0+), что даст +0.15-0.3 общего
+балла на текущей шкале (70/30).

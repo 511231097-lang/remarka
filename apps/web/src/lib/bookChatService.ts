@@ -462,18 +462,63 @@ function createVertexChatModelFromConfig(config: {
   return provider(config.chatModel);
 }
 
-function createVertexReasoningProviderOptions(chatModel: string) {
+type ReasoningLevel = "minimal" | "low" | "medium" | "high";
+
+const VALID_REASONING_LEVELS: readonly ReasoningLevel[] = ["minimal", "low", "medium", "high"];
+
+function isReasoningLevel(value: unknown): value is ReasoningLevel {
+  return typeof value === "string" && VALID_REASONING_LEVELS.includes(value as ReasoningLevel);
+}
+
+/**
+ * Adaptive evidence-tool budget per turn.
+ *
+ * Originally tier-only: pro=6, lite=3. After 2026-05-03 router tightening,
+ * lite handles complex questions (retrospective / multi-fact) and needs more
+ * search/read calls than the simple-fact baseline, otherwise it cuts the
+ * evidence pack short. Reasoning level is the right gate — it tracks
+ * planner-perceived question complexity:
+ *   pro              → 6 (chain-of-thought through many sources)
+ *   lite + low       → 5 (mid-complexity Lite — bumped from 3 to fix recall)
+ *   lite + minimal   → 3 (single-fact, original baseline)
+ *   lite + medium    → 5 (defensive — sanitizer normally downgrades to low)
+ */
+function resolveMaxToolExecutionsForDecision(decision: BookChatPlannerDecision): number {
+  if (decision.modelTier === "pro") return 6;
+  if (decision.reasoningLevel === "minimal") return 3;
+  return 5;
+}
+
+/**
+ * Default reasoning level for a model when planner has no opinion. Pro
+ * defaults to `low` (cost-conscious — `medium` only when planner explicitly
+ * asks for it on hard chains). Lite defaults to `low` after the 2026-05-02
+ * router tightening: previously `minimal`, but bumping Lite reasoning is
+ * the compound move that lets us route more questions to Lite without
+ * losing quality on multi-fact / causal questions.
+ */
+function defaultReasoningLevelForModel(chatModel: string): ReasoningLevel {
   const modelId = String(chatModel || "").toLowerCase();
+  if (!modelId.includes("gemini-3")) return "minimal";
+  return modelId.includes("pro") ? "low" : "low";
+}
+
+/**
+ * Build Vertex thinkingConfig provider options for the AI SDK.
+ *
+ * Optional `level` override lets the planner pin a specific reasoning depth
+ * per question — set in `planBookChatExecution` based on question complexity.
+ * When omitted, falls back to the model-tier default.
+ */
+function createVertexReasoningProviderOptions(chatModel: string, level?: ReasoningLevel | null) {
+  const modelId = String(chatModel || "").toLowerCase();
+  const resolvedLevel: ReasoningLevel = level ?? defaultReasoningLevelForModel(chatModel);
 
   if (modelId.includes("gemini-3")) {
-    const isProFamily = modelId.includes("pro");
-    // Keep minimal for Gemini 3 Flash/Flash-Lite; use low for Pro family.
-    const thinkingLevel = isProFamily ? "low" : "minimal";
-
     return {
       vertex: {
         thinkingConfig: {
-          thinkingLevel,
+          thinkingLevel: resolvedLevel,
           includeThoughts: false,
         },
       },
@@ -606,6 +651,11 @@ type ChatModelByTier = {
 type BookChatPlannerDecision = {
   toolPolicy: ChatToolPolicy;
   modelTier: ChatModelTier;
+  // Thinking depth selected by the planner per question complexity. Decoupled
+  // from `modelTier` so the planner can route a question to Lite but bump
+  // its reasoning to "low" (multi-fact) or to Pro with "medium" (true hard
+  // chains). See planBookChatExecution prompt for the decision rules.
+  reasoningLevel: ReasoningLevel;
   searchPlan?: BookChatPlannerSearchPlan;
 };
 type BookChatPlannerSearchPlan = {
@@ -3309,15 +3359,19 @@ function buildHeuristicBookChatPlannerDecision(params: {
   // Conservative fallback used only when the planner LLM call fails.
   // We prefer over-search (one extra retrieval call on greetings) over
   // under-search (answering a real book question from the model's memory).
+  // Reasoning level defaults to "low" — safe sweet spot for Lite under the
+  // 2026-05-02 tightening; gives multi-fact protection without Pro cost.
   if (!params.enabledTools.length) {
     return {
       toolPolicy: "auto",
       modelTier: "lite",
+      reasoningLevel: "minimal",
     };
   }
   return {
     toolPolicy: "required",
     modelTier: "lite",
+    reasoningLevel: "low",
   };
 }
 
@@ -3367,6 +3421,7 @@ async function planBookChatExecution(params: {
     const plannerSchema = z.object({
       toolPolicy: z.enum(["auto", "required"]),
       modelTier: z.enum(["lite", "pro"]),
+      reasoningLevel: z.enum(["minimal", "low", "medium"]).default("low"),
       searchPlan: z
         .object({
           normalizedQuestion: z.string().default(""),
@@ -3425,8 +3480,34 @@ ${JSON.stringify(
 Правила:
 - toolPolicy = "required", если это вопрос по содержанию книги, фактам, причинно-следственным связям, цитатам или проверке утверждений.
 - toolPolicy = "auto", если это small-talk, мета-вопрос о чате или явно не-книжный вопрос.
-- modelTier = "pro" только для сложных книжных вопросов: многосоставных, с причинно-следственными цепочками, сравнением, реконструкцией последовательности, сопоставлением разных сцен.
-- modelTier = "lite" для простых книжных вопросов одного факта (кто/что/когда/где, короткое уточнение персонажа/события), small-talk и мета-вопросов.
+
+Выбор modelTier — это выбор СТОИМОСТИ. PRO в ~13× дороже LITE за turn. Используй PRO ТОЛЬКО когда LITE с reasoning явно не справится. Для подавляющего большинства вопросов (≥80%) корректный ответ — LITE.
+
+modelTier = "pro" ТОЛЬКО при выполнении ХОТЯ БЫ ОДНОГО из условий:
+- Реконструкция многошаговой цепочки событий через 3+ глав (например: "проследи как менялись отношения X и Y от первой встречи до финала").
+- Сопоставление 3+ независимых смысловых линий или тем книги (queryGroups содержит 3+ независимые группы, не связанные одним персонажем).
+- Анализ авторской позиции / subtext / иронии / аллюзий, где требуется выводить смысл, не выраженный в тексте напрямую.
+- Сложное абстрактное обобщение нравственно-философского плана, требующее синтеза тем по всей книге (например: "в чём главный конфликт романа", "что автор говорит о человеческой природе").
+- **Retrospective reveal / переоценка прошлого**: вопрос требует, чтобы поздняя сцена-раскрытие (правда, тайна, обман, истинная мотивация) меняла интерпретацию предыдущих событий ИЛИ требует объяснить почему персонаж/общество долго ошибались. Триггеры формулировки: "почему X считался Y", "как меняется понимание событий после раскрытия", "правда о", "в чём настоящая причина", "почему все ошибались насчёт", "что значит для книги раскрытие". Пример: "Почему Сириус Блэк считался предателем?" — раскрытие в Визжащей хижине переворачивает 12 лет восприятия персонажа.
+- **Emotional / psychological subtext**: вопрос требует связать биографию персонажа (травмы, утраты, внутренние слабости) с его реакцией на текущее событие, и ответ опирается на подтекст, не выраженный в тексте напрямую. Триггеры формулировки: "почему X особенно сильно Y", "что делает X уязвимым к Y", "почему именно X реагирует так", "как личная история связана с". Пример: "Почему дементоры особенно сильно влияют на Гарри?" — связь с гибелью родителей, которую сам Гарри в начале книги не вербализует.
+
+modelTier = "lite" для всего остального, включая (LITE справится с этим при reasoningLevel="low"):
+- Любые single-fact вопросы (кто/что/когда/где).
+- Описание персонажа, даже многоаспектное (характер, мотивация, роль в сюжете) — **если** объяснение НЕ требует связывать биографию персонажа с его эмоциональной реакцией (для последнего см. Emotional subtext в правилах PRO).
+- Причина одного события ("почему герой сделал X") — **если** ответ виден в самой сцене и не требует переоценки прошлого (для последнего см. Retrospective reveal в правилах PRO).
+- Сравнение двух персонажей в одной сцене или в одной сюжетной линии.
+- Объяснение одной символической детали или эпиграфа.
+- Краткое содержание главы или сцены.
+- Small-talk и мета-вопросы.
+
+Выбор reasoningLevel — это управление THINKING-токенами, ортогонально tier:
+- "minimal" — single-fact, small-talk, мета. Без рассуждений, прямой ответ.
+- "low" — ВСЁ остальное по умолчанию. Описание/причина/простое сравнение/обобщение одной сцены.
+- "medium" — ТОЛЬКО для modelTier="pro" на сложных multi-step chains, retrospective reveal и emotional subtext. Никогда не ставь "medium" для tier="lite".
+
+Если сомневаешься между LITE и PRO — НЕ ВЫБИРАЙ Pro автоматически. Сначала проверь по чек-листу: есть ли retrospective reveal? есть ли emotional subtext? нужны ли 3+ независимые смысловые линии? Если ни одно условие не сработало — выбирай LITE с reasoningLevel="low". В большинстве случаев это правильный ответ.
+
+Search plan:
 - searchPlan обязателен для toolPolicy="required".
 - searchPlan.normalizedQuestion: переформулируй вопрос языком этой книги, используя title/chapters/topAnchors для канонических имён и терминов.
 - searchPlan.entityHints: имена, предметы, места и термины, которые стоит использовать в retrieval.
@@ -3441,7 +3522,7 @@ ${JSON.stringify(
 - Если вопрос многосоставный, searchQueries должны покрывать каждую часть.
 
 Верни JSON:
-{"toolPolicy":"required|auto","modelTier":"lite|pro","searchPlan":{"normalizedQuestion":"...","entityHints":["..."],"searchQueries":["..."],"broadQueries":["..."],"focusedQueries":["..."],"queryGroups":[{"part":"...","searchQueries":["..."],"broadQueries":["..."],"focusedQueries":["..."]}],"notes":[]}}`,
+{"toolPolicy":"required|auto","modelTier":"lite|pro","reasoningLevel":"minimal|low|medium","searchPlan":{"normalizedQuestion":"...","entityHints":["..."],"searchQueries":["..."],"broadQueries":["..."],"focusedQueries":["..."],"queryGroups":[{"part":"...","searchQueries":["..."],"broadQueries":["..."],"focusedQueries":["..."]}],"notes":[]}}`,
           providerOptions: plannerProviderOptions,
         })
       );
@@ -3452,10 +3533,18 @@ ${JSON.stringify(
       if (rawJson) {
         const parsed = plannerSchema.safeParse(JSON.parse(rawJson));
         if (parsed.success) {
+          // Sanitize reasoningLevel: "medium" is reserved for Pro only.
+          // If planner accidentally pairs lite+medium, downgrade to low —
+          // medium-on-Lite is wasteful (large thoughts cost without the
+          // model headroom to use it well) and the prompt explicitly forbids it.
+          const rawLevel: ReasoningLevel = parsed.data.reasoningLevel ?? "low";
+          const sanitizedLevel: ReasoningLevel =
+            rawLevel === "medium" && parsed.data.modelTier !== "pro" ? "low" : rawLevel;
           decision = normalizeBookChatPlannerDecision(
             {
               toolPolicy: parsed.data.toolPolicy,
               modelTier: parsed.data.modelTier,
+              reasoningLevel: sanitizedLevel,
               searchPlan: normalizePlannerSearchPlan(parsed.data.searchPlan),
             },
             params.enabledTools
@@ -7380,6 +7469,7 @@ export async function answerBookChatQuestion(params: {
       resultMeta: {
         toolPolicy: executionPlan.decision.toolPolicy,
         modelTier: executionPlan.decision.modelTier,
+        reasoningLevel: executionPlan.decision.reasoningLevel,
         selectedChatModelId: executionPlan.selectedChatModelId,
         searchPlan: executionPlan.decision.searchPlan || null,
       },
@@ -7393,7 +7483,10 @@ export async function answerBookChatQuestion(params: {
     ...client.config,
     chatModel: selectedChatModelId,
   });
-  const providerOptions = createVertexReasoningProviderOptions(selectedChatModelId);
+  const providerOptions = createVertexReasoningProviderOptions(
+    selectedChatModelId,
+    executionPlan.decision.reasoningLevel,
+  );
   const capture: EvidenceToolChatCapture = {
     evidenceGroups: [],
     paragraphSlices: [],
@@ -7406,7 +7499,7 @@ export async function answerBookChatQuestion(params: {
           client,
           toolRuns,
         capture,
-        maxToolExecutions: executionPlan.decision.modelTier === "pro" ? 6 : 3,
+        maxToolExecutions: resolveMaxToolExecutionsForDecision(executionPlan.decision),
       })
     : undefined;
 
@@ -7442,11 +7535,13 @@ export async function answerBookChatQuestion(params: {
     args: {
       toolPolicy: executionPlan.decision.toolPolicy,
       modelTier: executionPlan.decision.modelTier,
+      reasoningLevel: executionPlan.decision.reasoningLevel,
     },
     resultMeta: {
       totalMs: mainLatencyMs,
       model: selectedChatModelId,
       mode: "generate",
+      reasoningLevel: executionPlan.decision.reasoningLevel,
       evidenceGroupCount: capture.evidenceGroups.length,
       paragraphSliceCount: capture.paragraphSlices.length,
     },
@@ -8099,6 +8194,7 @@ async function streamBookChatAnswer(params: {
       resultMeta: {
         toolPolicy: executionPlan.decision.toolPolicy,
         modelTier: executionPlan.decision.modelTier,
+        reasoningLevel: executionPlan.decision.reasoningLevel,
         selectedChatModelId: executionPlan.selectedChatModelId,
         searchPlan: executionPlan.decision.searchPlan || null,
       },
@@ -8112,7 +8208,10 @@ async function streamBookChatAnswer(params: {
     ...client.config,
     chatModel: selectedChatModelId,
   });
-  const providerOptions = createVertexReasoningProviderOptions(selectedChatModelId);
+  const providerOptions = createVertexReasoningProviderOptions(
+    selectedChatModelId,
+    executionPlan.decision.reasoningLevel,
+  );
   const capture: EvidenceToolChatCapture = {
     evidenceGroups: [],
     paragraphSlices: [],
@@ -8125,7 +8224,7 @@ async function streamBookChatAnswer(params: {
           client,
           toolRuns,
         capture,
-        maxToolExecutions: executionPlan.decision.modelTier === "pro" ? 6 : 3,
+        maxToolExecutions: resolveMaxToolExecutionsForDecision(executionPlan.decision),
       })
     : undefined;
 
@@ -8201,11 +8300,13 @@ async function streamBookChatAnswer(params: {
         args: {
           toolPolicy: executionPlan.decision.toolPolicy,
           modelTier: executionPlan.decision.modelTier,
+          reasoningLevel: executionPlan.decision.reasoningLevel,
         },
         resultMeta: {
           totalMs: mainLatencyMs,
           model: selectedChatModelId,
           mode: "stream",
+          reasoningLevel: executionPlan.decision.reasoningLevel,
           evidenceGroupCount: capture.evidenceGroups.length,
           paragraphSliceCount: capture.paragraphSlices.length,
         },
