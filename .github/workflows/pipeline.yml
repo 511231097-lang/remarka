@@ -16,9 +16,14 @@ name: Pipeline
 # subset is fine; e.g. you can approve migrate + deploy-web while
 # skipping deploy-worker.
 #
-# release_id is computed once in build and passed downstream via outputs,
-# so migrate / deploy never have to guess the latest staged release on
-# the host (which races on rapid consecutive pushes).
+# release_id is derived from `github.run_id` and is identical across all
+# jobs of the same workflow run (the github context is run-wide). We do
+# NOT pass it via job outputs because GitHub Actions silently redacts
+# step outputs that "may contain a secret" — once a multi-line secret
+# like VERTEX_RANKING_KEYFILE_JSON is present, the redaction heuristic
+# trips on basically anything (including timestamp+digit-only strings),
+# leaving downstream `needs.build.outputs.release_id` empty and install
+# paths like /srv/remarka/releases//... .
 #
 # For redeploying a previously-built release without going through the
 # full pipeline (rollback, infra hiccup recovery), see redeploy.yml.
@@ -46,9 +51,8 @@ jobs:
     name: Build + stage on VPS
     runs-on: ubuntu-24.04
     timeout-minutes: 25
-    outputs:
-      release_id: ${{ steps.release.outputs.id }}
     env:
+      RELEASE_ID: r${{ github.run_id }}-${{ github.run_attempt }}
       WEB_HOST: ${{ secrets.WEB_HOST }}
       WORKER_HOST: ${{ secrets.WORKER_HOST }}
       DEPLOY_USER: root
@@ -107,18 +111,10 @@ jobs:
             echo "No worker build script — skipping (worker uses tsx at runtime)."
           fi
 
-      - name: Compute release id
-        id: release
-        # GitHub Actions redacts step outputs that contain (or "may contain")
-        # secret material. Both ${GITHUB_SHA::8} and full ${GITHUB_SHA} trip
-        # the heuristic in our setup — likely because VERTEX_RANKING_KEYFILE_JSON
-        # has a long base64 PEM body with many random hex windows, and any
-        # hex string in the output looks suspicious.
-        #
-        # Use timestamp + run_id (small integer) so the release_id is
-        # decimal-only with a leading prefix, can't match any secret
-        # substring, and is still globally unique per run.
-        run: echo "id=r$(date -u +%Y%m%d-%H%M%S)-${{ github.run_id }}" >> "$GITHUB_OUTPUT"
+      - name: Log release id
+        run: |
+          echo "Release ID for this run: $RELEASE_ID"
+          echo "(derived from github.run_id + github.run_attempt — see workflow header)"
 
       - name: Stage release bundle locally
         run: |
@@ -143,7 +139,7 @@ jobs:
       - name: Upload bundle artifact
         uses: actions/upload-artifact@v5
         with:
-          name: remarka-bundle-${{ steps.release.outputs.id }}
+          name: remarka-bundle-${{ env.RELEASE_ID }}
           path: _bundle
           retention-days: 7
           if-no-files-found: error
@@ -183,7 +179,7 @@ jobs:
       - name: Stage bundle on web VPS + npm ci
         run: |
           set -euo pipefail
-          RELEASE_ID=${{ steps.release.outputs.id }}
+          RELEASE_ID=${{ env.RELEASE_ID }}
           ssh web "install -d -o $APP_USER -g $APP_USER -m 755 $APP_HOME/releases/$RELEASE_ID"
           rsync -az --delete _bundle/ "web:$APP_HOME/releases/$RELEASE_ID/"
           ssh web bash -s <<EOF
@@ -208,7 +204,7 @@ jobs:
         continue-on-error: true
         run: |
           set -euo pipefail
-          RELEASE_ID=${{ steps.release.outputs.id }}
+          RELEASE_ID=${{ env.RELEASE_ID }}
           ssh worker "install -d -o $APP_USER -g $APP_USER -m 755 $APP_HOME/releases/$RELEASE_ID"
           rsync -az --delete -e "ssh" _bundle/ "worker:$APP_HOME/releases/$RELEASE_ID/"
           ssh worker bash -s <<EOF
@@ -226,12 +222,12 @@ jobs:
           {
             echo "## Build complete"
             echo ""
-            echo "**Release ID**: \`${{ steps.release.outputs.id }}\`"
+            echo "**Release ID**: \`${{ env.RELEASE_ID }}\`"
             echo ""
             echo "Bundle staged on:"
-            echo "- web: \`$APP_HOME/releases/${{ steps.release.outputs.id }}/\` ✅"
+            echo "- web: \`$APP_HOME/releases/${{ env.RELEASE_ID }}/\` ✅"
             if [ "${{ steps.stage_worker.outcome }}" = "success" ]; then
-              echo "- worker: \`$APP_HOME/releases/${{ steps.release.outputs.id }}/\` ✅"
+              echo "- worker: \`$APP_HOME/releases/${{ env.RELEASE_ID }}/\` ✅"
             else
               echo "- worker: ❌ failed (SSH/rsync). Web deploy is unaffected, but **deploy-worker** will fail until the underlying issue is fixed."
             fi
@@ -247,7 +243,7 @@ jobs:
     environment:
       name: prod-db
     env:
-      RELEASE_ID: ${{ needs.build.outputs.release_id }}
+      RELEASE_ID: r${{ github.run_id }}-${{ github.run_attempt }}
       DEPLOY_USER: root
       APP_USER: remarka
       APP_HOME: /srv/remarka
@@ -317,7 +313,7 @@ jobs:
       name: prod-web
       url: https://remarka.app
     env:
-      RELEASE_ID: ${{ needs.build.outputs.release_id }}
+      RELEASE_ID: r${{ github.run_id }}-${{ github.run_attempt }}
       DEPLOY_HOST: ${{ secrets.WEB_HOST }}
       DEPLOY_USER: root
       APP_USER: remarka
@@ -539,7 +535,7 @@ jobs:
     environment:
       name: prod-worker
     env:
-      RELEASE_ID: ${{ needs.build.outputs.release_id }}
+      RELEASE_ID: r${{ github.run_id }}-${{ github.run_attempt }}
       DEPLOY_HOST: ${{ secrets.WORKER_HOST }}
       JUMP_HOST: ${{ secrets.WEB_HOST }}
       DEPLOY_USER: root
