@@ -12,6 +12,7 @@ interface SiteHeaderProps {
   userImage?: string | null;
   userRole?: UserRole | null;
   plan?: "free" | "plus";
+  isAuthenticated?: boolean;
 }
 
 interface NavItem {
@@ -36,6 +37,7 @@ export function SiteHeader({
   userImage = null,
   userRole = null,
   plan = "free",
+  isAuthenticated = false,
 }: SiteHeaderProps) {
   const pathname = usePathname();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -66,14 +68,13 @@ export function SiteHeader({
   }, [pathname]);
 
   const normalizedUserName = userName?.trim() || null;
-  const isAuthenticated = Boolean(normalizedUserName);
   const isPlus = plan === "plus";
   const active = normalizePath(pathname || "");
   const logoHref = isAuthenticated ? "/explore" : "/";
 
   const items: NavItem[] = [
     { k: "catalog", t: "Каталог", href: "/explore" },
-    { k: "library", t: "Мои книги", href: "/library" },
+    ...(isAuthenticated ? [{ k: "library", t: "Мои книги", href: "/library" }] : []),
     { k: "pricing", t: "Тарифы", href: "/plans" },
     { k: "copyright", t: "Правообладателям", href: "/legal/copyright" },
     ...(isAuthenticated && userRole === "admin"
@@ -142,7 +143,7 @@ export function SiteHeader({
           </Link>
         ))}
 
-        {!isPlus && (
+        {isAuthenticated && !isPlus && (
           <Link
             href="/plans"
             onClick={() => setDrawerOpen(false)}

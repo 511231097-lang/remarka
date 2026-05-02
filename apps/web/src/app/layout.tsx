@@ -10,15 +10,41 @@ export const metadata: Metadata = {
   description: "AI-чат с книгами",
 };
 
+const themeInitScript = `
+(() => {
+  try {
+    const saved = localStorage.getItem("remarka-theme") || localStorage.getItem("theme") || "auto";
+    const mode = saved === "light" || saved === "dark" || saved === "auto" ? saved : "auto";
+    const effective = mode === "auto"
+      ? (window.matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light")
+      : mode;
+    document.documentElement.setAttribute("data-theme", effective);
+    document.documentElement.setAttribute("data-theme-mode", mode);
+    document.documentElement.classList.toggle("dark", effective === "dark");
+  } catch {
+    document.documentElement.setAttribute("data-theme", "light");
+    document.documentElement.setAttribute("data-theme-mode", "auto");
+  }
+})();
+`;
+
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const authUser = await resolveAuthUser();
   const userName = authUser?.name?.trim() || authUser?.email || null;
 
   return (
     <html lang="ru">
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeInitScript }} />
+      </head>
       <body className="bg-background text-foreground">
         <ThemeProvider>
-          <AppChrome userName={userName} userImage={authUser?.image || null} userRole={authUser?.role || null}>
+          <AppChrome
+            userName={userName}
+            userImage={authUser?.image || null}
+            userRole={authUser?.role || null}
+            isAuthenticated={Boolean(authUser)}
+          >
             {children}
           </AppChrome>
           <CookieConsentBanner />

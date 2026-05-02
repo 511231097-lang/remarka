@@ -10,6 +10,7 @@ interface AppChromeProps {
   userName?: string | null;
   userImage?: string | null;
   userRole?: UserRole | null;
+  isAuthenticated?: boolean;
 }
 
 function isChatPath(pathname: string): boolean {
@@ -21,6 +22,7 @@ export function AppChrome({
   userName = null,
   userImage = null,
   userRole = null,
+  isAuthenticated = false,
 }: AppChromeProps) {
   const pathname = usePathname();
   const chatRoute = isChatPath(pathname || "");
@@ -33,9 +35,15 @@ export function AppChrome({
 
   return (
     <div className="page">
-      <SiteHeader userName={userName} userImage={userImage} userRole={userRole} plan={plan} />
+      <SiteHeader
+        userName={userName}
+        userImage={userImage}
+        userRole={userRole}
+        plan={plan}
+        isAuthenticated={isAuthenticated}
+      />
       <main className="grow">{children}</main>
-      {!chatRoute && <SiteFooter />}
+      {!chatRoute && <SiteFooter isAuthenticated={isAuthenticated} />}
     </div>
   );
 }

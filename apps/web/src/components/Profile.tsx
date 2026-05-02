@@ -111,7 +111,7 @@ export function Profile({ authUser }: ProfileProps) {
               )}
             </div>
             <div className="mono" style={{ color: "var(--ink-muted)", marginTop: 6 }}>
-              {displayEmail} · Google
+              {displayEmail}
             </div>
           </div>
         </div>
@@ -121,13 +121,13 @@ export function Profile({ authUser }: ProfileProps) {
         <Section title="Оформление">
           <Row label="Тема">
             <div className="row-sm">
-              {(["light", "dark"] as const).map((item) => (
+              {(["auto", "light", "dark"] as const).map((item) => (
                 <button
                   key={item}
                   className={`chip ${theme === item ? "active" : ""}`}
                   onClick={() => setTheme(item)}
                 >
-                  {item === "light" ? "Светлая" : "Тёмная"}
+                  {item === "auto" ? "Авто" : item === "light" ? "Светлая" : "Тёмная"}
                 </button>
               ))}
             </div>
@@ -139,9 +139,13 @@ export function Profile({ authUser }: ProfileProps) {
             label="Cookie-файлы"
             sub="Необходимые cookie-файлы включены всегда. Аналитика — по согласию."
           >
-            <Link className="chip active" href="/legal/cookies">
+            <button
+              type="button"
+              className="chip active"
+              onClick={() => window.dispatchEvent(new Event("remarka:open-cookie-settings"))}
+            >
               Настройки
-            </Link>
+            </button>
           </Row>
           <Row
             label="Загруженные книги"

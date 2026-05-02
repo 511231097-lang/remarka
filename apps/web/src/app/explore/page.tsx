@@ -1,5 +1,7 @@
 import { Explore } from "@/components/Explore";
+import { resolveAuthUser } from "@/lib/authUser";
 
-export default function ExplorePage() {
-  return <Explore />;
+export default async function ExplorePage() {
+  const authUser = await resolveAuthUser();
+  return <Explore isAuthenticated={Boolean(authUser)} />;
 }
