@@ -25,6 +25,7 @@ import {
   prepareBookChatTurn,
   runBookChatTurn,
 } from "@/lib/bookChatService";
+import { getBucketUsage } from "@/lib/bucketUsage";
 import { chatRegistry } from "@/lib/events/chatRegistry";
 import { emitToUser } from "@/lib/events/emit";
 import { snapshotStore } from "@/lib/events/snapshotStore";
@@ -146,6 +147,32 @@ export async function POST(request: Request, context: RouteContext) {
     return NextResponse.json({ error: "message is required" }, { status: 400 });
   }
 
+  // Tariff gate: enforce per-user buckets BEFORE persisting anything.
+  // - Lite exhausted → hard 429 (chat is unusable until period reset).
+  // - Pro exhausted but Lite available → soft fallback (forceLiteTier=true
+  //   passed to chat service so planner's Pro decisions get downgraded).
+  // - Both available → no constraint, planner decides freely.
+  // Bucket counts are computed on-the-fly from BookChatTurnMetric, so a
+  // turn that's still in flight when this check runs DOESN'T count yet.
+  // Worst case: one extra turn over cap during a high-frequency burst.
+  const usage = await getBucketUsage({
+    id: authUser.id,
+    tier: authUser.tier,
+    createdAt: authUser.createdAt,
+    tierActivatedAt: authUser.tierActivatedAt,
+  });
+  if (usage.buckets.lite.exhausted) {
+    return NextResponse.json(
+      {
+        error: "Достигнут лимит ответов в этом периоде. Лимит обновится после следующего сброса.",
+        code: "LITE_LIMIT_REACHED",
+        usage,
+      },
+      { status: 429 },
+    );
+  }
+  const forceLiteTier = usage.buckets.pro.exhausted || usage.buckets.pro.locked;
+
   // Reserve the session BEFORE persisting anything: a duplicate POST while a
   // previous turn is still running should be rejected, not double-persisted.
   const reservation = chatRegistry.begin(sessionId, authUser.id);
@@ -186,6 +213,7 @@ export async function POST(request: Request, context: RouteContext) {
     sessionId,
     userId,
     abortSignal: reservation.signal,
+    forceLiteTier,
   });
 
   return NextResponse.json(
@@ -203,8 +231,9 @@ async function runStreamingTurn(params: {
   sessionId: string;
   userId: string;
   abortSignal: AbortSignal;
+  forceLiteTier: boolean;
 }): Promise<void> {
-  const { bookId, sessionId, userId, abortSignal } = params;
+  const { bookId, sessionId, userId, abortSignal, forceLiteTier } = params;
   const isAborted = () => abortSignal.aborted;
 
   try {
@@ -212,6 +241,7 @@ async function runStreamingTurn(params: {
       bookId,
       threadId: sessionId,
       ownerUserId: userId,
+      forceLiteTier,
       onStatus: (status) => {
         if (isAborted()) return;
         const text = String(status || "").trim();

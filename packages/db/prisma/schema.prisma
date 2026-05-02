@@ -32,6 +32,19 @@ enum UserRole {
   admin
 }
 
+// Subscription tier. `free` is default — public catalog read, capped Lite
+// chat, no upload. `plus` unlocks book uploads, Pro answers, larger Lite
+// quota. Limits live in code (`apps/web/src/lib/tiers.ts`) so we can tune
+// them without a migration.
+//
+// ЮKassa integration is a separate epic — for now `tier` is set manually
+// (admin endpoint or psql) and `tierActivatedAt` anchors the monthly
+// rolling period.
+enum UserTier {
+  free
+  plus
+}
+
 enum BookAnalyzerType {
   summary
   characters
@@ -843,6 +856,17 @@ model User {
   emailVerified DateTime?
   image         String?
   role          UserRole         @default(user)
+  // Subscription tier. Free by default; `plus` set manually by admin until
+  // ЮKassa integration ships (release blocker in backlog).
+  tier             UserTier         @default(free)
+  // Anchor for the monthly billing period:
+  // - For `free` users we fall back to `createdAt` (registration date).
+  // - For `plus` users this is the upgrade/payment date and resets each
+  //   time the user re-subscribes after a downgrade.
+  // Period rolls every 30 days from this anchor (day-of-month-aware).
+  tierActivatedAt  DateTime?
+  createdAt        DateTime         @default(now())
+  updatedAt        DateTime         @updatedAt
   accounts      Account[]
   sessions      Session[]
   books         Book[]
@@ -851,6 +875,7 @@ model User {
   legalConsents LegalConsent[]
 
   @@index([role])
+  @@index([tier])
 }
 
 // Audit log of every юридически-significant acceptance — registration

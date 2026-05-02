@@ -1,6 +1,6 @@
 import { prisma } from "@remarka/db";
 import { getServerSession } from "next-auth";
-import type { UserRole } from "@prisma/client";
+import type { UserRole, UserTier } from "@prisma/client";
 import { authOptions } from "@/auth";
 
 export interface AuthUser {
@@ -9,6 +9,11 @@ export interface AuthUser {
   email: string | null;
   image: string | null;
   role: UserRole;
+  // Subscription state. Used by tariff gates (chat / upload / library) and
+  // by `getBucketUsage` to compute period windows.
+  tier: UserTier;
+  tierActivatedAt: Date | null;
+  createdAt: Date;
 }
 
 export async function resolveAuthUser(): Promise<AuthUser | null> {
@@ -24,6 +29,9 @@ export async function resolveAuthUser(): Promise<AuthUser | null> {
       email: true,
       image: true,
       role: true,
+      tier: true,
+      tierActivatedAt: true,
+      createdAt: true,
     },
   });
 

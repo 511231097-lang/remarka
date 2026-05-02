@@ -3397,6 +3397,12 @@ async function planBookChatExecution(params: {
   bookTitle: string;
   userQuestion: string;
   enabledTools: readonly BookChatToolName[];
+  // Tariff gate: when the user's Pro bucket is exhausted, the route handler
+  // sets this to force the planner's decision down to lite (and downgrade
+  // medium reasoning to low). Other planner outputs (toolPolicy, searchPlan,
+  // queryGroups) are preserved so retrieval quality stays the same — only
+  // the answering tier changes.
+  forceLiteTier?: boolean;
 }): Promise<BookChatExecutionPlan> {
   const modelByTier = resolveBookChatModelByTier(params.clientConfig.chatModel);
   const heuristicDecision = buildHeuristicBookChatPlannerDecision({
@@ -3569,6 +3575,18 @@ Search plan:
     } catch {
       // Fall back to deterministic heuristic routing.
     }
+  }
+
+  // Tariff override: Pro bucket exhausted → force lite answering tier.
+  // Reasoning level "medium" is reserved for Pro, so we downgrade to "low"
+  // when forcing lite. Search plan and toolPolicy stay intact — retrieval
+  // depth doesn't change, only the answering model.
+  if (params.forceLiteTier && decision.modelTier === "pro") {
+    decision = {
+      ...decision,
+      modelTier: "lite",
+      reasoningLevel: decision.reasoningLevel === "medium" ? "low" : decision.reasoningLevel,
+    };
   }
 
   const selectedChatModelId =
@@ -8143,6 +8161,9 @@ async function streamBookChatAnswer(params: {
   onReasoning?: (delta: string) => void | Promise<void>;
   onToolCall?: (event: BookChatStreamToolCallEvent) => void | Promise<void>;
   onToolResult?: (event: BookChatStreamToolResultEvent) => void | Promise<void>;
+  // Tariff gate: route handler passes true when Pro bucket is exhausted.
+  // Forces planner decision to lite (see planBookChatExecution).
+  forceLiteTier?: boolean;
 }): Promise<BookChatAnswer> {
   const startedAt = Date.now();
   const preparedMessages = sanitizeMessages(params.messages || []);
@@ -8184,6 +8205,7 @@ async function streamBookChatAnswer(params: {
     bookTitle: book.title,
     userQuestion: latestUserMessage.content,
     enabledTools: enabledBookTools,
+    forceLiteTier: params.forceLiteTier,
   });
   const toolRuns: ChatToolRun[] = [
     {
@@ -8552,6 +8574,10 @@ export async function runBookChatTurn(params: {
   onToolCall?: (event: BookChatStreamToolCallEvent) => void | Promise<void>;
   onToolResult?: (event: BookChatStreamToolResultEvent) => void | Promise<void>;
   onStatus?: (status: string) => void | Promise<void>;
+  // Tariff gate: caller (route handler) sets true when Pro bucket is
+  // exhausted. Planner decision will be forced to lite-tier answering.
+  // The user still gets an answer (soft fallback) until lite is also empty.
+  forceLiteTier?: boolean;
 }): Promise<{
   thread: BookChatThreadDTO;
   assistantMessage: BookChatMessageDTO;
@@ -8588,6 +8614,7 @@ export async function runBookChatTurn(params: {
     onReasoning: params.onReasoning,
     onToolCall: params.onToolCall,
     onToolResult: params.onToolResult,
+    forceLiteTier: params.forceLiteTier,
   });
 
   const assistantMessageRow = await prisma.bookChatThreadMessage.create({

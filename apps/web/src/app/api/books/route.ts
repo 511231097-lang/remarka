@@ -22,12 +22,14 @@ import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
 import { toBookCoreDTO } from "@/lib/books";
+import { getBucketUsage } from "@/lib/bucketUsage";
 import {
   LibraryRequiresAuthError,
   listCatalogBooks,
   parseCatalogScope,
   parseCatalogSort,
 } from "@/lib/server/catalog";
+import { getTierLimits } from "@/lib/tiers";
 import { MultipartUploadError, parseStreamingMultipart, type TempUploadedFile } from "@/lib/streamingMultipart";
 
 const DEFAULT_IMPORT_MAX_FILE_BYTES = 50 * 1024 * 1024;
@@ -187,7 +189,48 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
 
-  const importMaxFileBytes = parseIntEnv(process.env.IMPORT_MAX_FILE_BYTES, DEFAULT_IMPORT_MAX_FILE_BYTES);
+  // Tariff gate — book uploads are Plus-only (Free has analyses bucket
+  // locked at 0). Hard-reject Free with 403 before parsing the upload to
+  // avoid wasting bandwidth + temp storage on rejected requests.
+  const tierLimits = getTierLimits(authUser.tier);
+  if (tierLimits.analyses === 0) {
+    return NextResponse.json(
+      {
+        error: "Загрузка книг доступна на тарифе Plus.",
+        code: "UPLOAD_REQUIRES_PLUS",
+      },
+      { status: 403 },
+    );
+  }
+
+  // Plus-tier user: check analysis bucket. If exhausted, reject with 429
+  // before parsing the upload (we don't want to charge the slot for a turn
+  // that wouldn't be processed).
+  const usage = await getBucketUsage({
+    id: authUser.id,
+    tier: authUser.tier,
+    createdAt: authUser.createdAt,
+    tierActivatedAt: authUser.tierActivatedAt,
+  });
+  if (usage.buckets.analyses.exhausted) {
+    return NextResponse.json(
+      {
+        error: "Достигнут лимит анализов в этом периоде.",
+        code: "ANALYSIS_LIMIT_REACHED",
+        usage,
+      },
+      { status: 429 },
+    );
+  }
+
+  // Per-tier upload size cap (separate from IMPORT_MAX_FILE_BYTES which is
+  // a global infrastructure ceiling). Plus = 30 MiB, Free = 0 (already
+  // rejected above).
+  const tierMaxBytes = tierLimits.uploadMaxMiB * 1024 * 1024;
+  const importMaxFileBytes = Math.min(
+    parseIntEnv(process.env.IMPORT_MAX_FILE_BYTES, DEFAULT_IMPORT_MAX_FILE_BYTES),
+    tierMaxBytes,
+  );
   let upload: Awaited<ReturnType<typeof parseStreamingMultipart>>;
   try {
     upload = await parseStreamingMultipart(request, {
