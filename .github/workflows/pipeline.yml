@@ -473,12 +473,19 @@ jobs:
       # GOOGLE_APPLICATION_CREDENTIALS. Skipped if the secret is empty so a
       # missing setup doesn't block deploys.
       - name: Ship Vertex ranking keyfile (if configured)
-        if: ${{ secrets.VERTEX_RANKING_KEYFILE_JSON != '' }}
         env:
           VERTEX_RANKING_KEYFILE_JSON: ${{ secrets.VERTEX_RANKING_KEYFILE_JSON }}
           KEYFILE_PATH: ${{ vars.GOOGLE_APPLICATION_CREDENTIALS }}
         run: |
           set -euo pipefail
+          # GitHub Actions disallows `secrets.X` in `if:` expressions, so we
+          # gate inside the run block instead. Both empty cases are no-ops:
+          # missing secret → showcase ranker is opt-in; missing path var →
+          # caller hasn't picked a destination yet.
+          if [ -z "$VERTEX_RANKING_KEYFILE_JSON" ]; then
+            echo "::notice::VERTEX_RANKING_KEYFILE_JSON is unset; skipping keyfile ship."
+            exit 0
+          fi
           if [ -z "$KEYFILE_PATH" ]; then
             echo "::warning::GOOGLE_APPLICATION_CREDENTIALS variable is empty; skipping keyfile ship."
             exit 0
@@ -692,12 +699,19 @@ jobs:
           rm -f /tmp/worker.env
 
       - name: Ship Vertex ranking keyfile (if configured)
-        if: ${{ secrets.VERTEX_RANKING_KEYFILE_JSON != '' }}
         env:
           VERTEX_RANKING_KEYFILE_JSON: ${{ secrets.VERTEX_RANKING_KEYFILE_JSON }}
           KEYFILE_PATH: ${{ vars.GOOGLE_APPLICATION_CREDENTIALS }}
         run: |
           set -euo pipefail
+          # GitHub Actions disallows `secrets.X` in `if:` expressions, so we
+          # gate inside the run block instead. Both empty cases are no-ops:
+          # missing secret → showcase ranker is opt-in; missing path var →
+          # caller hasn't picked a destination yet.
+          if [ -z "$VERTEX_RANKING_KEYFILE_JSON" ]; then
+            echo "::notice::VERTEX_RANKING_KEYFILE_JSON is unset; skipping keyfile ship."
+            exit 0
+          fi
           if [ -z "$KEYFILE_PATH" ]; then
             echo "::warning::GOOGLE_APPLICATION_CREDENTIALS variable is empty; skipping keyfile ship."
             exit 0
