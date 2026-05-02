@@ -8206,20 +8206,19 @@ async function streamBookChatAnswer(params: {
   }
 }
 
-export async function streamBookChatThreadReply(params: {
+/**
+ * Persist a user-authored message and update thread metadata. Synchronous,
+ * fast — used as the first half of a chat turn so the new event-channel POST
+ * can return 202 to the client before the LLM call starts.
+ */
+export async function prepareBookChatTurn(params: {
   bookId: string;
   threadId: string;
   ownerUserId?: string;
   userText: string;
-  onDelta: (delta: string) => void | Promise<void>;
-  onReasoning?: (delta: string) => void | Promise<void>;
-  onToolCall?: (event: BookChatStreamToolCallEvent) => void | Promise<void>;
-  onToolResult?: (event: BookChatStreamToolResultEvent) => void | Promise<void>;
-  onStatus?: (status: string) => void | Promise<void>;
 }): Promise<{
   thread: BookChatThreadDTO;
   userMessage: BookChatMessageDTO;
-  assistantMessage: BookChatMessageDTO;
 }> {
   const userText = String(params.userText || "").trim();
   if (!userText) {
@@ -8256,37 +8255,52 @@ export async function streamBookChatThreadReply(params: {
 
   if (threadBefore._count.messages === 0 && clampThreadTitle(threadBefore.title) === "Новый чат") {
     await prisma.bookChatThread.update({
-      where: {
-        id: params.threadId,
-      },
-      data: {
-        title: clampThreadTitle(userText),
-      },
+      where: { id: params.threadId },
+      data: { title: clampThreadTitle(userText) },
     });
   }
 
   await prisma.bookChatThread.update({
-    where: {
-      id: params.threadId,
-    },
-    data: {
-      updatedAt: new Date(),
-    },
+    where: { id: params.threadId },
+    data: { updatedAt: new Date() },
   });
 
+  return {
+    thread: toThreadDTO(threadBefore),
+    userMessage: toMessageDTO({
+      ...userMessageRow,
+      role: userMessageRow.role === "assistant" ? "assistant" : "user",
+    }),
+  };
+}
+
+/**
+ * Run the LLM half of a chat turn: history compaction, streaming answer,
+ * persist assistant message + metrics, return assistant DTO.
+ *
+ * Caller is responsible for having already persisted the user message via
+ * prepareBookChatTurn. Callbacks (onDelta etc) get fired during streaming so
+ * the caller can pipe them to whatever transport (legacy SSE, new event
+ * channel, or just buffered).
+ */
+export async function runBookChatTurn(params: {
+  bookId: string;
+  threadId: string;
+  ownerUserId?: string;
+  onDelta: (delta: string) => void | Promise<void>;
+  onReasoning?: (delta: string) => void | Promise<void>;
+  onToolCall?: (event: BookChatStreamToolCallEvent) => void | Promise<void>;
+  onToolResult?: (event: BookChatStreamToolResultEvent) => void | Promise<void>;
+  onStatus?: (status: string) => void | Promise<void>;
+}): Promise<{
+  thread: BookChatThreadDTO;
+  assistantMessage: BookChatMessageDTO;
+}> {
   const recentModelMessagesRows = await prisma.bookChatThreadMessage.findMany({
-    where: {
-      threadId: params.threadId,
-    },
-    orderBy: {
-      createdAt: "desc",
-    },
+    where: { threadId: params.threadId },
+    orderBy: { createdAt: "desc" },
     take: 20,
-    select: {
-      id: true,
-      role: true,
-      content: true,
-    },
+    select: { id: true, role: true, content: true },
   });
 
   const modelMessagesRows = [...recentModelMessagesRows].reverse();
@@ -8352,12 +8366,8 @@ export async function streamBookChatThreadReply(params: {
   }
 
   await prisma.bookChatThread.update({
-    where: {
-      id: params.threadId,
-    },
-    data: {
-      updatedAt: new Date(),
-    },
+    where: { id: params.threadId },
+    data: { updatedAt: new Date() },
   });
 
   const threadAfter = await assertThreadBelongsToBook({
@@ -8368,13 +8378,49 @@ export async function streamBookChatThreadReply(params: {
 
   return {
     thread: toThreadDTO(threadAfter),
-    userMessage: toMessageDTO({
-      ...userMessageRow,
-      role: userMessageRow.role === "assistant" ? "assistant" : "user",
-    }),
     assistantMessage: toMessageDTO({
       ...assistantMessageRow,
       role: assistantMessageRow.role === "assistant" ? "assistant" : "user",
     }),
+  };
+}
+
+export async function streamBookChatThreadReply(params: {
+  bookId: string;
+  threadId: string;
+  ownerUserId?: string;
+  userText: string;
+  onDelta: (delta: string) => void | Promise<void>;
+  onReasoning?: (delta: string) => void | Promise<void>;
+  onToolCall?: (event: BookChatStreamToolCallEvent) => void | Promise<void>;
+  onToolResult?: (event: BookChatStreamToolResultEvent) => void | Promise<void>;
+  onStatus?: (status: string) => void | Promise<void>;
+}): Promise<{
+  thread: BookChatThreadDTO;
+  userMessage: BookChatMessageDTO;
+  assistantMessage: BookChatMessageDTO;
+}> {
+  const prepared = await prepareBookChatTurn({
+    bookId: params.bookId,
+    threadId: params.threadId,
+    ownerUserId: params.ownerUserId,
+    userText: params.userText,
+  });
+
+  const completed = await runBookChatTurn({
+    bookId: params.bookId,
+    threadId: params.threadId,
+    ownerUserId: params.ownerUserId,
+    onDelta: params.onDelta,
+    onReasoning: params.onReasoning,
+    onToolCall: params.onToolCall,
+    onToolResult: params.onToolResult,
+    onStatus: params.onStatus,
+  });
+
+  return {
+    thread: completed.thread,
+    userMessage: prepared.userMessage,
+    assistantMessage: completed.assistantMessage,
   };
 }

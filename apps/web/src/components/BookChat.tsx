@@ -25,13 +25,19 @@ import { ChatModePill, ChatReadinessGate } from "./BookChatReadiness";
 import { ChatMessageMarkdown } from "./ChatMessageMarkdown";
 import { ChatSidebarLegal } from "./SiteFooter";
 import {
+  abortBookChatMessage,
   createBookChatSession,
   deleteBookChatSession,
   getBook,
   getBookChatMessages,
   listBookChatSessions,
-  streamBookChatMessage,
+  sendBookChatMessage,
 } from "@/lib/booksClient";
+import {
+  useEventChannel,
+  useEventReconnect,
+  useEventSubscription,
+} from "@/lib/events/EventChannelProvider";
 import {
   appendBookDetailSource,
   resolveBookDetailSource,
@@ -247,15 +253,28 @@ export function BookChat() {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(routeSessionId);
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [inputValue, setInputValue] = useState("");
-  const [isLoading, setIsLoading] = useState(false);
-  const [streamStatus, setStreamStatus] = useState<string | null>(null);
-  const [streamReasoning, setStreamReasoning] = useState<string | null>(null);
+  // Streaming state is keyed by sessionId so the loader / "thinking" status
+  // never bleeds into another chat. The UI reads only the entry that matches
+  // the currently active session; in-flight streams for other sessions keep
+  // accumulating in the background and resume seamlessly on tab switch.
+  const [streamingSessions, setStreamingSessions] = useState<
+    Record<string, { accumulated: string; status: string | null; startedAt: string }>
+  >({});
   const [search, setSearch] = useState("");
   const [sessionsOpen, setSessionsOpen] = useState(false);
   const [readerCite, setReaderCite] = useState<ReaderCite | null>(null);
 
   const { readiness, loading: readinessLoading, error: readinessError } = useBookChatReadiness(bookId);
   const activeSessionId = routeSessionId || currentSessionId;
+
+  const activeStreaming = activeSessionId ? streamingSessions[activeSessionId] : undefined;
+  const isLoading = !!activeStreaming;
+  const streamStatus = activeStreaming?.status ?? null;
+  // Reasoning preview was a legacy UX from the inline-stream era; new event
+  // channel doesn't emit reasoning tokens. Kept as `null` to preserve the
+  // existing rendering branches without behavior changes.
+  const streamReasoning: string | null = null;
+  void useEventChannel; // touched so the import doesn't tree-shake; subscriptions below use the hooks.
 
   const source = resolveBookDetailSource(searchParams.get("from"));
   const resolvedSource = resolveSourceWithFallback(source, book?.canManage);
@@ -265,6 +284,10 @@ export function BookChat() {
 
   useEffect(() => {
     return () => {
+      // The send-message POST aborts here; the background runner on the
+      // server keeps going (intentional — it's what makes the stream
+      // survive navigation). User-initiated cancel goes through the abort
+      // endpoint, see cancelStream().
       activeStreamAbortRef.current?.abort();
       activeStreamAbortRef.current = null;
       isSendingRef.current = false;
@@ -498,18 +521,26 @@ export function BookChat() {
   };
 
   /**
-   * User-initiated stream cancellation. Aborts the active fetch — the inflight
-   * `streamBookChatMessage` call will throw AbortError, which we catch in
-   * sendMessage's finally block (sets isLoading=false). The partial assistant
-   * draft (if any tokens already streamed in) stays in the messages array.
+   * User-initiated stream cancellation. Calls the abort endpoint, which sets
+   * a flag in the server-side registry; the background runner observes the
+   * flag on its next callback and stops emitting. Server emits a final
+   * `chat.error` with code "ABORTED" which clears local streaming state.
+   *
+   * The partial accumulated text remains visible until that final event
+   * arrives — this matches the prior UX where the partial draft stayed put.
    */
   const cancelStream = () => {
     activeStreamAbortRef.current?.abort();
     activeStreamAbortRef.current = null;
     isSendingRef.current = false;
-    setIsLoading(false);
-    setStreamStatus(null);
-    setStreamReasoning(null);
+    if (bookId && activeSessionId) {
+      void abortBookChatMessage({ bookId, sessionId: activeSessionId }).catch(() => {
+        // Abort is best-effort — if the server has no live runner to abort
+        // (e.g. it already finished or the registry was wiped on restart),
+        // the user-visible streaming state will clear naturally on the next
+        // chat.final / chat.error.
+      });
+    }
     queueMicrotask(() => composerRef.current?.focus());
   };
 
@@ -519,123 +550,53 @@ export function BookChat() {
     if (!question || isLoading || isSendingRef.current) return;
 
     isSendingRef.current = true;
-    const streamAbortController = new AbortController();
+    const sendAbortController = new AbortController();
     activeStreamAbortRef.current?.abort();
-    activeStreamAbortRef.current = streamAbortController;
+    activeStreamAbortRef.current = sendAbortController;
     setInputValue("");
-    setIsLoading(true);
-    setStreamStatus("Думаю над вопросом");
-    setStreamReasoning(null);
-    // Keep focus on the composer after a click on Send (clicking moves focus
-    // to the button, breaking "type-and-Enter" flow). Schedule a microtask so
-    // the focus call wins over React's render cycle.
     queueMicrotask(() => composerRef.current?.focus());
 
     try {
       const sessionId = await ensureActiveSession();
-      const optimisticUserMessage: UiMessage = {
-        id: `local:user:${Date.now()}`,
-        role: "user",
-        content: question,
-        rawAnswer: null,
-        evidence: [],
-        usedSources: [],
-        confidence: null,
-        mode: null,
-        citations: [],
-        inlineCitations: [],
-        answerItems: [],
-        referenceResolution: null,
-        createdAt: new Date().toISOString(),
-      };
-      const assistantDraftId = `local:assistant:${Date.now() + 1}`;
-      let assistantStarted = false;
 
-      setMessages((current) => [...current.filter((message) => !message.pending), optimisticUserMessage]);
+      // Mark session as streaming immediately — gates the loader by sessionId
+      // so it shows only here, not in any other open chat.
+      setStreamingSessions((current) => ({
+        ...current,
+        [sessionId]: {
+          accumulated: "",
+          status: "Думаю над вопросом",
+          startedAt: new Date().toISOString(),
+        },
+      }));
 
-      await streamBookChatMessage({
+      const result = await sendBookChatMessage({
         bookId,
         sessionId,
-        signal: streamAbortController.signal,
-        input: {
-          message: question,
-          entryContext: "full_chat",
-        },
-        onEvent: (event) => {
-          if (streamAbortController.signal.aborted) return;
-          if (event.type === "status") {
-            if (assistantStarted) return;
-            const text = String(event.text || "").trim();
-            if (text) setStreamStatus(text);
-            return;
-          }
-
-          if (event.type === "reasoning") {
-            if (assistantStarted) return;
-            const text = String(event.text || "");
-            if (!text) return;
-            setStreamReasoning((current) => appendReasoningPreview(current, text));
-            return;
-          }
-
-          if (event.type === "token") {
-            const token = String(event.text || "");
-            if (!token) return;
-            assistantStarted = true;
-            setStreamStatus(null);
-            setStreamReasoning(null);
-            setMessages((current) =>
-              current.some((message) => message.id === assistantDraftId)
-                ? current.map((message) =>
-                    message.id === assistantDraftId
-                      ? {
-                          ...message,
-                          content: `${message.content}${token}`,
-                        }
-                      : message
-                  )
-                : [
-                    ...current,
-                    {
-                      id: assistantDraftId,
-                      role: "assistant",
-                      content: token,
-                      rawAnswer: null,
-                      evidence: [],
-                      usedSources: [],
-                      confidence: null,
-                      mode: null,
-                      citations: [],
-                      inlineCitations: [],
-                      answerItems: [],
-                      referenceResolution: null,
-                      createdAt: new Date().toISOString(),
-                      pending: true,
-                    },
-                  ]
-            );
-            return;
-          }
-
-          if (event.type === "final" && event.final) {
-            setStreamStatus(null);
-            setStreamReasoning(null);
-            const finalMessage = toAssistantMessageFromFinal(event.final);
-            setMessages((current) =>
-              assistantStarted && current.some((message) => message.id === assistantDraftId)
-                ? current.map((message) => (message.id === assistantDraftId ? finalMessage : message))
-                : [...current, finalMessage]
-            );
-          }
-        },
+        message: question,
+        signal: sendAbortController.signal,
       });
 
-      await Promise.all([refreshSessions(sessionId), loadMessages(sessionId)]);
+      // Replace the optimistic user bubble with the persisted server copy
+      // (in case any normalization happens server-side).
+      setMessages((current) => [
+        ...current.filter((message) => !message.pending),
+        result.userMessage as UiMessage,
+      ]);
     } catch (error) {
-      if (streamAbortController.signal.aborted) return;
+      if (sendAbortController.signal.aborted) return;
+      // Failed to even enqueue the turn — clear streaming state for this
+      // session so the loader doesn't get stuck.
+      const sessionId = activeSessionId;
+      if (sessionId) {
+        setStreamingSessions((current) => {
+          if (!current[sessionId]) return current;
+          const next = { ...current };
+          delete next[sessionId];
+          return next;
+        });
+      }
       const errorMessage = error instanceof Error ? error.message : "Не удалось получить ответ";
-      setStreamStatus(null);
-      setStreamReasoning(null);
       setMessages((current) => [
         ...current.filter((message) => !message.pending),
         {
@@ -655,15 +616,133 @@ export function BookChat() {
         },
       ]);
     } finally {
-      if (activeStreamAbortRef.current === streamAbortController) {
+      if (activeStreamAbortRef.current === sendAbortController) {
         activeStreamAbortRef.current = null;
       }
       isSendingRef.current = false;
-      setIsLoading(false);
-      setStreamStatus(null);
-      setStreamReasoning(null);
     }
   };
+
+  /* ---------------------------------------------------------------------- */
+  /*           Event channel subscriptions (chat streaming surface)         */
+  /* ---------------------------------------------------------------------- */
+
+  // Snapshot: replays accumulated text + status when (re)connecting to the
+  // event stream while a generation is mid-flight server-side. After F5 the
+  // user sees what was already printed and the live tail continues into the
+  // same buffer.
+  useEventSubscription("chat.snapshot", (event) => {
+    const { sessionId, accumulated, status, startedAt } = event.data;
+    setStreamingSessions((current) => ({
+      ...current,
+      [sessionId]: {
+        accumulated: accumulated ?? "",
+        status: status ?? null,
+        startedAt: startedAt || new Date().toISOString(),
+      },
+    }));
+  });
+
+  useEventSubscription("chat.token", (event) => {
+    const { sessionId, text } = event.data;
+    if (!text) return;
+    setStreamingSessions((current) => {
+      const existing = current[sessionId];
+      if (!existing) {
+        return {
+          ...current,
+          [sessionId]: {
+            accumulated: text,
+            status: null,
+            startedAt: new Date().toISOString(),
+          },
+        };
+      }
+      return {
+        ...current,
+        [sessionId]: {
+          ...existing,
+          accumulated: existing.accumulated + text,
+          status: null,
+        },
+      };
+    });
+  });
+
+  useEventSubscription("chat.status", (event) => {
+    const { sessionId, text } = event.data;
+    const trimmed = String(text || "").trim();
+    if (!trimmed) return;
+    setStreamingSessions((current) => {
+      const existing = current[sessionId];
+      // Only show status while no tokens have arrived yet — once the
+      // assistant starts speaking, status text becomes noise.
+      if (existing && existing.accumulated.length > 0) return current;
+      return {
+        ...current,
+        [sessionId]: {
+          accumulated: existing?.accumulated ?? "",
+          status: trimmed,
+          startedAt: existing?.startedAt ?? new Date().toISOString(),
+        },
+      };
+    });
+  });
+
+  useEventSubscription("chat.final", (event) => {
+    const { sessionId } = event.data;
+    setStreamingSessions((current) => {
+      if (!current[sessionId]) return current;
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
+    });
+    // Refetch the persisted assistant message via REST so we get the full
+    // structured payload (citations, evidence, mode etc) — events carry
+    // only metadata IDs, the source of truth is the messages endpoint.
+    if (sessionId === activeSessionId) {
+      void Promise.all([refreshSessions(sessionId), loadMessages(sessionId)]);
+    }
+  });
+
+  useEventSubscription("chat.error", (event) => {
+    const { sessionId, error } = event.data;
+    setStreamingSessions((current) => {
+      if (!current[sessionId]) return current;
+      const next = { ...current };
+      delete next[sessionId];
+      return next;
+    });
+    if (sessionId !== activeSessionId) return;
+    setMessages((current) => [
+      ...current.filter((message) => !message.pending),
+      {
+        id: `local:error:${Date.now()}`,
+        role: "assistant",
+        content: `Ошибка: ${error || "Не удалось получить ответ"}`,
+        rawAnswer: null,
+        evidence: [],
+        usedSources: [],
+        confidence: null,
+        mode: null,
+        citations: [],
+        inlineCitations: [],
+        answerItems: [],
+        referenceResolution: null,
+        createdAt: new Date().toISOString(),
+      },
+    ]);
+  });
+
+  // On SSE reconnect (server restart, network blip, tab visibility resume)
+  // we ask the active session to refetch its history. The server will also
+  // replay any in-flight chat.snapshot via the SSE endpoint, so partial
+  // assistant text stays consistent.
+  useEventReconnect(() => {
+    if (activeSessionId) {
+      void loadMessages(activeSessionId);
+    }
+  });
 
   const filteredSessions = useMemo(() => {
     if (!search.trim()) return sessions;
@@ -672,6 +751,38 @@ export function BookChat() {
   }, [sessions, search]);
 
   const groupedSessions = useMemo(() => groupSessions(filteredSessions), [filteredSessions]);
+
+  // Render-time list = persisted messages + a synthetic pending assistant
+  // bubble while the active session is streaming. The pending bubble carries
+  // the accumulated text from the event channel; on chat.final we drop it
+  // and refetch messages from REST (which now contains the persisted reply).
+  const displayMessages = useMemo<UiMessage[]>(() => {
+    if (!activeStreaming) return messages;
+    const stream = activeStreaming;
+    if (!stream.accumulated && !stream.status) return messages;
+    if (!stream.accumulated) {
+      // No tokens yet — Typing component handles the "Думаю над вопросом"
+      // state on its own; nothing to inject into the bubble list.
+      return messages;
+    }
+    const synthetic: UiMessage = {
+      id: `__pending:${activeSessionId}`,
+      role: "assistant",
+      content: stream.accumulated,
+      rawAnswer: null,
+      evidence: [],
+      usedSources: [],
+      confidence: null,
+      mode: null,
+      citations: [],
+      inlineCitations: [],
+      answerItems: [],
+      referenceResolution: null,
+      createdAt: stream.startedAt,
+      pending: true,
+    };
+    return [...messages, synthetic];
+  }, [messages, activeStreaming, activeSessionId]);
 
   const openReaderForCite = (cite: ActiveCite) => {
     if (cite.chapterOrderIndex == null) return;
@@ -974,11 +1085,11 @@ export function BookChat() {
               style={{ flex: 1, minHeight: 0, overflow: "auto", padding: "32px 48px" }}
             >
               <div className="stack-xl" style={{ margin: "0 auto", maxWidth: 760 }}>
-                {messages.length === 0 && book ? (
+                {displayMessages.length === 0 && book ? (
                   <ChatWelcome book={book} />
                 ) : null}
 
-                {messages.map((message, i) =>
+                {displayMessages.map((message, i) =>
                   message.role === "user" ? (
                     <div key={message.id} data-msg-idx={i} className="msg-row">
                       <UserMessage content={message.content} createdAt={message.createdAt} />
@@ -998,7 +1109,7 @@ export function BookChat() {
                   <Typing
                     streamStatus={streamStatus}
                     assistantStreaming={(() => {
-                      const last = messages[messages.length - 1];
+                      const last = displayMessages[displayMessages.length - 1];
                       return Boolean(last && last.role === "assistant" && last.pending);
                     })()}
                   />

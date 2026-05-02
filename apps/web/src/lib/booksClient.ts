@@ -236,6 +236,70 @@ function parseSseBlock(block: string): { event: string; data: string } | null {
   return { event, data };
 }
 
+/**
+ * Send a chat message via the new event-channel POST endpoint.
+ *
+ * Returns immediately with the persisted user message (status 202). Tokens,
+ * status, tool events, and the final assistant message arrive through the
+ * persistent SSE channel — caller subscribes via useEventChannel().
+ *
+ * See `docs/research/sse-event-channel.md` §7.3.
+ */
+export async function sendBookChatMessage(params: {
+  bookId: string;
+  sessionId: string;
+  message: string;
+  signal?: AbortSignal;
+}): Promise<{ userMessage: BookChatMessageDTO; sessionId: string }> {
+  const response = await fetch(
+    `/api/books/${params.bookId}/chat/sessions/${params.sessionId}/messages`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ message: params.message }),
+      signal: params.signal,
+    }
+  );
+
+  if (response.status === 409) {
+    const body = await response.json().catch(() => ({}));
+    const err = new Error(String(body?.error || "Чат занят"));
+    (err as Error & { code?: string }).code = String(body?.code || "ALREADY_RUNNING");
+    throw err;
+  }
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(String(body?.error || "Не удалось отправить сообщение"));
+  }
+
+  const payload = (await response.json()) as {
+    userMessage: BookChatMessageDTO;
+    sessionId: string;
+  };
+  return { userMessage: payload.userMessage, sessionId: payload.sessionId };
+}
+
+export async function abortBookChatMessage(params: {
+  bookId: string;
+  sessionId: string;
+  signal?: AbortSignal;
+}): Promise<{ aborted: boolean }> {
+  const response = await fetch(
+    `/api/books/${params.bookId}/chat/sessions/${params.sessionId}/abort`,
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      signal: params.signal,
+    }
+  );
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new Error(String(body?.error || "Не удалось остановить чат"));
+  }
+  return (await response.json()) as { aborted: boolean };
+}
+
 export async function streamBookChatMessage(params: {
   bookId: string;
   sessionId: string;
