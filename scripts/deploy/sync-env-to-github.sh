@@ -37,7 +37,6 @@ SSH_WORKER="${SSH_WORKER:-remarka-worker}"
 SECRET_NAMES=(
   AUTH_SECRET
   DATABASE_URL
-  INTERNAL_WORKER_TOKEN
   VERTEX_API_KEY
   BOOKS_S3_ACCESS_KEY_ID
   BOOKS_S3_SECRET_ACCESS_KEY
@@ -45,6 +44,9 @@ SECRET_NAMES=(
   ARTIFACTS_S3_SECRET_ACCESS_KEY
   YANDEX_CLIENT_SECRET
   CAPTCHA_SECRET_KEY
+  # INTERNAL_WORKER_TOKEN — left out: showcase builder is disabled, no
+  # consumer needs it. If the showcase pipeline gets revived, add it back
+  # here AND wire it into the render-step in .github/workflows/pipeline.yml.
 )
 
 is_secret() {
