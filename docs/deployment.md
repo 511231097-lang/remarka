@@ -212,15 +212,16 @@ GitHub Repository                            VPS
 secrets.AUTH_SECRET ──┐                      /srv/remarka/shared/env/web.env
 secrets.DATABASE_URL  │                      ▲
 vars.NEXTAUTH_URL     │   envsubst           │  scp + install -m 600
-vars.BOOK_CHAT_TOP_K  ├────►  pipeline.yml ──┘  (deploy-web step)
+vars.BOOK_CHAT_*      ├────►  pipeline.yml ──┘  (deploy-web step)
 ... (~80 names)       │   render step
                       │
-scripts/deploy/web.env.template  ←── шаблон с ${PLACEHOLDERS}
+scripts/deploy/app.env.template  ←── единый шаблон с placeholders
 ```
 
-**Шаблоны:**
-- `scripts/deploy/web.env.template`
-- `scripts/deploy/worker.env.template`
+**Один template** — `scripts/deploy/app.env.template`. Используется и web и
+worker'ом — оба env-файла на VPS получаются идентичными (переменные которые
+читает только одна сторона просто игнорируются другой). Это убирает
+головную боль с разделением «что куда» и держит конфиг web/worker в lockstep.
 
 В шаблонах все имена переменных сразу видны (без чтения pipeline.yml).
 Когда добавляется новая env-переменная:

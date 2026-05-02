@@ -83,9 +83,11 @@ jobs:
         env:
           NEXT_TELEMETRY_DISABLED: "1"
           NODE_ENV: production
-          # NEXT_PUBLIC_* values are inlined into Next.js client bundles at build time.
-          NEXT_PUBLIC_CAPTCHA_PROVIDER: ${{ secrets.NEXT_PUBLIC_CAPTCHA_PROVIDER }}
-          NEXT_PUBLIC_CAPTCHA_SITE_KEY: ${{ secrets.NEXT_PUBLIC_CAPTCHA_SITE_KEY }}
+          # NEXT_PUBLIC_* values are inlined into Next.js client bundles at
+          # build time. They live in Repository Variables (non-sensitive by
+          # nature — captcha provider name and public site key).
+          NEXT_PUBLIC_CAPTCHA_PROVIDER: ${{ vars.NEXT_PUBLIC_CAPTCHA_PROVIDER }}
+          NEXT_PUBLIC_CAPTCHA_SITE_KEY: ${{ vars.NEXT_PUBLIC_CAPTCHA_SITE_KEY }}
           # AUTH_SECRET is the only server-side secret validated by
           # runtimeEnv.ts at module load. `next build` evaluates module-level
           # code (Collecting page data), which loads middleware → auth →
@@ -324,16 +326,17 @@ jobs:
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null
 
       # Render the runtime env file from GitHub-managed secrets and variables,
-      # then ship it to the VPS. This is the source-of-truth flow: change the
-      # value in GitHub UI → rerun the deploy → restart picks it up. No more
-      # SSH-and-edit `/srv/remarka/shared/env/web.env` by hand.
+      # then ship it to the VPS. Source-of-truth flow: change a value in
+      # GitHub UI → rerun the deploy → restart picks it up.
       #
-      # The full list of names lives in scripts/deploy/web.env.template — that
-      # template is the only place where a new variable needs to be declared
-      # (besides creating the matching secret/variable in GitHub UI).
+      # Single template (scripts/deploy/app.env.template) is shared by web
+      # and worker — both env files end up identical. Variables only one
+      # side reads (NEXTAUTH_URL on web, OUTBOX_BATCH_SIZE on worker, etc.)
+      # are simply ignored on the other side. Saves classification headache
+      # and keeps web/worker config in lockstep.
       - name: Render web.env from GitHub
         env:
-          # --- SECRETS (Repository → Settings → Secrets) ---
+          # --- SECRETS ---
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
           AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
           VERTEX_API_KEY: ${{ secrets.VERTEX_API_KEY }}
@@ -344,8 +347,10 @@ jobs:
           YANDEX_CLIENT_SECRET: ${{ secrets.YANDEX_CLIENT_SECRET }}
           CAPTCHA_SECRET_KEY: ${{ secrets.CAPTCHA_SECRET_KEY }}
 
-          # --- VARIABLES (Repository → Settings → Variables) ---
-          NEXT_PUBLIC_APP_NAME: ${{ vars.NEXT_PUBLIC_APP_NAME }}
+          # --- VARIABLES ---
+          NODE_ENV: ${{ vars.NODE_ENV }}
+          HOSTNAME: ${{ vars.HOSTNAME }}
+          PORT: ${{ vars.PORT }}
           NEXTAUTH_URL: ${{ vars.NEXTAUTH_URL }}
           YANDEX_CLIENT_ID: ${{ vars.YANDEX_CLIENT_ID }}
           CAPTCHA_PROVIDER: ${{ vars.CAPTCHA_PROVIDER }}
@@ -353,15 +358,27 @@ jobs:
           NEXT_PUBLIC_CAPTCHA_SITE_KEY: ${{ vars.NEXT_PUBLIC_CAPTCHA_SITE_KEY }}
 
           VERTEX_BASE_URL: ${{ vars.VERTEX_BASE_URL }}
+          VERTEX_PROXY_SOURCE: ${{ vars.VERTEX_PROXY_SOURCE }}
+          VERTEX_TIMEOUT_MS: ${{ vars.VERTEX_TIMEOUT_MS }}
+          VERTEX_MAX_RETRIES: ${{ vars.VERTEX_MAX_RETRIES }}
+          VERTEX_THINKING_BUDGET: ${{ vars.VERTEX_THINKING_BUDGET }}
+          VERTEX_MAX_OUTPUT_TOKENS: ${{ vars.VERTEX_MAX_OUTPUT_TOKENS }}
+          VERTEX_LITERARY_MAX_TOKENS: ${{ vars.VERTEX_LITERARY_MAX_TOKENS }}
           BOOK_CHAT_MODEL_PRO: ${{ vars.BOOK_CHAT_MODEL_PRO }}
           BOOK_CHAT_MODEL_LITE: ${{ vars.BOOK_CHAT_MODEL_LITE }}
           VERTEX_MODEL_LITE: ${{ vars.VERTEX_MODEL_LITE }}
           VERTEX_EMBEDDING_MODEL: ${{ vars.VERTEX_EMBEDDING_MODEL }}
           VERTEX_EMBEDDING_DIM: ${{ vars.VERTEX_EMBEDDING_DIM }}
+          VERTEX_EXTRACT_MODEL: ${{ vars.VERTEX_EXTRACT_MODEL }}
+          VERTEX_EXTRACT_FALLBACK_MODEL: ${{ vars.VERTEX_EXTRACT_FALLBACK_MODEL }}
+          VERTEX_EXTRACT_ATTEMPTS: ${{ vars.VERTEX_EXTRACT_ATTEMPTS }}
+          VERTEX_EXTRACT_MAX_TOKENS: ${{ vars.VERTEX_EXTRACT_MAX_TOKENS }}
 
           VERTEX_RANKING_ENABLED: ${{ vars.VERTEX_RANKING_ENABLED }}
           VERTEX_RANKING_PROJECT_ID: ${{ vars.VERTEX_RANKING_PROJECT_ID }}
           VERTEX_RANKING_LOCATION: ${{ vars.VERTEX_RANKING_LOCATION }}
+          VERTEX_RANKING_BASE_URL: ${{ vars.VERTEX_RANKING_BASE_URL }}
+          VERTEX_RANKING_MODEL: ${{ vars.VERTEX_RANKING_MODEL }}
           GOOGLE_APPLICATION_CREDENTIALS: ${{ vars.GOOGLE_APPLICATION_CREDENTIALS }}
 
           BOOKS_STORAGE_PROVIDER: ${{ vars.BOOKS_STORAGE_PROVIDER }}
@@ -372,6 +389,7 @@ jobs:
           BOOKS_S3_KEY_PREFIX: ${{ vars.BOOKS_S3_KEY_PREFIX }}
 
           ANALYSIS_ARTIFACTS_ENABLED: ${{ vars.ANALYSIS_ARTIFACTS_ENABLED }}
+          ANALYSIS_ARTIFACTS_LOCAL_DIR: ${{ vars.ANALYSIS_ARTIFACTS_LOCAL_DIR }}
           ARTIFACTS_STORAGE_PROVIDER: ${{ vars.ARTIFACTS_STORAGE_PROVIDER }}
           ARTIFACTS_S3_ENDPOINT: ${{ vars.ARTIFACTS_S3_ENDPOINT }}
           ARTIFACTS_S3_BUCKET: ${{ vars.ARTIFACTS_S3_BUCKET }}
@@ -381,19 +399,60 @@ jobs:
 
           BOOK_CHAT_SCENE_TOOLS_ENABLED: ${{ vars.BOOK_CHAT_SCENE_TOOLS_ENABLED }}
           BOOK_CHAT_SYSTEM_PROMPT_VERSION: ${{ vars.BOOK_CHAT_SYSTEM_PROMPT_VERSION }}
+          BOOK_CHAT_PLANNER_ENABLED: ${{ vars.BOOK_CHAT_PLANNER_ENABLED }}
+          BOOK_CHAT_LLM_STEP_METRICS_ENABLED: ${{ vars.BOOK_CHAT_LLM_STEP_METRICS_ENABLED }}
+          BOOK_CHAT_EVAL_DETERMINISTIC: ${{ vars.BOOK_CHAT_EVAL_DETERMINISTIC }}
           BOOK_CHAT_HISTORY_COMPACTION_ENABLED: ${{ vars.BOOK_CHAT_HISTORY_COMPACTION_ENABLED }}
           BOOK_CHAT_HISTORY_KEEP_INLINE_PAIRS: ${{ vars.BOOK_CHAT_HISTORY_KEEP_INLINE_PAIRS }}
           BOOK_CHAT_HISTORY_COMPACT_AFTER_PAIRS: ${{ vars.BOOK_CHAT_HISTORY_COMPACT_AFTER_PAIRS }}
+          BOOK_CHAT_HISTORY_REFRESH_AFTER_MESSAGES: ${{ vars.BOOK_CHAT_HISTORY_REFRESH_AFTER_MESSAGES }}
           BOOK_CHAT_HISTORY_SUMMARY_MAX_CHARS: ${{ vars.BOOK_CHAT_HISTORY_SUMMARY_MAX_CHARS }}
-          BOOK_CHAT_LLM_STEP_METRICS_ENABLED: ${{ vars.BOOK_CHAT_LLM_STEP_METRICS_ENABLED }}
-          BOOK_CHAT_TOP_K: ${{ vars.BOOK_CHAT_TOP_K }}
+
+          ANALYSIS_QUEUE_MODE: ${{ vars.ANALYSIS_QUEUE_MODE }}
+          ANALYSIS_DISPATCHER_ENABLED: ${{ vars.ANALYSIS_DISPATCHER_ENABLED }}
+          ANALYSIS_EXECUTOR_CONCURRENCY: ${{ vars.ANALYSIS_EXECUTOR_CONCURRENCY }}
+          ANALYSIS_JOB_RETRY_LIMIT: ${{ vars.ANALYSIS_JOB_RETRY_LIMIT }}
+          ANALYSIS_JOB_RETRY_BASE_MS: ${{ vars.ANALYSIS_JOB_RETRY_BASE_MS }}
+          ANALYSIS_WATCHDOG_INTERVAL_MS: ${{ vars.ANALYSIS_WATCHDOG_INTERVAL_MS }}
+          ANALYSIS_RUNNING_STALE_TTL_MS: ${{ vars.ANALYSIS_RUNNING_STALE_TTL_MS }}
+          ANALYSIS_QUEUED_STALE_TTL_MS: ${{ vars.ANALYSIS_QUEUED_STALE_TTL_MS }}
+          ANALYSIS_AUTO_RERUN_ENABLED: ${{ vars.ANALYSIS_AUTO_RERUN_ENABLED }}
+          ANALYSIS_FAIR_SHARE_PER_USER_IN_FLIGHT: ${{ vars.ANALYSIS_FAIR_SHARE_PER_USER_IN_FLIGHT }}
+          ANALYSIS_FAIR_SHARE_DEFER_MS: ${{ vars.ANALYSIS_FAIR_SHARE_DEFER_MS }}
+
+          OUTBOX_POLL_INTERVAL_MS: ${{ vars.OUTBOX_POLL_INTERVAL_MS }}
+          OUTBOX_BATCH_SIZE: ${{ vars.OUTBOX_BATCH_SIZE }}
+          OUTBOX_MAX_ATTEMPTS: ${{ vars.OUTBOX_MAX_ATTEMPTS }}
+          OUTBOX_EVENT_CONCURRENCY: ${{ vars.OUTBOX_EVENT_CONCURRENCY }}
+
+          ANALYSIS_SCENES_ENABLED: ${{ vars.ANALYSIS_SCENES_ENABLED }}
+          SCENE_SEGMENTATION_MAX_INPUT_TOKENS: ${{ vars.SCENE_SEGMENTATION_MAX_INPUT_TOKENS }}
+          ANALYSIS_SAFE_SCENE_SEGMENTS_ENABLED: ${{ vars.ANALYSIS_SAFE_SCENE_SEGMENTS_ENABLED }}
+          ANALYSIS_SAFE_SCENE_SEGMENTS_MAX_INPUT_TOKENS: ${{ vars.ANALYSIS_SAFE_SCENE_SEGMENTS_MAX_INPUT_TOKENS }}
+
+          IMPORT_BLOB_DIR: ${{ vars.IMPORT_BLOB_DIR }}
+          IMPORT_MAX_FILE_BYTES: ${{ vars.IMPORT_MAX_FILE_BYTES }}
+          IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES: ${{ vars.IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES }}
+
+          BOOK_SCENE_EDGE_BATCH_SIZE: ${{ vars.BOOK_SCENE_EDGE_BATCH_SIZE }}
+          BOOK_SCENE_EDGE_BATCH_CONCURRENCY: ${{ vars.BOOK_SCENE_EDGE_BATCH_CONCURRENCY }}
+          BOOK_SCENE_EDGE_CHAR_LIMIT: ${{ vars.BOOK_SCENE_EDGE_CHAR_LIMIT }}
+          BOOK_SCENE_EDGE_MAX_TOKENS: ${{ vars.BOOK_SCENE_EDGE_MAX_TOKENS }}
+          BOOK_SCENE_EDGE_MAX_ATTEMPTS: ${{ vars.BOOK_SCENE_EDGE_MAX_ATTEMPTS }}
+          BOOK_EMBEDDING_CONCURRENCY: ${{ vars.BOOK_EMBEDDING_CONCURRENCY }}
+
+          SHOWCASE_BUILD_ENABLED: ${{ vars.SHOWCASE_BUILD_ENABLED }}
+          SHOWCASE_INTERNAL_API_BASE_URL: ${{ vars.SHOWCASE_INTERNAL_API_BASE_URL }}
+          SHOWCASE_INTERNAL_API_TIMEOUT_MS: ${{ vars.SHOWCASE_INTERNAL_API_TIMEOUT_MS }}
+          SHOWCASE_INTERNAL_API_MAX_RETRIES: ${{ vars.SHOWCASE_INTERNAL_API_MAX_RETRIES }}
         run: |
           set -euo pipefail
           # gettext-base ships with envsubst; pre-installed on ubuntu-24.04 runners.
-          envsubst < scripts/deploy/web.env.template > /tmp/web.env
+          envsubst < scripts/deploy/app.env.template > /tmp/web.env
           # Sanity check: every ${...} placeholder in the template must have
-          # been substituted. If anything is still unresolved, fail loud
-          # rather than ship a half-rendered env file.
+          # been substituted. envsubst silently turns unset variables into
+          # empty strings — but a typo in the placeholder name (e.g. ${UNKOWN})
+          # leaves an unresolved token that we want to catch loud.
           if grep -E '\$\{[A-Z_][A-Z0-9_]*\}' /tmp/web.env; then
             echo "::error::Unresolved placeholders in /tmp/web.env (see grep output above)."
             echo "::error::Either the template references a name that is not in the render-step env block,"
@@ -501,28 +560,55 @@ jobs:
             UserKnownHostsFile ~/.ssh/known_hosts
           EOF
 
-      # Render and ship worker.env. See deploy-web's analogous step for the
-      # rationale; same pattern with worker-specific variables.
+      # Render and ship worker.env from the same shared template as web. See
+      # deploy-web's render step for the rationale on shared template + the
+      # full env-block enumeration. If you change the env block in one
+      # place, change it in the other too — they MUST stay identical.
       - name: Render worker.env from GitHub
         env:
           # --- SECRETS ---
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
           VERTEX_API_KEY: ${{ secrets.VERTEX_API_KEY }}
           BOOKS_S3_ACCESS_KEY_ID: ${{ secrets.BOOKS_S3_ACCESS_KEY_ID }}
           BOOKS_S3_SECRET_ACCESS_KEY: ${{ secrets.BOOKS_S3_SECRET_ACCESS_KEY }}
           ARTIFACTS_S3_ACCESS_KEY_ID: ${{ secrets.ARTIFACTS_S3_ACCESS_KEY_ID }}
           ARTIFACTS_S3_SECRET_ACCESS_KEY: ${{ secrets.ARTIFACTS_S3_SECRET_ACCESS_KEY }}
+          YANDEX_CLIENT_SECRET: ${{ secrets.YANDEX_CLIENT_SECRET }}
+          CAPTCHA_SECRET_KEY: ${{ secrets.CAPTCHA_SECRET_KEY }}
 
-          # --- VARIABLES (shared) ---
+          # --- VARIABLES ---
+          NODE_ENV: ${{ vars.NODE_ENV }}
+          HOSTNAME: ${{ vars.HOSTNAME }}
+          PORT: ${{ vars.PORT }}
+          NEXTAUTH_URL: ${{ vars.NEXTAUTH_URL }}
+          YANDEX_CLIENT_ID: ${{ vars.YANDEX_CLIENT_ID }}
+          CAPTCHA_PROVIDER: ${{ vars.CAPTCHA_PROVIDER }}
+          NEXT_PUBLIC_CAPTCHA_PROVIDER: ${{ vars.NEXT_PUBLIC_CAPTCHA_PROVIDER }}
+          NEXT_PUBLIC_CAPTCHA_SITE_KEY: ${{ vars.NEXT_PUBLIC_CAPTCHA_SITE_KEY }}
+
           VERTEX_BASE_URL: ${{ vars.VERTEX_BASE_URL }}
+          VERTEX_PROXY_SOURCE: ${{ vars.VERTEX_PROXY_SOURCE }}
+          VERTEX_TIMEOUT_MS: ${{ vars.VERTEX_TIMEOUT_MS }}
+          VERTEX_MAX_RETRIES: ${{ vars.VERTEX_MAX_RETRIES }}
+          VERTEX_THINKING_BUDGET: ${{ vars.VERTEX_THINKING_BUDGET }}
+          VERTEX_MAX_OUTPUT_TOKENS: ${{ vars.VERTEX_MAX_OUTPUT_TOKENS }}
+          VERTEX_LITERARY_MAX_TOKENS: ${{ vars.VERTEX_LITERARY_MAX_TOKENS }}
           BOOK_CHAT_MODEL_PRO: ${{ vars.BOOK_CHAT_MODEL_PRO }}
           BOOK_CHAT_MODEL_LITE: ${{ vars.BOOK_CHAT_MODEL_LITE }}
           VERTEX_MODEL_LITE: ${{ vars.VERTEX_MODEL_LITE }}
           VERTEX_EMBEDDING_MODEL: ${{ vars.VERTEX_EMBEDDING_MODEL }}
           VERTEX_EMBEDDING_DIM: ${{ vars.VERTEX_EMBEDDING_DIM }}
+          VERTEX_EXTRACT_MODEL: ${{ vars.VERTEX_EXTRACT_MODEL }}
+          VERTEX_EXTRACT_FALLBACK_MODEL: ${{ vars.VERTEX_EXTRACT_FALLBACK_MODEL }}
+          VERTEX_EXTRACT_ATTEMPTS: ${{ vars.VERTEX_EXTRACT_ATTEMPTS }}
+          VERTEX_EXTRACT_MAX_TOKENS: ${{ vars.VERTEX_EXTRACT_MAX_TOKENS }}
+
           VERTEX_RANKING_ENABLED: ${{ vars.VERTEX_RANKING_ENABLED }}
           VERTEX_RANKING_PROJECT_ID: ${{ vars.VERTEX_RANKING_PROJECT_ID }}
           VERTEX_RANKING_LOCATION: ${{ vars.VERTEX_RANKING_LOCATION }}
+          VERTEX_RANKING_BASE_URL: ${{ vars.VERTEX_RANKING_BASE_URL }}
+          VERTEX_RANKING_MODEL: ${{ vars.VERTEX_RANKING_MODEL }}
           GOOGLE_APPLICATION_CREDENTIALS: ${{ vars.GOOGLE_APPLICATION_CREDENTIALS }}
 
           BOOKS_STORAGE_PROVIDER: ${{ vars.BOOKS_STORAGE_PROVIDER }}
@@ -533,6 +619,7 @@ jobs:
           BOOKS_S3_KEY_PREFIX: ${{ vars.BOOKS_S3_KEY_PREFIX }}
 
           ANALYSIS_ARTIFACTS_ENABLED: ${{ vars.ANALYSIS_ARTIFACTS_ENABLED }}
+          ANALYSIS_ARTIFACTS_LOCAL_DIR: ${{ vars.ANALYSIS_ARTIFACTS_LOCAL_DIR }}
           ARTIFACTS_STORAGE_PROVIDER: ${{ vars.ARTIFACTS_STORAGE_PROVIDER }}
           ARTIFACTS_S3_ENDPOINT: ${{ vars.ARTIFACTS_S3_ENDPOINT }}
           ARTIFACTS_S3_BUCKET: ${{ vars.ARTIFACTS_S3_BUCKET }}
@@ -540,7 +627,17 @@ jobs:
           ARTIFACTS_S3_FORCE_PATH_STYLE: ${{ vars.ARTIFACTS_S3_FORCE_PATH_STYLE }}
           ARTIFACTS_S3_KEY_PREFIX: ${{ vars.ARTIFACTS_S3_KEY_PREFIX }}
 
-          # --- VARIABLES (worker-only tuning) ---
+          BOOK_CHAT_SCENE_TOOLS_ENABLED: ${{ vars.BOOK_CHAT_SCENE_TOOLS_ENABLED }}
+          BOOK_CHAT_SYSTEM_PROMPT_VERSION: ${{ vars.BOOK_CHAT_SYSTEM_PROMPT_VERSION }}
+          BOOK_CHAT_PLANNER_ENABLED: ${{ vars.BOOK_CHAT_PLANNER_ENABLED }}
+          BOOK_CHAT_LLM_STEP_METRICS_ENABLED: ${{ vars.BOOK_CHAT_LLM_STEP_METRICS_ENABLED }}
+          BOOK_CHAT_EVAL_DETERMINISTIC: ${{ vars.BOOK_CHAT_EVAL_DETERMINISTIC }}
+          BOOK_CHAT_HISTORY_COMPACTION_ENABLED: ${{ vars.BOOK_CHAT_HISTORY_COMPACTION_ENABLED }}
+          BOOK_CHAT_HISTORY_KEEP_INLINE_PAIRS: ${{ vars.BOOK_CHAT_HISTORY_KEEP_INLINE_PAIRS }}
+          BOOK_CHAT_HISTORY_COMPACT_AFTER_PAIRS: ${{ vars.BOOK_CHAT_HISTORY_COMPACT_AFTER_PAIRS }}
+          BOOK_CHAT_HISTORY_REFRESH_AFTER_MESSAGES: ${{ vars.BOOK_CHAT_HISTORY_REFRESH_AFTER_MESSAGES }}
+          BOOK_CHAT_HISTORY_SUMMARY_MAX_CHARS: ${{ vars.BOOK_CHAT_HISTORY_SUMMARY_MAX_CHARS }}
+
           ANALYSIS_QUEUE_MODE: ${{ vars.ANALYSIS_QUEUE_MODE }}
           ANALYSIS_DISPATCHER_ENABLED: ${{ vars.ANALYSIS_DISPATCHER_ENABLED }}
           ANALYSIS_EXECUTOR_CONCURRENCY: ${{ vars.ANALYSIS_EXECUTOR_CONCURRENCY }}
@@ -549,35 +646,30 @@ jobs:
           ANALYSIS_WATCHDOG_INTERVAL_MS: ${{ vars.ANALYSIS_WATCHDOG_INTERVAL_MS }}
           ANALYSIS_RUNNING_STALE_TTL_MS: ${{ vars.ANALYSIS_RUNNING_STALE_TTL_MS }}
           ANALYSIS_QUEUED_STALE_TTL_MS: ${{ vars.ANALYSIS_QUEUED_STALE_TTL_MS }}
+          ANALYSIS_AUTO_RERUN_ENABLED: ${{ vars.ANALYSIS_AUTO_RERUN_ENABLED }}
+          ANALYSIS_FAIR_SHARE_PER_USER_IN_FLIGHT: ${{ vars.ANALYSIS_FAIR_SHARE_PER_USER_IN_FLIGHT }}
+          ANALYSIS_FAIR_SHARE_DEFER_MS: ${{ vars.ANALYSIS_FAIR_SHARE_DEFER_MS }}
 
           OUTBOX_POLL_INTERVAL_MS: ${{ vars.OUTBOX_POLL_INTERVAL_MS }}
           OUTBOX_BATCH_SIZE: ${{ vars.OUTBOX_BATCH_SIZE }}
           OUTBOX_MAX_ATTEMPTS: ${{ vars.OUTBOX_MAX_ATTEMPTS }}
+          OUTBOX_EVENT_CONCURRENCY: ${{ vars.OUTBOX_EVENT_CONCURRENCY }}
 
           ANALYSIS_SCENES_ENABLED: ${{ vars.ANALYSIS_SCENES_ENABLED }}
-          SCENE_SEGMENTATION_STRATEGY: ${{ vars.SCENE_SEGMENTATION_STRATEGY }}
           SCENE_SEGMENTATION_MAX_INPUT_TOKENS: ${{ vars.SCENE_SEGMENTATION_MAX_INPUT_TOKENS }}
           ANALYSIS_SAFE_SCENE_SEGMENTS_ENABLED: ${{ vars.ANALYSIS_SAFE_SCENE_SEGMENTS_ENABLED }}
           ANALYSIS_SAFE_SCENE_SEGMENTS_MAX_INPUT_TOKENS: ${{ vars.ANALYSIS_SAFE_SCENE_SEGMENTS_MAX_INPUT_TOKENS }}
-          ANALYSIS_PARAGRAPH_SCENE_PARALLEL_ENABLED: ${{ vars.ANALYSIS_PARAGRAPH_SCENE_PARALLEL_ENABLED }}
 
-          BOOK_EMBEDDING_CONCURRENCY: ${{ vars.BOOK_EMBEDDING_CONCURRENCY }}
-
-          VERTEX_MAX_OUTPUT_TOKENS: ${{ vars.VERTEX_MAX_OUTPUT_TOKENS }}
-          VERTEX_LITERARY_MAX_TOKENS: ${{ vars.VERTEX_LITERARY_MAX_TOKENS }}
-          VERTEX_THINKING_BUDGET: ${{ vars.VERTEX_THINKING_BUDGET }}
-          VERTEX_TIMEOUT_MS: ${{ vars.VERTEX_TIMEOUT_MS }}
-          VERTEX_MAX_RETRIES: ${{ vars.VERTEX_MAX_RETRIES }}
+          IMPORT_BLOB_DIR: ${{ vars.IMPORT_BLOB_DIR }}
+          IMPORT_MAX_FILE_BYTES: ${{ vars.IMPORT_MAX_FILE_BYTES }}
+          IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES: ${{ vars.IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES }}
 
           BOOK_SCENE_EDGE_BATCH_SIZE: ${{ vars.BOOK_SCENE_EDGE_BATCH_SIZE }}
           BOOK_SCENE_EDGE_BATCH_CONCURRENCY: ${{ vars.BOOK_SCENE_EDGE_BATCH_CONCURRENCY }}
           BOOK_SCENE_EDGE_CHAR_LIMIT: ${{ vars.BOOK_SCENE_EDGE_CHAR_LIMIT }}
           BOOK_SCENE_EDGE_MAX_TOKENS: ${{ vars.BOOK_SCENE_EDGE_MAX_TOKENS }}
           BOOK_SCENE_EDGE_MAX_ATTEMPTS: ${{ vars.BOOK_SCENE_EDGE_MAX_ATTEMPTS }}
-
-          IMPORT_BLOB_DIR: ${{ vars.IMPORT_BLOB_DIR }}
-          IMPORT_MAX_FILE_BYTES: ${{ vars.IMPORT_MAX_FILE_BYTES }}
-          IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES: ${{ vars.IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES }}
+          BOOK_EMBEDDING_CONCURRENCY: ${{ vars.BOOK_EMBEDDING_CONCURRENCY }}
 
           SHOWCASE_BUILD_ENABLED: ${{ vars.SHOWCASE_BUILD_ENABLED }}
           SHOWCASE_INTERNAL_API_BASE_URL: ${{ vars.SHOWCASE_INTERNAL_API_BASE_URL }}
@@ -585,7 +677,7 @@ jobs:
           SHOWCASE_INTERNAL_API_MAX_RETRIES: ${{ vars.SHOWCASE_INTERNAL_API_MAX_RETRIES }}
         run: |
           set -euo pipefail
-          envsubst < scripts/deploy/worker.env.template > /tmp/worker.env
+          envsubst < scripts/deploy/app.env.template > /tmp/worker.env
           if grep -E '\$\{[A-Z_][A-Z0-9_]*\}' /tmp/worker.env; then
             echo "::error::Unresolved placeholders in /tmp/worker.env."
             exit 1
