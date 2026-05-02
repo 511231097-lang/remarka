@@ -109,7 +109,16 @@ jobs:
 
       - name: Compute release id
         id: release
-        run: echo "id=$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::8}" >> "$GITHUB_OUTPUT"
+        # GitHub Actions redacts step outputs that contain a substring of any
+        # repository secret. Short 8-char SHA prefixes can coincidentally
+        # match a window inside large multi-line secrets like
+        # VERTEX_RANKING_KEYFILE_JSON (PEM body has lots of random hex).
+        # When that happens, downstream `${{ needs.build.outputs.release_id }}`
+        # silently resolves to empty and migrate / deploy install paths
+        # become "/srv/remarka/releases//...". Using the full SHA makes
+        # accidental substring overlap with any single secret cosmically
+        # unlikely.
+        run: echo "id=$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA}" >> "$GITHUB_OUTPUT"
 
       - name: Stage release bundle locally
         run: |
