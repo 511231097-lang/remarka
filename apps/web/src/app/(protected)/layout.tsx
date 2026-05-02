@@ -1,5 +1,6 @@
 import { redirect } from "next/navigation";
 import { resolveAuthUser } from "@/lib/authUser";
+import { EventChannelProvider } from "@/lib/events/EventChannelProvider";
 
 export default async function ProtectedLayout({ children }: { children: React.ReactNode }) {
   const authUser = await resolveAuthUser();
@@ -7,5 +8,5 @@ export default async function ProtectedLayout({ children }: { children: React.Re
     redirect("/signin");
   }
 
-  return <>{children}</>;
+  return <EventChannelProvider>{children}</EventChannelProvider>;
 }
