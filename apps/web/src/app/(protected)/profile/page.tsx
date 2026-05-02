@@ -8,5 +8,17 @@ export default async function ProfilePage() {
     redirect("/signin");
   }
 
-  return <Profile authUser={authUser} />;
+  return (
+    <Profile
+      authUser={{
+        name: authUser.name,
+        email: authUser.email,
+        image: authUser.image,
+        tier: authUser.tier,
+        tierActivatedAt: authUser.tierActivatedAt
+          ? authUser.tierActivatedAt.toISOString()
+          : null,
+      }}
+    />
+  );
 }

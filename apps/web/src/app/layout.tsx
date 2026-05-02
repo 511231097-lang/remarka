@@ -43,6 +43,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
             userName={userName}
             userImage={authUser?.image || null}
             userRole={authUser?.role || null}
+            userTier={authUser?.tier || null}
             isAuthenticated={Boolean(authUser)}
           >
             {children}

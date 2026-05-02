@@ -8,9 +8,12 @@ export default async function UploadPage() {
     redirect("/signin");
   }
 
-  // TEMPORARY: until the subscription model exists, every authenticated user
-  // is treated as Plus and can hit /upload. When billing is wired up, gate
-  // here on `authUser.plan !== "plus"` and redirect to `/library?paywall=upload`.
+  // Tariff gate: book uploads are Plus-only. Free users get bounced to
+  // /library with `?paywall=upload` so the existing PaywallModal opens
+  // automatically (Library reads that query param on mount).
+  if (authUser.tier !== "plus") {
+    redirect("/library?paywall=upload");
+  }
 
   return <UploadFlow />;
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { usePathname } from "next/navigation";
-import type { UserRole } from "@prisma/client";
+import type { UserRole, UserTier } from "@prisma/client";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SiteHeader } from "@/components/SiteHeader";
 
@@ -10,6 +10,9 @@ interface AppChromeProps {
   userName?: string | null;
   userImage?: string | null;
   userRole?: UserRole | null;
+  // Authenticated user's subscription tier — drives the "Plus" pill in the
+  // header. null for anonymous viewers (footer-only chrome).
+  userTier?: UserTier | null;
   isAuthenticated?: boolean;
 }
 
@@ -22,16 +25,16 @@ export function AppChrome({
   userName = null,
   userImage = null,
   userRole = null,
+  userTier = null,
   isAuthenticated = false,
 }: AppChromeProps) {
   const pathname = usePathname();
   const chatRoute = isChatPath(pathname || "");
 
-  // TEMPORARY: until the subscription model exists, treat every authenticated
-  // user as Plus so the design's plan-pill, upload, and analysis flows are
-  // testable end-to-end. Replace with real `User.plan` resolution when the
-  // billing backend is wired up.
-  const plan: "free" | "plus" = "plus";
+  // Sourced from `User.tier` via resolveAuthUser in the root layout.
+  // Falls back to "free" for safety — the header treats free as the
+  // default (no Plus pill, "Перейти на Плюс" CTA shown).
+  const plan: "free" | "plus" = userTier === "plus" ? "plus" : "free";
 
   return (
     <div className="page">

@@ -18,6 +18,9 @@ interface UserDetailResponse {
     name: string | null;
     email: string | null;
     role: "user" | "admin";
+    tier: "free" | "plus";
+    tierActivatedAt: string | null;
+    createdAt: string;
     counts: {
       books: number;
       chatThreads: number;
@@ -132,6 +135,54 @@ export function AdminUserDetailPage({ userId, initialWindow }: AdminUserDetailPa
   const [messages, setMessages] = useState<ChatMessagesResponse | null>(null);
   const [messagesLoading, setMessagesLoading] = useState(false);
   const [messagesError, setMessagesError] = useState<string | null>(null);
+
+  const [tierUpdating, setTierUpdating] = useState(false);
+  const [tierError, setTierError] = useState<string | null>(null);
+
+  const handleTierChange = async (nextTier: "free" | "plus") => {
+    if (!detail) return;
+    if (detail.user.tier === nextTier) return;
+    if (tierUpdating) return;
+    const verb = nextTier === "plus" ? "перевести на Plus" : "вернуть на Free";
+    // `window` is shadowed in this component by state of the same name —
+    // use globalThis to reach the browser-window confirm dialog.
+    if (!globalThis.confirm(`Точно ${verb} пользователя ${detail.user.email || detail.user.id}?`)) {
+      return;
+    }
+    setTierUpdating(true);
+    setTierError(null);
+    try {
+      const response = await fetch(`/api/admin/users/${userId}/tier`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ tier: nextTier }),
+      });
+      if (!response.ok) {
+        const data = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(data.error || `HTTP ${response.status}`);
+      }
+      const data = (await response.json()) as {
+        user: { tier: "free" | "plus"; tierActivatedAt: string | null };
+      };
+      // Optimistically patch detail in state — saves a re-fetch.
+      setDetail((current) =>
+        current
+          ? {
+              ...current,
+              user: {
+                ...current.user,
+                tier: data.user.tier,
+                tierActivatedAt: data.user.tierActivatedAt,
+              },
+            }
+          : current
+      );
+    } catch (err) {
+      setTierError(err instanceof Error ? err.message : "Не удалось изменить тариф");
+    } finally {
+      setTierUpdating(false);
+    }
+  };
 
   const detailQuery = useMemo(() => {
     const params = new URLSearchParams();
@@ -249,6 +300,53 @@ export function AdminUserDetailPage({ userId, initialWindow }: AdminUserDetailPa
                 chat: {formatInt(detail.user.chat.tokens.total)} токенов • {formatUsd(detail.user.chat.costUsd)}
               </div>
             </div>
+
+            <div className="mt-4 flex flex-col gap-2 rounded-lg border border-border bg-background p-3 md:flex-row md:items-center md:justify-between">
+              <div className="text-sm text-foreground">
+                <span className="text-muted-foreground">Тариф:</span>{" "}
+                <span
+                  className={`rounded px-2 py-0.5 text-xs ${
+                    detail.user.tier === "plus"
+                      ? "bg-emerald-600/20 text-emerald-300"
+                      : "bg-slate-600/20 text-slate-300"
+                  }`}
+                >
+                  {detail.user.tier === "plus" ? "Plus" : "Free"}
+                </span>
+                {detail.user.tier === "plus" && detail.user.tierActivatedAt ? (
+                  <span className="ml-2 text-xs text-muted-foreground">
+                    активирован {formatIso(detail.user.tierActivatedAt)}
+                  </span>
+                ) : null}
+                <span className="ml-2 text-xs text-muted-foreground">
+                  · регистрация {formatIso(detail.user.createdAt)}
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                {detail.user.tier === "free" ? (
+                  <button
+                    type="button"
+                    onClick={() => void handleTierChange("plus")}
+                    disabled={tierUpdating}
+                    className="rounded-md border border-emerald-500 bg-emerald-600/20 px-3 py-1.5 text-sm text-emerald-300 transition hover:bg-emerald-600/30 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {tierUpdating ? "Применяю…" : "Перевести на Plus"}
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void handleTierChange("free")}
+                    disabled={tierUpdating}
+                    className="rounded-md border border-amber-500 bg-amber-600/20 px-3 py-1.5 text-sm text-amber-300 transition hover:bg-amber-600/30 disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    {tierUpdating ? "Применяю…" : "Вернуть на Free"}
+                  </button>
+                )}
+              </div>
+            </div>
+            {tierError ? (
+              <p className="mt-2 text-sm text-destructive">{tierError}</p>
+            ) : null}
           </section>
 
           <section className="grid gap-4 xl:grid-cols-2">

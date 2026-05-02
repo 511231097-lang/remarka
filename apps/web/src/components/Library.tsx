@@ -35,7 +35,12 @@ function declension(n: number, forms: [string, string, string]): string {
   return forms[2];
 }
 
-export function Library() {
+interface LibraryProps {
+  /** Current user's subscription tier — passed from server-rendered page. */
+  tier: Plan;
+}
+
+export function Library({ tier }: LibraryProps) {
   const router = useRouter();
   const searchParams = useSearchParams();
   const [myBooks, setMyBooks] = useState<BookCardDTO[]>([]);
@@ -45,11 +50,9 @@ export function Library() {
   const [analyzing, setAnalyzing] = useState<AnalyzingBookDTO[]>([]);
   const previousAnalyzingIdsRef = useRef<Set<string>>(new Set());
 
-  // TEMPORARY: until the subscription model exists, treat everyone as Plus.
-  // Mirrors the AppChrome mapping — keeps upload/upsell flows testable.
-  // Replace with real `User.plan` when the billing backend is wired up.
-  const [plan] = useState<Plan>("plus");
-  const isPlus = plan === "plus";
+  const isPlus = tier === "plus";
+  // Local alias for legacy components below that still expect a `plan` prop.
+  const plan: Plan = tier;
   const [paywallOpen, setPaywallOpen] = useState(false);
 
   // Auto-open paywall when bounced here from /upload by the server-side gate

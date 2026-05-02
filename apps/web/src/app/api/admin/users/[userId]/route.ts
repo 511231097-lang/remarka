@@ -37,6 +37,9 @@ export async function GET(request: Request, context: RouteContext) {
       email: true,
       image: true,
       role: true,
+      tier: true,
+      tierActivatedAt: true,
+      createdAt: true,
       _count: {
         select: {
           books: true,
@@ -225,6 +228,9 @@ export async function GET(request: Request, context: RouteContext) {
       email: user.email,
       image: user.image,
       role: user.role,
+      tier: user.tier,
+      tierActivatedAt: user.tierActivatedAt ? user.tierActivatedAt.toISOString() : null,
+      createdAt: user.createdAt.toISOString(),
       counts: {
         books: Number(user._count.books || 0),
         chatThreads: Number(user._count.chatThreads || 0),

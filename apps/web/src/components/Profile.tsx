@@ -6,16 +6,9 @@ import { Sparkles, X, AlertTriangle } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useTheme } from "@/lib/ThemeContext";
 
-// TODO: replace this mock with real subscription state from session/billing
-// when a paid tier is live. For now we hard-code "free" since billing is
-// not wired yet. The display name/email fallbacks below kick in only when
-// the authenticated user record has empty fields, which shouldn't happen
-// with Yandex ID — they are belt-and-suspenders defaults.
-const currentUser: { name: string; email: string; plan: { type: "free" | "plus" } } = {
-  name: "Аноним",
-  email: "",
-  plan: { type: "free" },
-};
+// Empty-name fallback for the rare case where Yandex ID returns no name.
+// Kept as a constant for clarity; real plan now comes from `authUser.tier`.
+const FALLBACK_DISPLAY_NAME = "Аноним";
 
 // Confirmation token must match the one enforced server-side in
 // apps/web/src/app/api/profile/account/route.ts. Keep them in sync.
@@ -26,15 +19,16 @@ interface ProfileProps {
     name: string | null;
     email: string | null;
     image: string | null;
+    tier: "free" | "plus";
+    tierActivatedAt: string | null;
   };
 }
 
 export function Profile({ authUser }: ProfileProps) {
-  const displayName = authUser.name?.trim() || currentUser.name;
-  const displayEmail = authUser.email?.trim() || currentUser.email;
+  const displayName = authUser.name?.trim() || FALLBACK_DISPLAY_NAME;
+  const displayEmail = authUser.email?.trim() || "";
   const initial = displayName.slice(0, 1).toUpperCase() || "А";
-  const plan = currentUser.plan.type === "plus" ? "plus" : "free";
-  const isPlus = plan === "plus";
+  const isPlus = authUser.tier === "plus";
   const { theme, setTheme } = useTheme();
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [exportPending, setExportPending] = useState(false);
@@ -196,7 +190,7 @@ export function Profile({ authUser }: ProfileProps) {
                     {isPlus ? "Плюс" : "Читатель"}
                   </div>
                   <div className="mono" style={{ color: "var(--ink-muted)" }}>
-                    {isPlus ? "390 ₽ / мес · активен" : "бесплатный · бессрочно"}
+                    {isPlus ? "490 ₽ / мес · активен" : "бесплатный · бессрочно"}
                   </div>
                 </div>
                 <p
@@ -204,7 +198,7 @@ export function Profile({ authUser }: ProfileProps) {
                   style={{ fontSize: 14, lineHeight: 1.55, marginTop: 10, maxWidth: 440 }}
                 >
                   {isPlus
-                    ? "Полный доступ к ремарке: каталог, чат, загрузка и анализ собственных книг. Следующее списание 14 марта."
+                    ? "Полный доступ к ремарке: каталог, чат, загрузка и анализ собственных книг."
                     : "Вы можете читать, задавать вопросы и добавлять книги из каталога. Загрузка собственных книг — на тарифе Плюс."}
                 </p>
               </div>
@@ -264,6 +258,10 @@ export function Profile({ authUser }: ProfileProps) {
               </div>
             )}
           </div>
+        </Section>
+
+        <Section title="Использование">
+          <UsageBlock isPlus={isPlus} />
         </Section>
 
         <Section title="Аккаунт">
@@ -339,6 +337,242 @@ export function Profile({ authUser }: ProfileProps) {
         </Section>
       </div>
       {deleteOpen && <DeleteAccountDialog onClose={() => setDeleteOpen(false)} />}
+    </div>
+  );
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// Usage block — shows current period buckets pulled from /api/me/usage.
+// ────────────────────────────────────────────────────────────────────────
+
+interface BucketSnapshot {
+  used: number;
+  limit: number;
+  remaining: number;
+  exhausted: boolean;
+  locked: boolean;
+}
+
+interface UsageSnapshotResponse {
+  tier: "free" | "plus";
+  period: { start: string; end: string };
+  buckets: {
+    analyses: BucketSnapshot;
+    pro: BucketSnapshot;
+    lite: BucketSnapshot;
+  };
+  staticLimits: {
+    librarySlots: number | null;
+    historyRetentionDays: number | null;
+    uploadMaxMiB: number;
+  };
+}
+
+function formatRussianDate(iso: string): string {
+  try {
+    const date = new Date(iso);
+    return date.toLocaleDateString("ru-RU", {
+      day: "numeric",
+      month: "long",
+      year: "numeric",
+    });
+  } catch {
+    return iso;
+  }
+}
+
+function UsageBlock({ isPlus }: { isPlus: boolean }) {
+  const [usage, setUsage] = useState<UsageSnapshotResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    async function load() {
+      try {
+        const res = await fetch("/api/me/usage", {
+          method: "GET",
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          throw new Error(`Не удалось загрузить (HTTP ${res.status})`);
+        }
+        const data = (await res.json()) as UsageSnapshotResponse;
+        if (active) {
+          setUsage(data);
+          setLoading(false);
+        }
+      } catch (err) {
+        if (!active) return;
+        setError(err instanceof Error ? err.message : "Не удалось загрузить");
+        setLoading(false);
+      }
+    }
+    void load();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (loading) {
+    return (
+      <div className="soft" style={{ fontSize: 14, padding: "20px 24px" }}>
+        Загружаем данные использования…
+      </div>
+    );
+  }
+
+  if (error || !usage) {
+    return (
+      <div
+        className="soft"
+        style={{
+          color: "var(--mark)",
+          fontSize: 14,
+          padding: "20px 24px",
+        }}
+      >
+        {error || "Нет данных"}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ padding: "20px 24px" }}>
+      <div
+        className="mono"
+        style={{ color: "var(--ink-muted)", fontSize: 12, marginBottom: 14 }}
+      >
+        Текущий период · до {formatRussianDate(usage.period.end)}
+      </div>
+
+      <UsageBar
+        label="Анализ книг"
+        sub={
+          isPlus
+            ? "Загрузка и AI-разбор собственных книг"
+            : "Доступно на тарифе Плюс"
+        }
+        bucket={usage.buckets.analyses}
+      />
+      <UsageBar
+        label="Pro-ответы"
+        sub={
+          isPlus
+            ? "Сложные вопросы — модель Pro с глубоким разбором"
+            : "Доступно на тарифе Плюс"
+        }
+        bucket={usage.buckets.pro}
+      />
+      <UsageBar
+        label={isPlus ? "Lite-ответы" : "Ответы в чате"}
+        sub={
+          isPlus
+            ? "Простые вопросы и фактические запросы"
+            : "Все ответы на тарифе Free"
+        }
+        bucket={usage.buckets.lite}
+      />
+
+      <div
+        style={{
+          alignItems: "flex-start",
+          background: "var(--paper-2)",
+          border: "1px solid var(--rule-soft)",
+          borderRadius: "var(--r)",
+          color: "var(--ink-muted)",
+          fontSize: 12,
+          lineHeight: 1.55,
+          marginTop: 18,
+          padding: "12px 14px",
+        }}
+      >
+        Лимиты сбрасываются {formatRussianDate(usage.period.end)}.
+        {!isPlus &&
+          " На Плюсе доступны загрузка книг, Pro-ответы и расширенные лимиты."}
+      </div>
+    </div>
+  );
+}
+
+function UsageBar({
+  label,
+  sub,
+  bucket,
+}: {
+  label: string;
+  sub: string;
+  bucket: BucketSnapshot;
+}) {
+  const safeLimit = Math.max(1, bucket.limit);
+  const fillRatio = bucket.locked
+    ? 0
+    : Math.min(1, Math.max(0, bucket.used / safeLimit));
+  const fillPct = Math.round(fillRatio * 100);
+
+  // Bar colour: muted when locked, warning when ≥80%, danger when exhausted.
+  let fillColor = "var(--mark)";
+  if (bucket.locked) fillColor = "var(--rule-soft)";
+  else if (bucket.exhausted) fillColor = "var(--mark)";
+  else if (fillRatio >= 0.8) fillColor = "var(--mark)";
+
+  return (
+    <div
+      style={{
+        borderBottom: "1px solid var(--rule-soft)",
+        padding: "14px 0",
+      }}
+    >
+      <div
+        className="row"
+        style={{
+          alignItems: "baseline",
+          justifyContent: "space-between",
+          marginBottom: 8,
+        }}
+      >
+        <div>
+          <div style={{ color: "var(--ink)", fontSize: 15 }}>{label}</div>
+          <div className="soft" style={{ fontSize: 12, marginTop: 2 }}>
+            {sub}
+          </div>
+        </div>
+        <div
+          className="mono"
+          style={{
+            color: bucket.locked
+              ? "var(--ink-faint)"
+              : bucket.exhausted
+                ? "var(--mark)"
+                : "var(--ink-muted)",
+            fontSize: 13,
+            whiteSpace: "nowrap",
+          }}
+        >
+          {bucket.locked
+            ? "—"
+            : `${bucket.used} / ${bucket.limit}`}
+        </div>
+      </div>
+      <div
+        style={{
+          background: "var(--paper-2)",
+          borderRadius: 999,
+          height: 6,
+          overflow: "hidden",
+          width: "100%",
+        }}
+      >
+        <div
+          style={{
+            background: fillColor,
+            borderRadius: 999,
+            height: "100%",
+            transition: "width 0.4s ease",
+            width: `${bucket.locked ? 0 : fillPct}%`,
+          }}
+        />
+      </div>
     </div>
   );
 }
