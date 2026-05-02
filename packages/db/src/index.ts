@@ -21,7 +21,18 @@ export {
   type BookTextCorpusBlobPointer,
   type ResolvedBookTextCorpus,
 } from "./bookTextCorpusStore";
-export { convertUsd, readCurrencyRates, resolvePricingVersion, resolveTokenPricing, type CurrencyRates, type TokenPricing } from "./modelPricing";
+export {
+  convertUsd,
+  readCurrencyRates,
+  resolvePricingVersion,
+  resolveTokenPricing,
+  computeLlmCostUsd,
+  computeEmbeddingCostUsd,
+  computeRerankCostUsd,
+  DEFAULT_CACHE_DISCOUNT_FACTOR,
+  type CurrencyRates,
+  type TokenPricing,
+} from "./modelPricing";
 export { enqueueOutboxEvent } from "./outbox";
 export {
   USER_EVENTS_CHANNEL,
@@ -37,4 +48,5 @@ export {
   createBookAnalysisArtifactManifest,
   upsertBookChatTurnMetric,
   replaceBookChatToolRuns,
+  recordBookRerankCalls,
 } from "./bookMetricsStore";

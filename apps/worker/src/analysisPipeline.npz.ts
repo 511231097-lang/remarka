@@ -2,6 +2,8 @@ import { createHash, randomUUID } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import { createVertexClient } from "@remarka/ai";
 import {
+  computeEmbeddingCostUsd,
+  computeLlmCostUsd,
   createArtifactBlobStoreFromEnv,
   createBookAnalysisArtifactManifest,
   createBookAnalysisRun,
@@ -126,6 +128,16 @@ type Usage = {
   prompt_tokens?: number;
   completion_tokens?: number;
   total_tokens?: number;
+  // Subset of prompt_tokens served from Vertex implicit/explicit cache
+  // (90% billing discount). Mapped from `usageMetadata.cachedContentTokenCount`
+  // by the wrapper in packages/ai/vertexClient.ts. Tracking it here lets us
+  // see how much repeated-prompt savings the analysis pipeline actually gets.
+  cached_input_tokens?: number;
+  // Reasoning tokens consumed by Gemini 2.5+/3.x thinking models. NOT a
+  // subset of completion_tokens — Vertex bills them separately at the
+  // output rate. Caller must add them to the billable output count when
+  // computing cost (see `computeCostBreakdown`).
+  thoughts_tokens?: number;
 };
 
 type ChapterAnalysisStat = {
@@ -150,11 +162,18 @@ type ChapterAnalysisStat = {
   llmPromptTokens: number;
   llmCompletionTokens: number;
   llmTotalTokens: number;
+  // LLM cache + thoughts breakdown — see Usage type docs.
+  llmCachedInputTokens: number;
+  llmThoughtsTokens: number;
   embeddingInputTokens: number;
   embeddingTotalTokens: number;
+  // Aggregated counters used by per-stage metrics. Mirror the LLM fields
+  // above plus embedding tokens.
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cachedInputTokens: number;
+  thoughtsTokens: number;
 };
 
 type AnalysisChapterInput = {
@@ -170,6 +189,8 @@ type StageMetricSnapshot = {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+  cachedInputTokens: number;
+  thoughtsTokens: number;
   embeddingInputTokens: number;
   embeddingTotalTokens: number;
   elapsedMs: number;
@@ -1074,11 +1095,17 @@ function sumUsage(left: Usage, right: Usage): Usage {
   const completion =
     Math.max(0, Number(left.completion_tokens || 0)) + Math.max(0, Number(right.completion_tokens || 0));
   const total = Math.max(0, Number(left.total_tokens || 0)) + Math.max(0, Number(right.total_tokens || 0));
+  const cached =
+    Math.max(0, Number(left.cached_input_tokens || 0)) + Math.max(0, Number(right.cached_input_tokens || 0));
+  const thoughts =
+    Math.max(0, Number(left.thoughts_tokens || 0)) + Math.max(0, Number(right.thoughts_tokens || 0));
 
   return {
     prompt_tokens: prompt,
     completion_tokens: completion,
     total_tokens: total || prompt + completion,
+    cached_input_tokens: cached,
+    thoughts_tokens: thoughts,
   };
 }
 
@@ -1086,14 +1113,20 @@ function addUsage(target: ChapterAnalysisStat, usage: Usage) {
   const promptTokens = Math.max(0, Number(usage.prompt_tokens || 0));
   const completionTokens = Math.max(0, Number(usage.completion_tokens || 0));
   const totalTokens = Math.max(0, Number(usage.total_tokens || promptTokens + completionTokens));
+  const cachedInputTokens = Math.max(0, Number(usage.cached_input_tokens || 0));
+  const thoughtsTokens = Math.max(0, Number(usage.thoughts_tokens || 0));
 
   target.llmPromptTokens += promptTokens;
   target.llmCompletionTokens += completionTokens;
   target.llmTotalTokens += totalTokens;
+  target.llmCachedInputTokens += cachedInputTokens;
+  target.llmThoughtsTokens += thoughtsTokens;
 
   target.promptTokens += promptTokens;
   target.completionTokens += completionTokens;
   target.totalTokens += totalTokens;
+  target.cachedInputTokens += cachedInputTokens;
+  target.thoughtsTokens += thoughtsTokens;
 }
 
 function addEmbeddingUsage(target: ChapterAnalysisStat, usage: EmbeddingUsage) {
@@ -1134,6 +1167,8 @@ function createEmptyStageMetric(): StageMetricSnapshot {
     promptTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
+    cachedInputTokens: 0,
+    thoughtsTokens: 0,
     embeddingInputTokens: 0,
     embeddingTotalTokens: 0,
     elapsedMs: 0,
@@ -1177,6 +1212,8 @@ function sumStageMetrics(metrics: StageMetricSnapshot[]): StageMetricSnapshot {
     combined.promptTokens += metric.promptTokens;
     combined.completionTokens += metric.completionTokens;
     combined.totalTokens += metric.totalTokens;
+    combined.cachedInputTokens += metric.cachedInputTokens;
+    combined.thoughtsTokens += metric.thoughtsTokens;
     combined.embeddingInputTokens += metric.embeddingInputTokens;
     combined.embeddingTotalTokens += metric.embeddingTotalTokens;
     combined.elapsedMs += metric.elapsedMs;
@@ -1266,6 +1303,13 @@ function computeCostBreakdown(params: {
   embeddingModel: string;
   llmPromptTokens: number;
   llmCompletionTokens: number;
+  // Subset of llmPromptTokens served from Vertex implicit cache (90% off).
+  // Pass 0 for non-cached models.
+  llmCachedInputTokens?: number;
+  // Reasoning tokens consumed by the LLM. Vertex bills these at the same
+  // rate as visible output, so we add them to the billable output count.
+  // Pass 0 for non-thinking models.
+  llmThoughtsTokens?: number;
   embeddingInputTokens: number;
 }) {
   const pricing = resolveTokenPricing({
@@ -1273,11 +1317,24 @@ function computeCostBreakdown(params: {
     embeddingModel: params.embeddingModel,
   });
 
-  const llmCostUsd =
-    (Math.max(0, params.llmPromptTokens) / 1_000_000) * pricing.chatInputPer1MUsd +
-    (Math.max(0, params.llmCompletionTokens) / 1_000_000) * pricing.chatOutputPer1MUsd;
-  const embeddingCostUsd =
-    (Math.max(0, params.embeddingInputTokens) / 1_000_000) * pricing.embeddingInputPer1MUsd;
+  // Billable output = visible candidate tokens + invisible reasoning tokens.
+  // Vertex's `candidatesTokenCount` does NOT include `thoughtsTokenCount`,
+  // unlike Vercel AI SDK which already rolls them up. The wrapper preserves
+  // both separately so we can sum them here.
+  const outputBilledTokens =
+    Math.max(0, Number(params.llmCompletionTokens || 0)) +
+    Math.max(0, Number(params.llmThoughtsTokens || 0));
+
+  const llmCostUsd = computeLlmCostUsd({
+    inputTokens: params.llmPromptTokens,
+    cachedInputTokens: Number(params.llmCachedInputTokens || 0),
+    outputBilledTokens,
+    pricing,
+  });
+  const embeddingCostUsd = computeEmbeddingCostUsd({
+    embeddingInputTokens: params.embeddingInputTokens,
+    pricing,
+  });
 
   return {
     llmCostUsd,
@@ -1919,6 +1976,8 @@ async function syncRunScopedMetrics(params: {
   const llmPromptTokens = params.chapterStats.reduce((sum, stat) => sum + stat.llmPromptTokens, 0);
   const llmCompletionTokens = params.chapterStats.reduce((sum, stat) => sum + stat.llmCompletionTokens, 0);
   const llmTotalTokens = params.chapterStats.reduce((sum, stat) => sum + stat.llmTotalTokens, 0);
+  const llmCachedInputTokens = params.chapterStats.reduce((sum, stat) => sum + stat.llmCachedInputTokens, 0);
+  const llmThoughtsTokens = params.chapterStats.reduce((sum, stat) => sum + stat.llmThoughtsTokens, 0);
   const embeddingInputTokens = params.chapterStats.reduce((sum, stat) => sum + stat.embeddingInputTokens, 0);
   const embeddingTotalTokens = params.chapterStats.reduce((sum, stat) => sum + stat.embeddingTotalTokens, 0);
   const llmLatencyMs = params.chapterStats.reduce((sum, stat) => sum + stat.llmLatencyMs, 0);
@@ -1947,6 +2006,8 @@ async function syncRunScopedMetrics(params: {
     embeddingModel: params.embeddingModel,
     llmPromptTokens,
     llmCompletionTokens,
+    llmCachedInputTokens,
+    llmThoughtsTokens,
     embeddingInputTokens,
   });
 
@@ -1967,6 +2028,8 @@ async function syncRunScopedMetrics(params: {
       llmPromptTokens,
       llmCompletionTokens,
       llmTotalTokens,
+      llmCachedInputTokens,
+      llmThoughtsTokens,
       embeddingInputTokens,
       embeddingTotalTokens,
       llmCostUsd: costBreakdown.llmCostUsd,
@@ -2001,6 +2064,8 @@ async function syncRunScopedMetrics(params: {
       embeddingModel: params.embeddingModel,
       llmPromptTokens: metric.promptTokens,
       llmCompletionTokens: metric.completionTokens,
+      llmCachedInputTokens: metric.cachedInputTokens,
+      llmThoughtsTokens: metric.thoughtsTokens,
       embeddingInputTokens: metric.embeddingInputTokens,
     });
 
@@ -2015,6 +2080,8 @@ async function syncRunScopedMetrics(params: {
       promptTokens: metric.promptTokens,
       completionTokens: metric.completionTokens,
       totalTokens: metric.totalTokens,
+      cachedInputTokens: metric.cachedInputTokens,
+      thoughtsTokens: metric.thoughtsTokens,
       embeddingInputTokens: metric.embeddingInputTokens,
       embeddingTotalTokens: metric.embeddingTotalTokens,
       llmCostUsd: costs.llmCostUsd,
@@ -2038,6 +2105,15 @@ async function syncRunScopedMetrics(params: {
     for (const stageKey of RUN_STAGE_KEYS) {
       const metric = stageMetrics[stageKey];
       if (!metric) continue;
+      const chapterCosts = computeCostBreakdown({
+        chatModel: params.chatModel,
+        embeddingModel: params.embeddingModel,
+        llmPromptTokens: metric.promptTokens,
+        llmCompletionTokens: metric.completionTokens,
+        llmCachedInputTokens: metric.cachedInputTokens,
+        llmThoughtsTokens: metric.thoughtsTokens,
+        embeddingInputTokens: metric.embeddingInputTokens,
+      });
       await upsertBookAnalysisChapterMetric({
         client: prisma,
         bookId: params.bookId,
@@ -2052,8 +2128,13 @@ async function syncRunScopedMetrics(params: {
         promptTokens: metric.promptTokens,
         completionTokens: metric.completionTokens,
         totalTokens: metric.totalTokens,
+        cachedInputTokens: metric.cachedInputTokens,
+        thoughtsTokens: metric.thoughtsTokens,
         embeddingInputTokens: metric.embeddingInputTokens,
         embeddingTotalTokens: metric.embeddingTotalTokens,
+        llmCostUsd: chapterCosts.llmCostUsd,
+        embeddingCostUsd: chapterCosts.embeddingCostUsd,
+        totalCostUsd: chapterCosts.totalCostUsd,
         elapsedMs: metric.elapsedMs,
         retryCount: metric.retryCount,
         llmCalls: metric.llmCalls,
@@ -2076,6 +2157,11 @@ async function syncRunScopedMetrics(params: {
       analysisPromptTokens: aggregate.promptTokens,
       analysisCompletionTokens: aggregate.completionTokens,
       analysisTotalTokens: aggregate.totalTokens,
+      analysisCachedInputTokens: llmCachedInputTokens,
+      analysisThoughtsTokens: llmThoughtsTokens,
+      analysisChatCostUsd: costBreakdown.llmCostUsd,
+      analysisEmbeddingCostUsd: costBreakdown.embeddingCostUsd,
+      analysisTotalCostUsd: costBreakdown.totalCostUsd,
     },
   });
 }
@@ -2825,11 +2911,15 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
     llmPromptTokens: 0,
     llmCompletionTokens: 0,
     llmTotalTokens: 0,
+    llmCachedInputTokens: 0,
+    llmThoughtsTokens: 0,
     embeddingInputTokens: 0,
     embeddingTotalTokens: 0,
     promptTokens: 0,
     completionTokens: 0,
     totalTokens: 0,
+    cachedInputTokens: 0,
+    thoughtsTokens: 0,
   }));
 
   const startedAt = new Date();
@@ -3057,6 +3147,14 @@ export async function runBookAnalysis(params: { bookId: string; logger: Analysis
           chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].totalTokens += Math.max(
             0,
             Number(chunkResult.usage.total_tokens || 0)
+          );
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].cachedInputTokens += Math.max(
+            0,
+            Number(chunkResult.usage.cached_input_tokens || 0)
+          );
+          chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].thoughtsTokens += Math.max(
+            0,
+            Number(chunkResult.usage.thoughts_tokens || 0)
           );
           chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].elapsedMs += Math.max(0, Math.round(chunkResult.elapsedMs));
           chapterStageMetrics[ANALYSIS_SCENE_CHUNK_STAGE].retryCount += Math.max(0, chunkResult.attemptCount - 1);

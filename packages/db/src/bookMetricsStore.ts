@@ -128,6 +128,8 @@ export async function upsertBookStageExecution(params: {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  cachedInputTokens?: number;
+  thoughtsTokens?: number;
   embeddingInputTokens?: number;
   embeddingTotalTokens?: number;
   llmCostUsd?: number;
@@ -145,6 +147,32 @@ export async function upsertBookStageExecution(params: {
   startedAt?: Date | null;
   completedAt?: Date | null;
 }) {
+  const baseFields = {
+    state: params.state,
+    error: params.error ?? null,
+    promptTokens: Math.max(0, Math.round(Number(params.promptTokens || 0))),
+    completionTokens: Math.max(0, Math.round(Number(params.completionTokens || 0))),
+    totalTokens: Math.max(0, Math.round(Number(params.totalTokens || 0))),
+    cachedInputTokens: Math.max(0, Math.round(Number(params.cachedInputTokens || 0))),
+    thoughtsTokens: Math.max(0, Math.round(Number(params.thoughtsTokens || 0))),
+    embeddingInputTokens: Math.max(0, Math.round(Number(params.embeddingInputTokens || 0))),
+    embeddingTotalTokens: Math.max(0, Math.round(Number(params.embeddingTotalTokens || 0))),
+    llmCostUsd: Math.max(0, Number(params.llmCostUsd || 0)),
+    embeddingCostUsd: Math.max(0, Number(params.embeddingCostUsd || 0)),
+    totalCostUsd: Math.max(0, Number(params.totalCostUsd || 0)),
+    elapsedMs: Math.max(0, Math.round(Number(params.elapsedMs || 0))),
+    retryCount: Math.max(0, Math.round(Number(params.retryCount || 0))),
+    llmCalls: Math.max(0, Math.round(Number(params.llmCalls || 0))),
+    embeddingCalls: Math.max(0, Math.round(Number(params.embeddingCalls || 0))),
+    chunkCount: Math.max(0, Math.round(Number(params.chunkCount || 0))),
+    chunkFailedCount: Math.max(0, Math.round(Number(params.chunkFailedCount || 0))),
+    outputRowCount: Math.max(0, Math.round(Number(params.outputRowCount || 0))),
+    storageBytesJson: params.storageBytesJson ? asJson(params.storageBytesJson) : undefined,
+    metadataJson: params.metadataJson ? asJson(params.metadataJson) : undefined,
+    startedAt: params.startedAt ?? undefined,
+    completedAt: params.completedAt ?? undefined,
+  };
+
   await params.client.bookStageExecution.upsert({
     where: {
       runId_stageKey: {
@@ -157,51 +185,9 @@ export async function upsertBookStageExecution(params: {
       contentVersionId: params.contentVersionId,
       runId: params.runId,
       stageKey: params.stageKey,
-      state: params.state,
-      error: params.error ?? null,
-      promptTokens: Math.max(0, Math.round(Number(params.promptTokens || 0))),
-      completionTokens: Math.max(0, Math.round(Number(params.completionTokens || 0))),
-      totalTokens: Math.max(0, Math.round(Number(params.totalTokens || 0))),
-      embeddingInputTokens: Math.max(0, Math.round(Number(params.embeddingInputTokens || 0))),
-      embeddingTotalTokens: Math.max(0, Math.round(Number(params.embeddingTotalTokens || 0))),
-      llmCostUsd: Math.max(0, Number(params.llmCostUsd || 0)),
-      embeddingCostUsd: Math.max(0, Number(params.embeddingCostUsd || 0)),
-      totalCostUsd: Math.max(0, Number(params.totalCostUsd || 0)),
-      elapsedMs: Math.max(0, Math.round(Number(params.elapsedMs || 0))),
-      retryCount: Math.max(0, Math.round(Number(params.retryCount || 0))),
-      llmCalls: Math.max(0, Math.round(Number(params.llmCalls || 0))),
-      embeddingCalls: Math.max(0, Math.round(Number(params.embeddingCalls || 0))),
-      chunkCount: Math.max(0, Math.round(Number(params.chunkCount || 0))),
-      chunkFailedCount: Math.max(0, Math.round(Number(params.chunkFailedCount || 0))),
-      outputRowCount: Math.max(0, Math.round(Number(params.outputRowCount || 0))),
-      storageBytesJson: params.storageBytesJson ? asJson(params.storageBytesJson) : undefined,
-      metadataJson: params.metadataJson ? asJson(params.metadataJson) : undefined,
-      startedAt: params.startedAt ?? undefined,
-      completedAt: params.completedAt ?? undefined,
+      ...baseFields,
     },
-    update: {
-      state: params.state,
-      error: params.error ?? null,
-      promptTokens: Math.max(0, Math.round(Number(params.promptTokens || 0))),
-      completionTokens: Math.max(0, Math.round(Number(params.completionTokens || 0))),
-      totalTokens: Math.max(0, Math.round(Number(params.totalTokens || 0))),
-      embeddingInputTokens: Math.max(0, Math.round(Number(params.embeddingInputTokens || 0))),
-      embeddingTotalTokens: Math.max(0, Math.round(Number(params.embeddingTotalTokens || 0))),
-      llmCostUsd: Math.max(0, Number(params.llmCostUsd || 0)),
-      embeddingCostUsd: Math.max(0, Number(params.embeddingCostUsd || 0)),
-      totalCostUsd: Math.max(0, Number(params.totalCostUsd || 0)),
-      elapsedMs: Math.max(0, Math.round(Number(params.elapsedMs || 0))),
-      retryCount: Math.max(0, Math.round(Number(params.retryCount || 0))),
-      llmCalls: Math.max(0, Math.round(Number(params.llmCalls || 0))),
-      embeddingCalls: Math.max(0, Math.round(Number(params.embeddingCalls || 0))),
-      chunkCount: Math.max(0, Math.round(Number(params.chunkCount || 0))),
-      chunkFailedCount: Math.max(0, Math.round(Number(params.chunkFailedCount || 0))),
-      outputRowCount: Math.max(0, Math.round(Number(params.outputRowCount || 0))),
-      storageBytesJson: params.storageBytesJson ? asJson(params.storageBytesJson) : undefined,
-      metadataJson: params.metadataJson ? asJson(params.metadataJson) : undefined,
-      startedAt: params.startedAt ?? undefined,
-      completedAt: params.completedAt ?? undefined,
-    },
+    update: baseFields,
   });
 }
 
@@ -219,8 +205,13 @@ export async function upsertBookAnalysisChapterMetric(params: {
   promptTokens?: number;
   completionTokens?: number;
   totalTokens?: number;
+  cachedInputTokens?: number;
+  thoughtsTokens?: number;
   embeddingInputTokens?: number;
   embeddingTotalTokens?: number;
+  llmCostUsd?: number;
+  embeddingCostUsd?: number;
+  totalCostUsd?: number;
   elapsedMs?: number;
   retryCount?: number;
   llmCalls?: number;
@@ -233,6 +224,34 @@ export async function upsertBookAnalysisChapterMetric(params: {
   startedAt?: Date | null;
   completedAt?: Date | null;
 }) {
+  const sharedFields = {
+    chapterOrderIndex: Math.max(0, Math.round(Number(params.chapterOrderIndex || 0))),
+    chapterTitle: String(params.chapterTitle || "").trim(),
+    state: params.state,
+    error: params.error ?? null,
+    promptTokens: Math.max(0, Math.round(Number(params.promptTokens || 0))),
+    completionTokens: Math.max(0, Math.round(Number(params.completionTokens || 0))),
+    totalTokens: Math.max(0, Math.round(Number(params.totalTokens || 0))),
+    cachedInputTokens: Math.max(0, Math.round(Number(params.cachedInputTokens || 0))),
+    thoughtsTokens: Math.max(0, Math.round(Number(params.thoughtsTokens || 0))),
+    embeddingInputTokens: Math.max(0, Math.round(Number(params.embeddingInputTokens || 0))),
+    embeddingTotalTokens: Math.max(0, Math.round(Number(params.embeddingTotalTokens || 0))),
+    llmCostUsd: Math.max(0, Number(params.llmCostUsd || 0)),
+    embeddingCostUsd: Math.max(0, Number(params.embeddingCostUsd || 0)),
+    totalCostUsd: Math.max(0, Number(params.totalCostUsd || 0)),
+    elapsedMs: Math.max(0, Math.round(Number(params.elapsedMs || 0))),
+    retryCount: Math.max(0, Math.round(Number(params.retryCount || 0))),
+    llmCalls: Math.max(0, Math.round(Number(params.llmCalls || 0))),
+    embeddingCalls: Math.max(0, Math.round(Number(params.embeddingCalls || 0))),
+    chunkCount: Math.max(0, Math.round(Number(params.chunkCount || 0))),
+    chunkFailedCount: Math.max(0, Math.round(Number(params.chunkFailedCount || 0))),
+    outputRowCount: Math.max(0, Math.round(Number(params.outputRowCount || 0))),
+    storageBytesJson: params.storageBytesJson ? asJson(params.storageBytesJson) : undefined,
+    metadataJson: params.metadataJson ? asJson(params.metadataJson) : undefined,
+    startedAt: params.startedAt ?? undefined,
+    completedAt: params.completedAt ?? undefined,
+  };
+
   await params.client.bookAnalysisChapterMetric.upsert({
     where: {
       runId_chapterId_stageKey: {
@@ -246,50 +265,10 @@ export async function upsertBookAnalysisChapterMetric(params: {
       contentVersionId: params.contentVersionId,
       runId: params.runId,
       chapterId: params.chapterId,
-      chapterOrderIndex: Math.max(0, Math.round(Number(params.chapterOrderIndex || 0))),
-      chapterTitle: String(params.chapterTitle || "").trim(),
       stageKey: params.stageKey,
-      state: params.state,
-      error: params.error ?? null,
-      promptTokens: Math.max(0, Math.round(Number(params.promptTokens || 0))),
-      completionTokens: Math.max(0, Math.round(Number(params.completionTokens || 0))),
-      totalTokens: Math.max(0, Math.round(Number(params.totalTokens || 0))),
-      embeddingInputTokens: Math.max(0, Math.round(Number(params.embeddingInputTokens || 0))),
-      embeddingTotalTokens: Math.max(0, Math.round(Number(params.embeddingTotalTokens || 0))),
-      elapsedMs: Math.max(0, Math.round(Number(params.elapsedMs || 0))),
-      retryCount: Math.max(0, Math.round(Number(params.retryCount || 0))),
-      llmCalls: Math.max(0, Math.round(Number(params.llmCalls || 0))),
-      embeddingCalls: Math.max(0, Math.round(Number(params.embeddingCalls || 0))),
-      chunkCount: Math.max(0, Math.round(Number(params.chunkCount || 0))),
-      chunkFailedCount: Math.max(0, Math.round(Number(params.chunkFailedCount || 0))),
-      outputRowCount: Math.max(0, Math.round(Number(params.outputRowCount || 0))),
-      storageBytesJson: params.storageBytesJson ? asJson(params.storageBytesJson) : undefined,
-      metadataJson: params.metadataJson ? asJson(params.metadataJson) : undefined,
-      startedAt: params.startedAt ?? undefined,
-      completedAt: params.completedAt ?? undefined,
+      ...sharedFields,
     },
-    update: {
-      chapterOrderIndex: Math.max(0, Math.round(Number(params.chapterOrderIndex || 0))),
-      chapterTitle: String(params.chapterTitle || "").trim(),
-      state: params.state,
-      error: params.error ?? null,
-      promptTokens: Math.max(0, Math.round(Number(params.promptTokens || 0))),
-      completionTokens: Math.max(0, Math.round(Number(params.completionTokens || 0))),
-      totalTokens: Math.max(0, Math.round(Number(params.totalTokens || 0))),
-      embeddingInputTokens: Math.max(0, Math.round(Number(params.embeddingInputTokens || 0))),
-      embeddingTotalTokens: Math.max(0, Math.round(Number(params.embeddingTotalTokens || 0))),
-      elapsedMs: Math.max(0, Math.round(Number(params.elapsedMs || 0))),
-      retryCount: Math.max(0, Math.round(Number(params.retryCount || 0))),
-      llmCalls: Math.max(0, Math.round(Number(params.llmCalls || 0))),
-      embeddingCalls: Math.max(0, Math.round(Number(params.embeddingCalls || 0))),
-      chunkCount: Math.max(0, Math.round(Number(params.chunkCount || 0))),
-      chunkFailedCount: Math.max(0, Math.round(Number(params.chunkFailedCount || 0))),
-      outputRowCount: Math.max(0, Math.round(Number(params.outputRowCount || 0))),
-      storageBytesJson: params.storageBytesJson ? asJson(params.storageBytesJson) : undefined,
-      metadataJson: params.metadataJson ? asJson(params.metadataJson) : undefined,
-      startedAt: params.startedAt ?? undefined,
-      completedAt: params.completedAt ?? undefined,
-    },
+    update: sharedFields,
   });
 }
 
@@ -376,6 +355,11 @@ export async function upsertBookChatTurnMetric(params: {
   embeddingInputTokens?: number;
   chatCostUsd?: number;
   embeddingCostUsd?: number;
+  rerankCallCount?: number;
+  rerankRecordCount?: number;
+  rerankReturnedCount?: number;
+  rerankLatencyMs?: number;
+  rerankCostUsd?: number;
   totalCostUsd?: number;
   totalLatencyMs?: number;
   answerLengthChars?: number;
@@ -399,6 +383,11 @@ export async function upsertBookChatTurnMetric(params: {
     embeddingInputTokens: Math.max(0, Math.round(Number(params.embeddingInputTokens || 0))),
     chatCostUsd: Math.max(0, Number(params.chatCostUsd || 0)),
     embeddingCostUsd: Math.max(0, Number(params.embeddingCostUsd || 0)),
+    rerankCallCount: Math.max(0, Math.round(Number(params.rerankCallCount || 0))),
+    rerankRecordCount: Math.max(0, Math.round(Number(params.rerankRecordCount || 0))),
+    rerankReturnedCount: Math.max(0, Math.round(Number(params.rerankReturnedCount || 0))),
+    rerankLatencyMs: Math.max(0, Math.round(Number(params.rerankLatencyMs || 0))),
+    rerankCostUsd: Math.max(0, Number(params.rerankCostUsd || 0)),
     totalCostUsd: Math.max(0, Number(params.totalCostUsd || 0)),
     totalLatencyMs: Math.max(0, Math.round(Number(params.totalLatencyMs || 0))),
     answerLengthChars: Math.max(0, Math.round(Number(params.answerLengthChars || 0))),
@@ -418,6 +407,52 @@ export async function upsertBookChatTurnMetric(params: {
       ...baseFields,
     },
     update: baseFields,
+  });
+}
+
+/**
+ * Insert one row per Vertex Ranking API invocation. Keep this granular —
+ * each rerank call lands as a separate row (also when it failed). Aggregate
+ * sums live on `BookChatTurnMetric` for fast turn-level rollups; this table
+ * is the audit trail for cost reconciliation and SLO tracking.
+ *
+ * `bookId`/`threadId` are nullable so admin global searches (no chat thread)
+ * can still produce a row. `turnMetricId` should be passed for chat-source
+ * calls so a join can attribute cost to a specific turn.
+ */
+export async function recordBookRerankCalls(params: {
+  client: AnyDbClient;
+  pricingVersion?: string | null;
+  calls: Array<{
+    source: "chat" | "admin" | (string & {});
+    bookId?: string | null;
+    threadId?: string | null;
+    turnMetricId?: string | null;
+    model: string;
+    recordCount: number;
+    returnedCount: number;
+    latencyMs: number;
+    costUsd: number;
+    errorCode?: string | null;
+  }>;
+}) {
+  if (!params.calls.length) return;
+  const trimmedPricingVersion = params.pricingVersion ? String(params.pricingVersion).trim() : null;
+
+  await params.client.bookRerankCall.createMany({
+    data: params.calls.map((call) => ({
+      source: String(call.source || "").trim() || "chat",
+      bookId: call.bookId ? String(call.bookId).trim() : null,
+      threadId: call.threadId ? String(call.threadId).trim() : null,
+      turnMetricId: call.turnMetricId ? String(call.turnMetricId).trim() : null,
+      model: String(call.model || "").trim(),
+      recordCount: Math.max(0, Math.round(Number(call.recordCount || 0))),
+      returnedCount: Math.max(0, Math.round(Number(call.returnedCount || 0))),
+      latencyMs: Math.max(0, Math.round(Number(call.latencyMs || 0))),
+      costUsd: Math.max(0, Number(call.costUsd || 0)),
+      pricingVersion: trimmedPricingVersion,
+      errorCode: call.errorCode ? String(call.errorCode).trim() : null,
+    })),
   });
 }
 

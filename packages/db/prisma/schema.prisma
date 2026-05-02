@@ -119,6 +119,20 @@ model Book {
   analysisPromptTokens      Int               @default(0)
   analysisCompletionTokens  Int               @default(0)
   analysisTotalTokens       Int               @default(0)
+  // Subset of analysisPromptTokens that hit Vertex implicit/explicit cache.
+  // Cached tokens are billed at 10% of normal input price (90% off). Lets us
+  // measure cost benefit of repeated system prompts in the analysis pipeline.
+  analysisCachedInputTokens Int               @default(0)
+  // "Thinking" tokens for Gemini 2.5+/3.x thinking models. Billed as output
+  // tokens but invisible in the final response. Tracking separately lets us
+  // see how much "internal reasoning" the worker LLM consumed.
+  analysisThoughtsTokens    Int               @default(0)
+  // Aggregated cost in USD across the whole analysis run (chat + embedding).
+  // Mirrors `BookAnalysisRun.{llmCostUsd,embeddingCostUsd,totalCostUsd}` for
+  // fast queries that don't need a join.
+  analysisChatCostUsd       Float             @default(0)
+  analysisEmbeddingCostUsd  Float             @default(0)
+  analysisTotalCostUsd      Float             @default(0)
   analysisChapterStatsJson  Json              @default("[]")
   analysisRequestedAt       DateTime?
   analysisStartedAt         DateTime?
@@ -160,6 +174,7 @@ model Book {
   evidenceFragmentEmbeddings BookEvidenceFragmentEmbedding[]
   chatThreads                BookChatThread[]
   chatTurnMetrics            BookChatTurnMetric[]
+  rerankCalls                BookRerankCall[]
 
   @@index([ownerUserId, createdAt])
   @@index([isPublic, createdAt])
@@ -480,6 +495,7 @@ model BookChatThread {
   owner       User                    @relation(fields: [ownerUserId], references: [id], onDelete: Cascade)
   messages    BookChatThreadMessage[]
   turnMetrics BookChatTurnMetric[]
+  rerankCalls BookRerankCall[]
 
   @@index([bookId, updatedAt])
   @@index([ownerUserId, updatedAt])
@@ -556,6 +572,14 @@ model BookAnalysisRun {
   llmPromptTokens         Int                   @default(0)
   llmCompletionTokens     Int                   @default(0)
   llmTotalTokens          Int                   @default(0)
+  // Vertex cache hit subset of llmPromptTokens (90% discount). See Book model
+  // for context. Mirrored from BookStageExecution / BookAnalysisChapterMetric
+  // sums when finalizing a run.
+  llmCachedInputTokens    Int                   @default(0)
+  // Reasoning tokens consumed by the chat model during this run. Already
+  // billed as output tokens by Vertex; tracked separately for visibility into
+  // "thinking ratio" of analysis.
+  llmThoughtsTokens       Int                   @default(0)
   embeddingInputTokens    Int                   @default(0)
   embeddingTotalTokens    Int                   @default(0)
   llmCostUsd              Float                 @default(0)
@@ -601,6 +625,11 @@ model BookStageExecution {
   promptTokens         Int                  @default(0)
   completionTokens     Int                  @default(0)
   totalTokens          Int                  @default(0)
+  // Vertex cache hit subset of promptTokens (90% discount). Mirrors the
+  // chat-side BookChatTurnMetric.modelCachedInputTokens semantics.
+  cachedInputTokens    Int                  @default(0)
+  // Reasoning tokens consumed during this stage (Gemini 2.5+/3.x).
+  thoughtsTokens       Int                  @default(0)
   embeddingInputTokens Int                  @default(0)
   embeddingTotalTokens Int                  @default(0)
   llmCostUsd           Float                @default(0)
@@ -642,8 +671,18 @@ model BookAnalysisChapterMetric {
   promptTokens         Int                  @default(0)
   completionTokens     Int                  @default(0)
   totalTokens          Int                  @default(0)
+  // Vertex cache hit subset of promptTokens (90% discount).
+  cachedInputTokens    Int                  @default(0)
+  // Reasoning tokens consumed for this chapter+stage (Gemini 2.5+/3.x).
+  thoughtsTokens       Int                  @default(0)
   embeddingInputTokens Int                  @default(0)
   embeddingTotalTokens Int                  @default(0)
+  // Per-chapter cost breakdown so unit-economy queries can roll up by
+  // chapter, stage, or run without re-deriving from token counts and pricing.
+  // Computed by the worker at write time using the run's pricingVersion.
+  llmCostUsd           Float                @default(0)
+  embeddingCostUsd     Float                @default(0)
+  totalCostUsd         Float                @default(0)
   elapsedMs            Int                  @default(0)
   retryCount           Int                  @default(0)
   llmCalls             Int                  @default(0)
@@ -693,6 +732,14 @@ model BookChatTurnMetric {
   embeddingInputTokens   Int      @default(0)
   chatCostUsd            Float    @default(0)
   embeddingCostUsd       Float    @default(0)
+  // Aggregate rerank cost for this turn. Vertex Ranking API does not return
+  // tokens, so we meter by call count × records (and surface granular rows
+  // via BookRerankCall). Formula: $1 per 1k queries × rerankCallCount.
+  rerankCallCount        Int      @default(0)
+  rerankRecordCount      Int      @default(0)
+  rerankReturnedCount    Int      @default(0)
+  rerankLatencyMs        Int      @default(0)
+  rerankCostUsd          Float    @default(0)
   totalCostUsd           Float    @default(0)
   totalLatencyMs         Int      @default(0)
   answerLengthChars      Int      @default(0)
@@ -702,10 +749,11 @@ model BookChatTurnMetric {
   createdAt              DateTime @default(now())
   updatedAt              DateTime @updatedAt
 
-  book     Book                  @relation(fields: [bookId], references: [id], onDelete: Cascade)
-  thread   BookChatThread        @relation(fields: [threadId], references: [id], onDelete: Cascade)
-  message  BookChatThreadMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
-  toolRuns BookChatToolRun[]
+  book        Book                  @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  thread      BookChatThread        @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  message     BookChatThreadMessage @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  toolRuns    BookChatToolRun[]
+  rerankCalls BookRerankCall[]
 
   @@index([bookId, createdAt])
   @@index([threadId, createdAt])
@@ -733,6 +781,42 @@ model BookChatToolRun {
   @@unique([turnMetricId, orderIndex])
   @@index([toolName, createdAt])
   @@index([turnMetricId, createdAt])
+}
+
+// Granular per-call record of every Vertex Ranking API invocation.
+// Vertex Ranking does not return tokens (response only has scores), so we
+// meter by call count × records and price by `rerankPer1KQueriesUsd` —
+// $1 per 1k queries by Vertex's published rate. Both chat retrieval and
+// admin book-search go through the same wrapper and write here, so we have
+// full call-volume visibility for cost-budget alerts and SLO tracking.
+//
+// `bookId` and `threadId` are nullable so admin search (which spans the
+// whole catalog and has no associated chat thread) can still produce a row.
+// `turnMetricId` lets us roll up per-turn cost via a simple join even when
+// the aggregate columns on BookChatTurnMetric are stale.
+model BookRerankCall {
+  id             String   @id @default(cuid())
+  source         String   // "chat" | "admin" | other future surfaces
+  bookId         String?
+  threadId       String?
+  turnMetricId   String?
+  model          String
+  recordCount    Int      @default(0)
+  returnedCount  Int      @default(0)
+  latencyMs      Int      @default(0)
+  costUsd        Float    @default(0)
+  pricingVersion String?
+  errorCode      String?
+  createdAt      DateTime @default(now())
+
+  book       Book?               @relation(fields: [bookId], references: [id], onDelete: Cascade)
+  thread     BookChatThread?     @relation(fields: [threadId], references: [id], onDelete: Cascade)
+  turnMetric BookChatTurnMetric? @relation(fields: [turnMetricId], references: [id], onDelete: Cascade)
+
+  @@index([bookId, createdAt])
+  @@index([threadId, createdAt])
+  @@index([turnMetricId])
+  @@index([source, createdAt])
 }
 
 model Outbox {

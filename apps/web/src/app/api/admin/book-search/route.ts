@@ -1,5 +1,11 @@
 import { createVertexClient } from "@remarka/ai";
-import { prisma } from "@remarka/db";
+import {
+  computeRerankCostUsd,
+  prisma,
+  recordBookRerankCalls,
+  resolvePricingVersion,
+  resolveTokenPricing,
+} from "@remarka/db";
 import { NextResponse } from "next/server";
 import { requireAdminUser } from "@/lib/adminAuth";
 
@@ -293,6 +299,8 @@ async function rerankHits<
   hits: T[];
   limit: number;
   toRecord: (hit: T) => { id: string; title?: string; content: string };
+  /** Book under search — used to attribute the rerank call in BookRerankCall. */
+  bookId: string;
 }): Promise<{ hits: T[]; meta: { enabled: boolean; used: boolean; model: string | null; candidateCount: number; returned: number; error?: string } }> {
   const client = createVertexClient();
   if (!params.enabled || !params.query || !params.hits.length || !client.config.rankingEnabled) {
@@ -319,6 +327,13 @@ async function rerankHits<
     };
   });
 
+  const startedAt = Date.now();
+  const pricing = resolveTokenPricing({
+    chatModel: "",
+    embeddingModel: "",
+  });
+  const pricingVersion = resolvePricingVersion();
+
   try {
     const ranked = await client.ranking.rank({
       query: params.query,
@@ -326,6 +341,7 @@ async function rerankHits<
       topN: params.limit,
       ignoreRecordDetailsInResponse: true,
     });
+    const latencyMs = Date.now() - startedAt;
     const byId = new Map(candidates.map((hit) => [hit.id, hit]));
     const returned: T[] = [];
     for (const record of ranked.records) {
@@ -342,6 +358,38 @@ async function rerankHits<
       if (returnedIds.has(hit.id)) continue;
       returned.push(hit);
     }
+
+    // Audit trail. Admin search has no chat thread / turn metric, so those
+    // FK fields stay null. `bookId` is always present (route validates it).
+    if (ranked.enabled) {
+      const costUsd = computeRerankCostUsd({
+        callCount: 1,
+        rerankPer1KQueriesUsd: pricing.rerankPer1KQueriesUsd,
+      });
+      try {
+        await recordBookRerankCalls({
+          client: prisma,
+          pricingVersion,
+          calls: [
+            {
+              source: "admin",
+              bookId: params.bookId,
+              threadId: null,
+              turnMetricId: null,
+              model: ranked.model,
+              recordCount: ranked.recordCount,
+              returnedCount: ranked.returnedCount,
+              latencyMs,
+              costUsd,
+              errorCode: null,
+            },
+          ],
+        });
+      } catch (recordError) {
+        console.warn("[admin-book-search] failed to record rerank call", recordError);
+      }
+    }
+
     return {
       hits: returned.slice(0, params.limit),
       meta: {
@@ -353,7 +401,34 @@ async function rerankHits<
       },
     };
   } catch (error) {
+    const latencyMs = Date.now() - startedAt;
     const sorted = params.hits.sort((a, b) => b.score - a.score).slice(0, params.limit);
+    const errorMessage = error instanceof Error ? error.message : "Vertex rerank failed";
+
+    // Failed call still hit the API — record it with errorCode and zero cost.
+    try {
+      await recordBookRerankCalls({
+        client: prisma,
+        pricingVersion,
+        calls: [
+          {
+            source: "admin",
+            bookId: params.bookId,
+            threadId: null,
+            turnMetricId: null,
+            model: client.config.rankingModel || "",
+            recordCount: candidates.length,
+            returnedCount: 0,
+            latencyMs,
+            costUsd: 0,
+            errorCode: errorMessage.slice(0, 200),
+          },
+        ],
+      });
+    } catch (recordError) {
+      console.warn("[admin-book-search] failed to record failed rerank call", recordError);
+    }
+
     return {
       hits: sorted,
       meta: {
@@ -362,7 +437,7 @@ async function rerankHits<
         model: client.config.rankingModel || null,
         candidateCount: params.hits.length,
         returned: sorted.length,
-        error: error instanceof Error ? error.message : "Vertex rerank failed",
+        error: errorMessage,
       },
     };
   }
@@ -877,6 +952,7 @@ export async function GET(request: Request) {
     query: q,
     hits: await attachScenesToParagraphs(bookId, Array.from(paragraphById.values())),
     limit,
+    bookId,
     toRecord: (hit) => ({
       id: hit.id,
       title: `Глава ${hit.chapterOrderIndex}, параграф ${hit.paragraphIndex}`,
@@ -888,6 +964,7 @@ export async function GET(request: Request) {
     query: q,
     hits: Array.from(sceneById.values()),
     limit,
+    bookId,
     toRecord: (hit) => ({
       id: hit.id,
       title: hit.sceneCard || `Глава ${hit.chapterOrderIndex}, сцена ${hit.sceneIndex}`,
@@ -899,6 +976,7 @@ export async function GET(request: Request) {
     query: q,
     hits: Array.from(fragmentById.values()),
     limit,
+    bookId,
     toRecord: (hit) => ({
       id: hit.id,
       title: `Глава ${hit.chapterOrderIndex}, ${hit.fragmentType}, p${hit.paragraphStart}-${hit.paragraphEnd}`,

@@ -1,15 +1,20 @@
 import { createVertexClient } from "@remarka/ai";
 import { createVertex } from "@ai-sdk/google-vertex";
 import {
+  computeEmbeddingCostUsd,
+  computeLlmCostUsd,
+  computeRerankCostUsd,
   createArtifactBlobStoreFromEnv,
   createNpzPrismaAdapter,
   putArtifactPayload,
+  recordBookRerankCalls,
   replaceBookChatToolRuns,
   resolveBookTextCorpus,
   resolvePricingVersion,
   upsertBookChatTurnMetric,
   prisma as basePrisma,
   type BlobStore,
+  type TokenPricing,
 } from "@remarka/db";
 import type { Prisma } from "@prisma/client";
 import { generateText, stepCountIs, streamText, tool, type LanguageModelUsage } from "ai";
@@ -158,6 +163,17 @@ export type ChatMetrics = {
   embeddingInputTokens: number;
   chatCostUsd: number;
   embeddingCostUsd: number;
+  /** Aggregate Vertex Ranking cost for this turn ($1 per 1k queries × callCount). */
+  rerankCostUsd: number;
+  /** Number of Vertex Ranking calls fired during this turn (incl. failures). */
+  rerankCallCount: number;
+  /** Total records sent across all rerank calls in this turn. */
+  rerankRecordCount: number;
+  /** Total records returned by Vertex Ranking across all calls in this turn. */
+  rerankReturnedCount: number;
+  /** Wall-time spent on rerank calls (sum across all invocations). */
+  rerankLatencyMs: number;
+  /** Sum of chat + embedding + rerank cost in USD for this turn. */
   totalCostUsd: number;
   totalCostEur: number;
   totalCostRub: number;
@@ -170,9 +186,22 @@ export type ChatMetrics = {
     chatInputPer1MUsd: number;
     chatOutputPer1MUsd: number;
     embeddingInputPer1MUsd: number;
+    rerankPer1KQueriesUsd: number;
+    cacheDiscountFactor: number;
     usdToEur: number;
     eurToRub: number;
   };
+};
+
+/** One Vertex Ranking API invocation extracted from a turn's toolRuns. */
+export type ChatRerankCallSummary = {
+  source: "chat";
+  model: string;
+  recordCount: number;
+  returnedCount: number;
+  latencyMs: number;
+  costUsd: number;
+  errorCode: string | null;
 };
 
 export type BookChatAnswer = {
@@ -1305,6 +1334,48 @@ function sumEmbeddingInputTokens(toolRuns: ChatToolRun[]): number {
   }, 0);
 }
 
+/**
+ * Extract Vertex Ranking invocation summaries from a turn's toolRuns. Each
+ * search-tool run that actually fired a rerank (rankingEnabled=true and we
+ * had records) emits one entry. Skipped invocations (disabled or empty
+ * input) are NOT counted — they cost nothing.
+ *
+ * Failed invocations (used=false with `error` set) ARE counted because the
+ * API call still hit Vertex. They're surfaced with `errorCode` so the
+ * granular `BookRerankCall` rows preserve the audit trail.
+ */
+export function extractChatRerankCalls(
+  toolRuns: ChatToolRun[],
+  pricing: Pick<TokenPricing, "rerankPer1KQueriesUsd">,
+): ChatRerankCallSummary[] {
+  const out: ChatRerankCallSummary[] = [];
+  for (const run of toolRuns) {
+    const meta = asRecord(run.resultMeta.rerank);
+    if (!meta) continue;
+    if (!meta.enabled) continue;
+    const candidateCount = Math.max(0, Math.round(Number(meta.candidateCount || 0)));
+    const used = Boolean(meta.used);
+    const errorRaw = typeof meta.error === "string" ? String(meta.error).trim() : "";
+    // No records sent at all → nothing was actually billed.
+    if (!used && !errorRaw && candidateCount === 0) continue;
+    const errorCode = used ? null : errorRaw || "rerank_failed";
+    const callCount = used || errorRaw ? 1 : 0;
+    if (callCount === 0) continue;
+    out.push({
+      source: "chat",
+      model: String(meta.model || "").trim(),
+      recordCount: candidateCount,
+      returnedCount: Math.max(0, Math.round(Number(meta.returned || 0))),
+      latencyMs: Math.max(0, Math.round(Number(meta.latencyMs || 0))),
+      // Vertex bills per query (one rerank call). recordCount/returnedCount
+      // are visibility-only and don't affect price.
+      costUsd: used ? (1 / 1000) * pricing.rerankPer1KQueriesUsd : 0,
+      errorCode,
+    });
+  }
+  return out;
+}
+
 function sumInternalChatCostUsd(toolRuns: ChatToolRun[]): number {
   return toolRuns.reduce((total, run) => {
     const value = asOptionalNumber(run.resultMeta.chatCostUsd);
@@ -1377,18 +1448,36 @@ function buildChatMetrics(params: {
     eurToRub: currencyRates.eurToRub,
   };
 
-  // Apply Vertex 90% discount to cached input tokens. cachedInputTokens is a
-  // subset of usage.inputTokens (already counted there), so we split the input
-  // into "fresh" (full price) and "cached" (10% of full price).
-  const cachedInputTokens = Math.min(usage.cachedInputTokens, usage.inputTokens);
-  const freshInputTokens = Math.max(0, usage.inputTokens - cachedInputTokens);
-  const chatCostUsd =
-    (freshInputTokens / 1_000_000) * pricing.chatInputPer1MUsd +
-    (cachedInputTokens / 1_000_000) * pricing.chatInputPer1MUsd * 0.1 +
-    (usage.outputTokens / 1_000_000) * pricing.chatOutputPer1MUsd;
-  const embeddingCostUsd = (embeddingInputTokens / 1_000_000) * pricing.embeddingInputPer1MUsd;
-  const totalCostUsd = chatCostUsd + embeddingCostUsd + internalChatCostUsd;
+  // Vercel AI SDK rolls reasoning into `usage.outputTokens`, so passing it
+  // straight through is correct — no need to add `thoughtsTokens` again.
+  const chatCostUsd = computeLlmCostUsd({
+    inputTokens: usage.inputTokens,
+    cachedInputTokens: usage.cachedInputTokens,
+    outputBilledTokens: usage.outputTokens,
+    pricing,
+  });
+  const embeddingCostUsd = computeEmbeddingCostUsd({
+    embeddingInputTokens,
+    pricing,
+  });
+
+  // Rerank metering: extract one summary per Vertex Ranking call from this
+  // turn's toolRuns and roll up into per-turn aggregates. Granular rows are
+  // persisted to BookRerankCall by `persistNormalizedChatMetrics`.
+  const rerankCalls = extractChatRerankCalls(params.toolRuns, pricing);
+  const rerankCallCount = rerankCalls.length;
+  const rerankRecordCount = rerankCalls.reduce((sum, call) => sum + call.recordCount, 0);
+  const rerankReturnedCount = rerankCalls.reduce((sum, call) => sum + call.returnedCount, 0);
+  const rerankLatencyMs = rerankCalls.reduce((sum, call) => sum + call.latencyMs, 0);
+  const successfulRerankCalls = rerankCalls.filter((call) => !call.errorCode).length;
+  const rerankCostUsd = computeRerankCostUsd({
+    callCount: successfulRerankCalls,
+    rerankPer1KQueriesUsd: pricing.rerankPer1KQueriesUsd,
+  });
+
+  const totalCostUsd = chatCostUsd + embeddingCostUsd + rerankCostUsd + internalChatCostUsd;
   const converted = convertUsd(totalCostUsd, currencyRates);
+  const cachedInputTokens = Math.min(usage.cachedInputTokens, usage.inputTokens);
 
   return {
     chatModel: String(params.chatModel || "").trim(),
@@ -1406,6 +1495,11 @@ function buildChatMetrics(params: {
     embeddingInputTokens: Math.round(embeddingInputTokens),
     chatCostUsd: roundMetric(chatCostUsd),
     embeddingCostUsd: roundMetric(embeddingCostUsd),
+    rerankCostUsd: roundMetric(rerankCostUsd),
+    rerankCallCount,
+    rerankRecordCount,
+    rerankReturnedCount,
+    rerankLatencyMs,
     totalCostUsd: roundMetric(totalCostUsd),
     totalCostEur: roundMetric(converted.eur),
     totalCostRub: roundMetric(converted.rub, 6),
@@ -1532,6 +1626,11 @@ async function persistNormalizedChatMetrics(params: {
     embeddingInputTokens: params.metrics.embeddingInputTokens,
     chatCostUsd: params.metrics.chatCostUsd,
     embeddingCostUsd: params.metrics.embeddingCostUsd,
+    rerankCallCount: params.metrics.rerankCallCount,
+    rerankRecordCount: params.metrics.rerankRecordCount,
+    rerankReturnedCount: params.metrics.rerankReturnedCount,
+    rerankLatencyMs: params.metrics.rerankLatencyMs,
+    rerankCostUsd: params.metrics.rerankCostUsd,
     totalCostUsd: params.metrics.totalCostUsd,
     totalLatencyMs: params.metrics.totalLatencyMs,
     answerLengthChars: params.metrics.answerLengthChars,
@@ -1539,6 +1638,31 @@ async function persistNormalizedChatMetrics(params: {
     fallbackUsed: params.metrics.fallbackUsed,
     fallbackKind: params.metrics.fallbackKind,
   });
+
+  // Granular per-call rerank audit trail. Aggregates above give fast turn-level
+  // rollups; this table is the source of truth for cost reconciliation,
+  // SLO tracking, and per-call latency analysis.
+  const rerankCalls = extractChatRerankCalls(params.toolRuns, {
+    rerankPer1KQueriesUsd: params.metrics.pricing.rerankPer1KQueriesUsd,
+  });
+  if (rerankCalls.length > 0) {
+    await recordBookRerankCalls({
+      client: prisma,
+      pricingVersion: params.metrics.pricingVersion,
+      calls: rerankCalls.map((call) => ({
+        source: call.source,
+        bookId: params.bookId,
+        threadId: params.threadId,
+        turnMetricId: turnMetric.id,
+        model: call.model,
+        recordCount: call.recordCount,
+        returnedCount: call.returnedCount,
+        latencyMs: call.latencyMs,
+        costUsd: call.costUsd,
+        errorCode: call.errorCode,
+      })),
+    });
+  }
 
   const persistRawPayloads = readBoolEnv("BOOK_CHAT_TOOL_DEBUG_PAYLOADS_ENABLED", false);
   const toolRows: Array<{
@@ -7487,6 +7611,8 @@ function parseStoredChatMetrics(value: unknown): ChatMetrics | null {
     chatInputPer1MUsd: Math.max(0, readNumber(pricingRow.chatInputPer1MUsd)),
     chatOutputPer1MUsd: Math.max(0, readNumber(pricingRow.chatOutputPer1MUsd)),
     embeddingInputPer1MUsd: Math.max(0, readNumber(pricingRow.embeddingInputPer1MUsd)),
+    rerankPer1KQueriesUsd: Math.max(0, readNumber(pricingRow.rerankPer1KQueriesUsd)),
+    cacheDiscountFactor: Math.min(1, Math.max(0, readNumber(pricingRow.cacheDiscountFactor))),
     usdToEur: Math.max(0, readNumber(pricingRow.usdToEur)),
     eurToRub: Math.max(0, readNumber(pricingRow.eurToRub)),
   };
@@ -7507,6 +7633,11 @@ function parseStoredChatMetrics(value: unknown): ChatMetrics | null {
     embeddingInputTokens: Math.max(0, Math.round(readNumber(row.embeddingInputTokens))),
     chatCostUsd: Math.max(0, readNumber(row.chatCostUsd)),
     embeddingCostUsd: Math.max(0, readNumber(row.embeddingCostUsd)),
+    rerankCostUsd: Math.max(0, readNumber(row.rerankCostUsd)),
+    rerankCallCount: Math.max(0, Math.round(readNumber(row.rerankCallCount))),
+    rerankRecordCount: Math.max(0, Math.round(readNumber(row.rerankRecordCount))),
+    rerankReturnedCount: Math.max(0, Math.round(readNumber(row.rerankReturnedCount))),
+    rerankLatencyMs: Math.max(0, Math.round(readNumber(row.rerankLatencyMs))),
     totalCostUsd: Math.max(0, readNumber(row.totalCostUsd)),
     totalCostEur: Math.max(0, readNumber(row.totalCostEur)),
     totalCostRub: Math.max(0, readNumber(row.totalCostRub)),
@@ -7558,9 +7689,16 @@ function parseNormalizedTurnMetric(
         modelInputTokens: number;
         modelOutputTokens: number;
         modelTotalTokens: number;
+        modelCachedInputTokens?: number;
+        modelThoughtsTokens?: number;
         embeddingInputTokens: number;
         chatCostUsd: number;
         embeddingCostUsd: number;
+        rerankCallCount?: number;
+        rerankRecordCount?: number;
+        rerankReturnedCount?: number;
+        rerankLatencyMs?: number;
+        rerankCostUsd?: number;
         totalCostUsd: number;
         totalLatencyMs: number;
         answerLengthChars: number;
@@ -7591,9 +7729,16 @@ function parseNormalizedTurnMetric(
     modelInputTokens: value.modelInputTokens,
     modelOutputTokens: value.modelOutputTokens,
     modelTotalTokens: value.modelTotalTokens,
+    modelCachedInputTokens: value.modelCachedInputTokens ?? 0,
+    modelThoughtsTokens: value.modelThoughtsTokens ?? 0,
     embeddingInputTokens: value.embeddingInputTokens,
     chatCostUsd: value.chatCostUsd,
     embeddingCostUsd: value.embeddingCostUsd,
+    rerankCallCount: value.rerankCallCount ?? 0,
+    rerankRecordCount: value.rerankRecordCount ?? 0,
+    rerankReturnedCount: value.rerankReturnedCount ?? 0,
+    rerankLatencyMs: value.rerankLatencyMs ?? 0,
+    rerankCostUsd: value.rerankCostUsd ?? 0,
     totalCostUsd: value.totalCostUsd,
     totalCostEur: converted.eur,
     totalCostRub: converted.rub,
@@ -7630,9 +7775,16 @@ function toMessageDTO(row: {
         modelInputTokens: number;
         modelOutputTokens: number;
         modelTotalTokens: number;
+        modelCachedInputTokens?: number;
+        modelThoughtsTokens?: number;
         embeddingInputTokens: number;
         chatCostUsd: number;
         embeddingCostUsd: number;
+        rerankCallCount?: number;
+        rerankRecordCount?: number;
+        rerankReturnedCount?: number;
+        rerankLatencyMs?: number;
+        rerankCostUsd?: number;
         totalCostUsd: number;
         totalLatencyMs: number;
         answerLengthChars: number;
@@ -7847,9 +7999,16 @@ export async function listBookChatMessages(params: {
           modelInputTokens: true,
           modelOutputTokens: true,
           modelTotalTokens: true,
+          modelCachedInputTokens: true,
+          modelThoughtsTokens: true,
           embeddingInputTokens: true,
           chatCostUsd: true,
           embeddingCostUsd: true,
+          rerankCallCount: true,
+          rerankRecordCount: true,
+          rerankReturnedCount: true,
+          rerankLatencyMs: true,
+          rerankCostUsd: true,
           totalCostUsd: true,
           totalLatencyMs: true,
           answerLengthChars: true,

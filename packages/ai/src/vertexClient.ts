@@ -64,6 +64,13 @@ type VertexUsageMetadata = {
   promptTokenCount?: number;
   candidatesTokenCount?: number;
   totalTokenCount?: number;
+  // Subset of `promptTokenCount` served from Vertex implicit/explicit cache
+  // (90% billing discount). Only present on cache-aware models.
+  cachedContentTokenCount?: number;
+  // "Thinking" tokens consumed by Gemini 2.5+/3.x reasoning models. Billed
+  // as output tokens but not part of `candidatesTokenCount` — they live in
+  // a separate counter so callers can see the reasoning footprint.
+  thoughtsTokenCount?: number;
 };
 
 type VertexGenerateContentResponse = {
@@ -435,6 +442,11 @@ function mapToOpenAiLikeResponse(payload: VertexGenerateContentResponse) {
       prompt_tokens: Number(usage.promptTokenCount || 0),
       completion_tokens: Number(usage.candidatesTokenCount || 0),
       total_tokens: Number(usage.totalTokenCount || 0),
+      // Cached + thoughts are passed through so unit-economy code on the
+      // worker side can apply the 90% cache discount and count thinking
+      // tokens at output price.
+      cached_input_tokens: Number(usage.cachedContentTokenCount || 0),
+      thoughts_tokens: Number(usage.thoughtsTokenCount || 0),
     },
   };
 }
@@ -454,6 +466,8 @@ function usageFromPayload(payload: VertexGenerateContentResponse) {
     prompt_tokens: Number(usage.promptTokenCount || 0),
     completion_tokens: Number(usage.candidatesTokenCount || 0),
     total_tokens: Number(usage.totalTokenCount || 0),
+    cached_input_tokens: Number(usage.cachedContentTokenCount || 0),
+    thoughts_tokens: Number(usage.thoughtsTokenCount || 0),
   };
 }
 
@@ -578,6 +592,8 @@ export function createVertexClient(options: Partial<VertexClientOptions> = {}) {
       prompt_tokens: number;
       completion_tokens: number;
       total_tokens: number;
+      cached_input_tokens: number;
+      thoughts_tokens: number;
     };
   }> {
     ensureVertexApiKey(config);
@@ -678,6 +694,8 @@ export function createVertexClient(options: Partial<VertexClientOptions> = {}) {
         prompt_tokens: 0,
         completion_tokens: 0,
         total_tokens: 0,
+        cached_input_tokens: 0,
+        thoughts_tokens: 0,
       };
 
       const flushEventBlock = async (eventBlock: string) => {
@@ -854,11 +872,25 @@ export function createVertexClient(options: Partial<VertexClientOptions> = {}) {
   async function rankRecords(request: VertexRankingRequest): Promise<{
     records: VertexRankingResponseRecord[];
     model: string;
+    // Number of input records actually sent to Vertex Ranking after dedupe
+    // and the 200-record cap. Used for cost metering — Vertex Ranking is
+    // priced per 1k queries, but we also want visibility into batch sizes.
+    recordCount: number;
+    // Number of records Vertex returned in the response (≤ topN). Useful
+    // sanity-check that the rerank actually fired.
+    returnedCount: number;
+    // Whether the rerank was actually performed. False when ranking is
+    // disabled by config or the input was empty/invalid — callers use this
+    // to skip metering writes.
+    enabled: boolean;
   }> {
     if (!config.rankingEnabled) {
       return {
         records: [],
         model: String(request.model || config.rankingModel),
+        recordCount: 0,
+        returnedCount: 0,
+        enabled: false,
       };
     }
 
@@ -878,6 +910,9 @@ export function createVertexClient(options: Partial<VertexClientOptions> = {}) {
       return {
         records: [],
         model: String(request.model || config.rankingModel),
+        recordCount: 0,
+        returnedCount: 0,
+        enabled: false,
       };
     }
 
@@ -920,18 +955,23 @@ export function createVertexClient(options: Partial<VertexClientOptions> = {}) {
       }>;
     };
 
+    const responseRecords = Array.isArray(parsed.records)
+      ? parsed.records
+          .map((record) => ({
+            id: String(record.id || "").trim(),
+            title: record.title ? String(record.title) : undefined,
+            content: record.content ? String(record.content) : undefined,
+            score: Number(record.score || 0),
+          }))
+          .filter((record) => record.id && Number.isFinite(record.score))
+      : [];
+
     return {
-      records: Array.isArray(parsed.records)
-        ? parsed.records
-            .map((record) => ({
-              id: String(record.id || "").trim(),
-              title: record.title ? String(record.title) : undefined,
-              content: record.content ? String(record.content) : undefined,
-              score: Number(record.score || 0),
-            }))
-            .filter((record) => record.id && Number.isFinite(record.score))
-        : [],
+      records: responseRecords,
       model,
+      recordCount: records.length,
+      returnedCount: responseRecords.length,
+      enabled: true,
     };
   }
 
