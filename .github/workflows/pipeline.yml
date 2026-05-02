@@ -271,6 +271,20 @@ jobs:
             echo "::error::DATABASE_URL secret is not set in repo settings."
             exit 1
           fi
+          # Local sanity-check on the secret value before shipping. We log
+          # only the protocol prefix (first 11 chars: "postgresql:" / "postgres://"
+          # / mysql:// / mongodb+srv:// etc) so a corrupted value is visible
+          # without leaking credentials.
+          PREFIX=$(printf '%s' "$DATABASE_URL" | head -c 11 | tr -d '\n')
+          echo "DATABASE_URL prefix (first 11 chars): '$PREFIX'"
+          echo "DATABASE_URL length: ${#DATABASE_URL}"
+          case "$DATABASE_URL" in
+            postgresql://*|postgres://*) ;;
+            *)
+              echo "::error::DATABASE_URL secret does not start with postgresql:// or postgres://. Re-set it via gh secret set DATABASE_URL --body '<value>'."
+              exit 1
+              ;;
+          esac
           # Ship the URL to the host as a transient file (avoids leaking
           # via process listing) and load it into the prisma command's
           # environment for the duration of one invocation. The file is
