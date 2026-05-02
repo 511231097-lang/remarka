@@ -29,7 +29,7 @@ import {
   type ReactNode,
 } from "react";
 
-import type { EventDataMap, EventType, UserEvent } from "./types";
+import type { EventType, UserEvent } from "./types";
 
 type AnyHandler = (event: UserEvent) => void;
 type ReconnectHandler = () => void;
@@ -253,9 +253,6 @@ export function useEventReconnect(handler: () => void): void {
     return off;
   }, [onReconnect]);
 }
-
-// Compile-time: ensure EventDataMap is consumed so unused-symbol lints don't fire.
-type _Touch = EventDataMap;
 
 /* ---------------------------------------------------------------------- */
 /*                      SSE wire format parser (fetch)                    */

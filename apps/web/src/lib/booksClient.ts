@@ -11,9 +11,6 @@ import type {
   BookChatMessagesResponseDTO,
   BookChatSessionDTO,
   BookChatSessionsResponseDTO,
-  BookChatStreamEventDTO,
-  BookChatStreamFinalEventDTO,
-  BookChatStreamRequestDTO,
   BookCoreDTO,
   BookLibraryStateDTO,
   BookShowcaseDTO,
@@ -134,8 +131,6 @@ export interface CreateBookInput {
 export type BookAnalyzerState = BookAnalyzerStateDTO;
 export type BookAnalyzerStatusDTO = BookAnalyzerStatusDTOValue;
 
-export type BookChatStreamEvent = BookChatStreamEventDTO;
-
 export async function createBook(input: CreateBookInput): Promise<BookCoreDTO> {
   const formData = new FormData();
   formData.set("file", input.file);
@@ -216,26 +211,6 @@ export async function getBookChatMessages(bookId: string, sessionId: string): Pr
   return Array.isArray(payload?.items) ? payload.items : [];
 }
 
-function parseSseBlock(block: string): { event: string; data: string } | null {
-  const lines = block.split(/\r?\n/g);
-  let event = "message";
-  const dataLines: string[] = [];
-
-  for (const line of lines) {
-    if (line.startsWith("event:")) {
-      event = line.slice("event:".length).trim();
-      continue;
-    }
-    if (line.startsWith("data:")) {
-      dataLines.push(line.slice("data:".length).trimStart());
-    }
-  }
-
-  const data = dataLines.join("\n").trim();
-  if (!data) return null;
-  return { event, data };
-}
-
 /**
  * Send a chat message via the new event-channel POST endpoint.
  *
@@ -300,113 +275,3 @@ export async function abortBookChatMessage(params: {
   return (await response.json()) as { aborted: boolean };
 }
 
-export async function streamBookChatMessage(params: {
-  bookId: string;
-  sessionId: string;
-  input: BookChatStreamRequestDTO;
-  signal?: AbortSignal;
-  onEvent?: (event: BookChatStreamEvent) => void;
-}): Promise<BookChatStreamFinalEventDTO> {
-  const response = await fetch(`/api/books/${params.bookId}/chat/sessions/${params.sessionId}/stream`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-    },
-    body: JSON.stringify(params.input || {}),
-    signal: params.signal,
-  });
-
-  if (!response.ok) {
-    const fallbackMessage = "Не удалось получить потоковый ответ чата";
-    const body = await response.json().catch(() => ({}));
-    throw new Error(String(body?.error || fallbackMessage));
-  }
-
-  const reader = response.body?.getReader();
-  if (!reader) {
-    throw new Error("Поток ответа недоступен");
-  }
-
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-  let finalPayload: BookChatStreamFinalEventDTO | null = null;
-
-  while (true) {
-    const chunk = await reader.read();
-    if (chunk.done) break;
-    buffer += decoder.decode(chunk.value, { stream: true });
-
-    while (true) {
-      const boundaryIndex = buffer.indexOf("\n\n");
-      if (boundaryIndex < 0) break;
-      const block = buffer.slice(0, boundaryIndex);
-      buffer = buffer.slice(boundaryIndex + 2);
-
-      const parsed = parseSseBlock(block);
-      if (!parsed) continue;
-
-      let payload: any;
-      try {
-        payload = JSON.parse(parsed.data);
-      } catch {
-        continue;
-      }
-
-      if (parsed.event === "session") {
-        params.onEvent?.({
-          type: "session",
-          sessionId: String(payload?.sessionId || ""),
-        });
-        continue;
-      }
-
-      if (parsed.event === "token") {
-        params.onEvent?.({
-          type: "token",
-          text: String(payload?.text || ""),
-        });
-        continue;
-      }
-
-      if (parsed.event === "status") {
-        params.onEvent?.({
-          type: "status",
-          text: String(payload?.text || ""),
-        });
-        continue;
-      }
-
-      if (parsed.event === "reasoning") {
-        params.onEvent?.({
-          type: "reasoning",
-          text: String(payload?.text || ""),
-        });
-        continue;
-      }
-
-      if (parsed.event === "error") {
-        const errorMessage = String(payload?.error || "Ошибка stream-ответа");
-        params.onEvent?.({
-          type: "error",
-          error: errorMessage,
-        });
-        throw new Error(errorMessage);
-      }
-
-      if (parsed.event === "final") {
-        finalPayload = payload as BookChatStreamFinalEventDTO;
-        params.onEvent?.({
-          type: "final",
-          final: finalPayload,
-          sessionId: String(finalPayload?.sessionId || ""),
-        });
-      }
-    }
-  }
-
-  if (!finalPayload) {
-    throw new Error("Чат завершился без финального события");
-  }
-
-  return finalPayload;
-}

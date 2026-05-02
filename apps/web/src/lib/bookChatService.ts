@@ -8385,42 +8385,8 @@ export async function runBookChatTurn(params: {
   };
 }
 
-export async function streamBookChatThreadReply(params: {
-  bookId: string;
-  threadId: string;
-  ownerUserId?: string;
-  userText: string;
-  onDelta: (delta: string) => void | Promise<void>;
-  onReasoning?: (delta: string) => void | Promise<void>;
-  onToolCall?: (event: BookChatStreamToolCallEvent) => void | Promise<void>;
-  onToolResult?: (event: BookChatStreamToolResultEvent) => void | Promise<void>;
-  onStatus?: (status: string) => void | Promise<void>;
-}): Promise<{
-  thread: BookChatThreadDTO;
-  userMessage: BookChatMessageDTO;
-  assistantMessage: BookChatMessageDTO;
-}> {
-  const prepared = await prepareBookChatTurn({
-    bookId: params.bookId,
-    threadId: params.threadId,
-    ownerUserId: params.ownerUserId,
-    userText: params.userText,
-  });
-
-  const completed = await runBookChatTurn({
-    bookId: params.bookId,
-    threadId: params.threadId,
-    ownerUserId: params.ownerUserId,
-    onDelta: params.onDelta,
-    onReasoning: params.onReasoning,
-    onToolCall: params.onToolCall,
-    onToolResult: params.onToolResult,
-    onStatus: params.onStatus,
-  });
-
-  return {
-    thread: completed.thread,
-    userMessage: prepared.userMessage,
-    assistantMessage: completed.assistantMessage,
-  };
-}
+// streamBookChatThreadReply was removed when the legacy per-message stream
+// endpoint was retired. New code paths call prepareBookChatTurn followed by
+// runBookChatTurn directly — see the POST /messages endpoint for the live
+// example. If you need the combined behavior, compose the two halves in the
+// caller.

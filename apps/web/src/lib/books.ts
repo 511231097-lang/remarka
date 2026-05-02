@@ -438,34 +438,10 @@ export interface BookChatMessagesResponseDTO {
   items: BookChatMessageDTO[];
 }
 
-export interface BookChatStreamRequestDTO {
-  message: string;
-  topK?: number;
-  entryContext?: BookChatEntryContextDTO;
-}
-
-export interface BookChatStreamFinalEventDTO {
-  sessionId: string;
-  messageId: string;
-  answer: string;
-  rawAnswer: string | null;
-  evidence: BookChatEvidenceDTO[];
-  usedSources: string[];
-  confidence: BookChatConfidenceDTO | null;
-  mode: BookChatModeDTO | null;
-  citations: BookChunkCitationDTO[];
-  inlineCitations: BookChatInlineCitationAnchorDTO[];
-  answerItems: BookChatAnswerItemDTO[];
-  referenceResolution: BookChatReferenceResolutionDTO | null;
-}
-
-export interface BookChatStreamEventDTO {
-  type: "session" | "status" | "reasoning" | "token" | "final" | "error";
-  sessionId?: string;
-  text?: string;
-  error?: string;
-  final?: BookChatStreamFinalEventDTO;
-}
+// Legacy stream DTOs (BookChatStreamRequestDTO, BookChatStreamFinalEventDTO,
+// BookChatStreamEventDTO) were removed when the per-message stream endpoint
+// was retired. Chat now flows through the per-user SSE event channel; see
+// apps/web/src/lib/events/types.ts for the new event contract.
 
 type BookWithOwner = Book & {
   owner: Pick<User, "id" | "name" | "email" | "image">;

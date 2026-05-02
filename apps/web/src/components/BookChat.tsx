@@ -34,7 +34,6 @@ import {
   sendBookChatMessage,
 } from "@/lib/booksClient";
 import {
-  useEventChannel,
   useEventReconnect,
   useEventSubscription,
 } from "@/lib/events/EventChannelProvider";
@@ -47,7 +46,6 @@ import {
   type BookChatEvidenceDTO,
   type BookChatMessageDTO,
   type BookChatSessionDTO,
-  type BookChatStreamFinalEventDTO,
   type BookCoreDTO,
 } from "@/lib/books";
 import { useBookChatReadiness } from "@/lib/useBookChatReadiness";
@@ -63,11 +61,9 @@ interface ActiveCite {
   kind: string;
 }
 
-const MAX_STREAM_REASONING_CHARS = 480;
 const USER_MESSAGE_COLLAPSE_CHARS = 900;
 const USER_MESSAGE_PREVIEW_CHARS = 520;
 const USER_MESSAGE_COLLAPSE_LINES = 14;
-const RUSSIAN_REASONING_PLACEHOLDER = "Анализирую запрос, сверяю факты по книге и подбираю релевантные фрагменты.";
 
 const SUGGESTED_PROMPTS_BOOK = [
   "О чём эта книга в одном абзаце?",
@@ -109,47 +105,6 @@ function decl(n: number, forms: [string, string, string]): string {
   if (b > 1 && b < 5) return forms[1];
   if (b === 1) return forms[0];
   return forms[2];
-}
-
-function normalizeReasoningDeltaForDisplay(delta: string): string {
-  const normalized = String(delta || "")
-    .replace(/\s+/g, " ")
-    .trim();
-  if (!normalized) return "";
-
-  const hasCyrillic = /[а-яё]/i.test(normalized);
-  const hasLatin = /[a-z]/i.test(normalized);
-  if (hasCyrillic || !hasLatin) return normalized;
-  return RUSSIAN_REASONING_PLACEHOLDER;
-}
-
-function appendReasoningPreview(current: string | null, delta: string): string {
-  const normalizedDelta = normalizeReasoningDeltaForDisplay(delta);
-  if (!normalizedDelta) return String(current || "");
-
-  const currentNormalized = String(current || "").trim();
-  if (currentNormalized.endsWith(normalizedDelta)) return currentNormalized;
-  const merged = `${currentNormalized} ${normalizedDelta}`.trim();
-  if (merged.length <= MAX_STREAM_REASONING_CHARS) return merged;
-  return `...${merged.slice(-MAX_STREAM_REASONING_CHARS)}`;
-}
-
-function toAssistantMessageFromFinal(final: BookChatStreamFinalEventDTO): UiMessage {
-  return {
-    id: final.messageId || `local:assistant:${Date.now()}`,
-    role: "assistant",
-    content: final.answer || "",
-    rawAnswer: final.rawAnswer || null,
-    evidence: Array.isArray(final.evidence) ? final.evidence : [],
-    usedSources: Array.isArray(final.usedSources) ? final.usedSources : [],
-    confidence: final.confidence || null,
-    mode: final.mode || null,
-    citations: Array.isArray(final.citations) ? final.citations : [],
-    inlineCitations: Array.isArray(final.inlineCitations) ? final.inlineCitations : [],
-    answerItems: Array.isArray(final.answerItems) ? final.answerItems : [],
-    referenceResolution: final.referenceResolution || null,
-    createdAt: new Date().toISOString(),
-  };
 }
 
 function resolveSourceWithFallback(source: BookDetailSource | null, canManage: boolean | undefined): BookDetailSource {
@@ -274,7 +229,6 @@ export function BookChat() {
   // channel doesn't emit reasoning tokens. Kept as `null` to preserve the
   // existing rendering branches without behavior changes.
   const streamReasoning: string | null = null;
-  void useEventChannel; // touched so the import doesn't tree-shake; subscriptions below use the hooks.
 
   const source = resolveBookDetailSource(searchParams.get("from"));
   const resolvedSource = resolveSourceWithFallback(source, book?.canManage);
