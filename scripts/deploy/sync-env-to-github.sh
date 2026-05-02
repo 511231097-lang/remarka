@@ -77,16 +77,21 @@ push_value() {
     return
   fi
 
+  # `gh secret set --body -` reads from stdin but in practice only the first
+  # character makes it through (observed against gh 2.50+ on WSL). Use a temp
+  # file + --body argument instead — this round-trips multi-byte values
+  # cleanly. The temp file is gone before the function returns.
+  local tmpfile
+  tmpfile=$(mktemp)
+  printf '%s' "$value" > "$tmpfile"
   if [[ "$kind" == "secret" ]]; then
-    printf '%s' "$value" | gh secret set "$name" --body -
-    echo "  ✓ secret  $name"
+    gh secret set "$name" --body "$(cat "$tmpfile")" >/dev/null
+    echo "  ✓ secret  $name (${#value} chars)"
   else
-    # gh variable set doesn't accept --body - reliably across versions, so
-    # pass the value as a positional. Variables aren't sensitive so the
-    # exposure in process listing is fine.
-    gh variable set "$name" --body "$value" >/dev/null
+    gh variable set "$name" --body "$(cat "$tmpfile")" >/dev/null
     echo "  ✓ var     $name = $value"
   fi
+  rm -f "$tmpfile"
 }
 
 sync_from_host() {
