@@ -23,6 +23,11 @@ export {
 } from "./bookTextCorpusStore";
 export { convertUsd, readCurrencyRates, resolvePricingVersion, resolveTokenPricing, type CurrencyRates, type TokenPricing } from "./modelPricing";
 export { enqueueOutboxEvent } from "./outbox";
+export {
+  USER_EVENTS_CHANNEL,
+  notifyUserEvent,
+  type NotifyUserEventInput,
+} from "./userEvents";
 export { createNpzPrismaAdapter } from "./npzPrismaAdapter";
 export {
   ensureBookContentVersion,

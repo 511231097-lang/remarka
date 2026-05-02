@@ -10,14 +10,19 @@ import {
   Upload,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { type AnalyzingBookDTO, type BookCardDTO } from "@/lib/books";
 import { listAnalyzingBooks, listBooks, removeBookFromLibrary } from "@/lib/booksClient";
 import { BookPreviewStage } from "@/components/BookGalleryCard";
 import { PaywallModal } from "@/components/PaywallModal";
 import { appendBookDetailSource } from "@/lib/bookDetailNavigation";
+import { useEventReconnect, useEventSubscription } from "@/lib/events/EventChannelProvider";
 
-const ANALYZING_POLL_INTERVAL_MS = 4000;
+// Fallback poll interval — only used as a safety net when the user has
+// analyzing books and the SSE channel hasn't delivered an update for a long
+// time (worker crash mid-run, NOTIFY lost, etc). The primary path is
+// `book.analysis.done` events from the worker.
+const ANALYZING_FALLBACK_REFRESH_MS = 60_000;
 
 type Plan = "free" | "plus";
 
@@ -79,66 +84,74 @@ export function Library() {
     };
   }, []);
 
-  // Polling lifecycle:
-  //  1. On mount, fetch the analyzing list once.
-  //  2. While the list is non-empty, re-fetch every ANALYZING_POLL_INTERVAL_MS ms.
-  //  3. When a book that was previously analyzing disappears from the new list,
-  //     it has finished (success or failure). Refresh the main books list and
-  //     the route so the freshly completed book shows up under "Готовы к чтению".
-  //  4. The interval is torn down on unmount or when the list becomes empty.
+  // Lifecycle:
+  //  1. On mount, fetch the analyzing list once so we render the in-flight
+  //     row immediately without waiting for an event.
+  //  2. The worker emits `book.analysis.done` via Postgres NOTIFY when a
+  //     book transitions to completed/failed. We subscribe via the event
+  //     channel and refetch on each event.
+  //  3. On SSE reconnect, refetch the list defensively (in case any events
+  //     were dropped while the connection was down).
+  //  4. Fallback safety net: if there are still analyzing books and we
+  //     haven't received an event in 60s, refetch anyway. Covers worker
+  //     crashes mid-run, lost NOTIFYs, and any other path where status
+  //     transitions silently in the DB.
+  const refetchAfterCompletion = useCallback(async () => {
+    try {
+      const [items, response] = await Promise.all([
+        listAnalyzingBooks(),
+        listBooks({ scope: "library", page: 1, pageSize: 100 }),
+      ]);
+      previousAnalyzingIdsRef.current = new Set(items.map((item) => item.id));
+      setAnalyzing(items);
+      setMyBooks(response.items);
+    } catch {
+      // non-fatal — UI keeps last known state until next signal
+    }
+    router.refresh();
+  }, [router]);
+
   useEffect(() => {
     let active = true;
-    let timer: ReturnType<typeof setInterval> | null = null;
 
-    async function fetchOnce() {
+    async function fetchInitial() {
       try {
         const items = await listAnalyzingBooks();
         if (!active) return;
-
-        const previousIds = previousAnalyzingIdsRef.current;
-        const currentIds = new Set(items.map((item) => item.id));
-        let completedAny = false;
-        for (const id of previousIds) {
-          if (!currentIds.has(id)) {
-            completedAny = true;
-            break;
-          }
-        }
-        previousAnalyzingIdsRef.current = currentIds;
+        previousAnalyzingIdsRef.current = new Set(items.map((item) => item.id));
         setAnalyzing(items);
-
-        if (completedAny) {
-          try {
-            const response = await listBooks({ scope: "library", page: 1, pageSize: 100 });
-            if (!active) return;
-            setMyBooks(response.items);
-          } catch {
-            // non-fatal; route refresh below also nudges the page
-          }
-          router.refresh();
-        }
-
-        if (items.length === 0 && timer) {
-          clearInterval(timer);
-          timer = null;
-        }
       } catch {
-        // swallow polling errors — keep last known state visible
+        // tolerate — list will refresh on the next event
       }
     }
 
-    void fetchOnce().then(() => {
-      if (!active) return;
-      timer = setInterval(() => {
-        void fetchOnce();
-      }, ANALYZING_POLL_INTERVAL_MS);
-    });
+    void fetchInitial();
 
     return () => {
       active = false;
-      if (timer) clearInterval(timer);
     };
-  }, [router]);
+  }, []);
+
+  useEventSubscription("book.analysis.done", () => {
+    void refetchAfterCompletion();
+  });
+
+  useEventReconnect(() => {
+    if (analyzing.length > 0) {
+      void refetchAfterCompletion();
+    }
+  });
+
+  // Safety-net fallback: if there are analyzing books and no event has
+  // landed for a minute, force a refresh so a stuck worker can't leave the
+  // UI hanging forever.
+  useEffect(() => {
+    if (analyzing.length === 0) return undefined;
+    const timer = setInterval(() => {
+      void refetchAfterCompletion();
+    }, ANALYZING_FALLBACK_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [analyzing.length, refetchAfterCompletion]);
 
   const total = myBooks.length + analyzing.length;
 

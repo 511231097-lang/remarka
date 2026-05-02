@@ -7,6 +7,7 @@ import {
   createBookAnalysisRun,
   createNpzPrismaAdapter,
   ensureBookContentVersion,
+  notifyUserEvent,
   putArtifactPayload,
   resolveBookTextCorpus,
   resolvePricingVersion,
@@ -1829,7 +1830,7 @@ async function persistBookAnalysisProgress(params: {
 }) {
   const aggregate = aggregateStats(params.chapterStats);
   const finishedAtValue = params.finishedAt ?? undefined;
-  await prisma.book.update({
+  const updated = await prisma.book.update({
     where: { id: params.bookId },
     data: {
       analysisState: params.status,
@@ -1845,7 +1846,31 @@ async function persistBookAnalysisProgress(params: {
       ...(params.finishedAt !== undefined ? { analysisFinishedAt: params.finishedAt } : {}),
       ...(finishedAtValue !== undefined ? { analysisCompletedAt: finishedAtValue } : {}),
     },
+    select: { id: true, ownerUserId: true },
   });
+
+  // Realtime nudge to the book owner so the UI can drop the analyzing row
+  // without polling. Best-effort — failure to notify must not fail the run.
+  if (params.status === "completed" || params.status === "failed") {
+    if (updated.ownerUserId) {
+      try {
+        await notifyUserEvent({
+          userId: updated.ownerUserId,
+          type: "book.analysis.done",
+          data: {
+            bookId: params.bookId,
+            status: params.status === "completed" ? "ready" : "failed",
+          },
+        });
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[analysisPipeline] notifyUserEvent failed",
+          err instanceof Error ? err.message : err
+        );
+      }
+    }
+  }
 }
 
 const RUN_STAGE_KEYS = [
