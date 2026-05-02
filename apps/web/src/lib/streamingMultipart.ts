@@ -48,8 +48,14 @@ function sanitizeFileName(fileName: string): string {
       .replace(/\\/g, "/")
       .split("/")
       .pop() || "file.bin";
+  // Preserve Unicode letters/digits (\p{L}, \p{N}) so Cyrillic / non-ASCII
+  // filenames keep their extension after sanitization. The previous
+  // ASCII-only regex collapsed the whole non-ASCII prefix into a single "-",
+  // and the leading-[-.] strip then removed it together with the dot,
+  // leaving e.g. "fb2" without the leading dot — which broke
+  // detectBookFormatFromFileName() for any file with a Russian name.
   const sanitized = base
-    .replace(/[^a-zA-Z0-9._-]+/g, "-")
+    .replace(/[^\p{L}\p{N}._-]+/gu, "-")
     .replace(/-+/g, "-")
     .replace(/^[-.]+|[-.]+$/g, "");
   return sanitized || "file.bin";

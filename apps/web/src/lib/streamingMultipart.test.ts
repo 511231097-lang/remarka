@@ -57,3 +57,37 @@ test("parseStreamingMultipart rejects files above the configured limit", async (
     (error) => error instanceof MultipartUploadError && error.status === 413,
   );
 });
+
+test("parseStreamingMultipart preserves the extension on Cyrillic filenames", async () => {
+  // Regression: the previous ASCII-only sanitizer collapsed the whole
+  // Cyrillic prefix into a single "-", which the leading-[-.] strip then
+  // removed together with the dot, leaving e.g. "fb2" without extension.
+  // detectBookFormatFromFileName() then returned null and uploads of any
+  // Russian-named book were rejected with HTTP 415 "Unsupported format".
+  const formData = new FormData();
+  formData.append(
+    "file",
+    new Blob(["x"], { type: "application/octet-stream" }),
+    "Гарри Поттер и Узник Азкабана.fb2"
+  );
+
+  const request = new Request("http://local.test/upload", {
+    method: "POST",
+    body: formData,
+  });
+
+  const upload = await parseStreamingMultipart(request, {
+    fileFieldNames: ["file"],
+    maxFiles: 1,
+    maxFileSizeBytes: 1024,
+    tempPrefix: "remarka-streaming-multipart-test",
+  });
+
+  try {
+    const sanitized = upload.files[0]?.fileName ?? "";
+    assert.ok(sanitized.endsWith(".fb2"), `expected sanitized name to end with .fb2, got ${sanitized}`);
+    assert.match(sanitized, /[\p{L}]/u, "expected sanitized name to retain at least some letters");
+  } finally {
+    await upload.cleanup();
+  }
+});
