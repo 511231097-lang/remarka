@@ -86,6 +86,16 @@ jobs:
           # NEXT_PUBLIC_* values are inlined into Next.js client bundles at build time.
           NEXT_PUBLIC_CAPTCHA_PROVIDER: ${{ secrets.NEXT_PUBLIC_CAPTCHA_PROVIDER }}
           NEXT_PUBLIC_CAPTCHA_SITE_KEY: ${{ secrets.NEXT_PUBLIC_CAPTCHA_SITE_KEY }}
+          # Server-side secrets validated by runtimeEnv.ts at module load.
+          # `next build` evaluates module-level code (Collecting page data),
+          # which loads middleware → auth → runtimeEnv. The fail-fast guard
+          # throws if these are absent under NODE_ENV=production. They never
+          # leak into client bundles; they exist only for the duration of
+          # the build job. Real runtime values arrive separately via the
+          # rendered web.env file on the VPS (see deploy-web step §6 of
+          # docs/deployment.md).
+          AUTH_SECRET: ${{ secrets.AUTH_SECRET }}
+          INTERNAL_WORKER_TOKEN: ${{ secrets.INTERNAL_WORKER_TOKEN }}
         run: npm run web:build
 
       - name: Build worker (if a build script exists)
