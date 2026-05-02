@@ -4,7 +4,7 @@ import Link from "next/link";
 import { motion } from "motion/react";
 import { Check, MessageCircle, Plus, X } from "lucide-react";
 import { useParams, useSearchParams } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BookPreviewStage } from "./BookGalleryCard";
 import { BookSettings } from "./BookSettings";
 import { addBookToLibrary, getBook, getBookShowcase, removeBookFromLibrary } from "@/lib/booksClient";
@@ -47,17 +47,38 @@ function resolveEyebrow(book: BookCoreDTO): string {
   return `AI-разбор · ${chapters} · ${book.isPublic ? "Публичная" : "Только для вас"}`;
 }
 
-export function BookOverview() {
+export interface BookOverviewProps {
+  /**
+   * SSR-fetched book record. When provided, the component skips the initial
+   * client-side fetch and renders immediately with this data — required for
+   * SEO/crawl correctness on `/book/[bookId]`. Subsequent state changes
+   * (library toggle) still go through the client API.
+   */
+  initialBook?: BookCoreDTO;
+  /**
+   * Optional SSR-fetched showcase (themes/characters/events/quotes). May be
+   * null when no showcase artifact exists yet — in that case the component
+   * renders the «витрина собирается» placeholder, same as today.
+   */
+  initialShowcase?: BookShowcaseDTO | null;
+}
+
+export function BookOverview({ initialBook, initialShowcase }: BookOverviewProps = {}) {
   const params = useParams<{ bookId: string }>();
   const searchParams = useSearchParams();
   const bookId = String(params.bookId || "");
 
-  const [book, setBook] = useState<BookCoreDTO | null>(null);
-  const [showcase, setShowcase] = useState<BookShowcaseDTO | null>(null);
+  const [book, setBook] = useState<BookCoreDTO | null>(initialBook ?? null);
+  const [showcase, setShowcase] = useState<BookShowcaseDTO | null>(initialShowcase ?? null);
   const [showcaseLoading, setShowcaseLoading] = useState(false);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!initialBook);
   const [error, setError] = useState<string | null>(null);
   const [libraryPending, setLibraryPending] = useState(false);
+  // SSR-hydrate skip: при наличии initialBook первый рендер уже отдал
+  // полный HTML — пропускаем initial client-fetch. Любые последующие
+  // bookId-смены (теоретически возможны при SPA-навигации) тригерят
+  // обычный fetch.
+  const skipNextLoadRef = useRef(Boolean(initialBook));
 
   const handleToggleLibrary = async () => {
     if (!book || libraryPending) return;
@@ -113,6 +134,10 @@ export function BookOverview() {
 
   useEffect(() => {
     if (!bookId) return;
+    if (skipNextLoadRef.current) {
+      skipNextLoadRef.current = false;
+      return;
+    }
     let active = true;
     async function load() {
       setLoading(true);

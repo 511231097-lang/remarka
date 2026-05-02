@@ -1,7 +1,7 @@
 import { prisma } from "@remarka/db";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
-import { toBookShowcaseDTO } from "@/lib/books";
+import { fetchBookShowcase, isBookVisibleToViewer } from "@/lib/server/bookView";
 
 interface RouteContext {
   params: Promise<{ bookId: string }>;
@@ -26,31 +26,10 @@ export async function GET(_request: Request, context: RouteContext) {
   if (!book) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
-  if (!book.isPublic && book.ownerUserId !== authUser?.id) {
+  if (!isBookVisibleToViewer(book, authUser ? { id: authUser.id } : null)) {
     return NextResponse.json({ error: "Book not found" }, { status: 404 });
   }
 
-  const artifact = await prisma.bookSummaryArtifact.findUnique({
-    where: {
-      bookId_kind_key: {
-        bookId,
-        kind: "book_brief",
-        key: "showcase_v2",
-      },
-    },
-    select: {
-      bookId: true,
-      summary: true,
-      metadataJson: true,
-      updatedAt: true,
-    },
-  });
-
-  if (!artifact) {
-    return NextResponse.json({ item: null });
-  }
-
-  return NextResponse.json({
-    item: toBookShowcaseDTO(artifact),
-  });
+  const showcase = await fetchBookShowcase(bookId);
+  return NextResponse.json({ item: showcase });
 }

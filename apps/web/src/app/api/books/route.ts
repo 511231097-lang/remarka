@@ -21,20 +21,24 @@ import {
 import type { Prisma } from "@prisma/client";
 import { NextResponse } from "next/server";
 import { resolveAuthUser } from "@/lib/authUser";
-import { toBookCardDTO, toBookCoreDTO } from "@/lib/books";
+import { toBookCoreDTO } from "@/lib/books";
+import {
+  LibraryRequiresAuthError,
+  listCatalogBooks,
+  parseCatalogScope,
+  parseCatalogSort,
+} from "@/lib/server/catalog";
 import { MultipartUploadError, parseStreamingMultipart, type TempUploadedFile } from "@/lib/streamingMultipart";
 
-const DEFAULT_PAGE_SIZE = 10;
-const MAX_PAGE_SIZE = 50;
 const DEFAULT_IMPORT_MAX_FILE_BYTES = 50 * 1024 * 1024;
 const DEFAULT_IMPORT_MAX_ZIP_UNCOMPRESSED_BYTES = 50 * 1024 * 1024;
 const DEFAULT_LOCAL_BLOB_ROOT = "/tmp/remarka-imports";
 const DEFAULT_BOOKS_S3_REGION = "us-east-1";
 const DEFAULT_BOOKS_S3_KEY_PREFIX = "remarka/books";
 
-function parsePositiveInt(value: string | null, fallback: number): number {
+function parsePositiveIntOrNull(value: string | null): number | null {
   const parsed = Number.parseInt(String(value || ""), 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
   return parsed;
 }
 
@@ -73,16 +77,6 @@ function resolveUploadFormat(fileName: string): BookFormat | null {
   if (detected) return detected;
   if (fileName.toLowerCase().endsWith(".zip")) return "fb2_zip";
   return null;
-}
-
-function parseScope(value: string | null): "explore" | "library" {
-  if (value === "library") return "library";
-  if (value === "favorites") return "library";
-  return "explore";
-}
-
-function parseSort(value: string | null): "recent" | "popular" {
-  return value === "popular" ? "popular" : "recent";
 }
 
 function resolveMimeType(format: BookFormat, fileType: string): string {
@@ -166,93 +160,25 @@ function resolveBooksBlobStore(): BlobStore {
 
 export async function GET(request: Request) {
   const { searchParams } = new URL(request.url);
-  const scope = parseScope(searchParams.get("scope"));
+  const scope = parseCatalogScope(searchParams.get("scope"));
   const authUser = await resolveAuthUser();
-  if (scope === "library" && !authUser) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
 
-  const viewerUserId = authUser?.id || "__anonymous__";
-  const sort = parseSort(searchParams.get("sort"));
-  const q = String(searchParams.get("q") || "").trim();
-
-  const page = parsePositiveInt(searchParams.get("page"), 1);
-  const pageSize = Math.min(parsePositiveInt(searchParams.get("pageSize"), DEFAULT_PAGE_SIZE), MAX_PAGE_SIZE);
-  const skip = (page - 1) * pageSize;
-
-  const andFilters: Prisma.BookWhereInput[] = [];
-  andFilters.push({ analysisStatus: "completed" });
-
-  if (scope === "library") {
-    andFilters.push({
-      OR: [{ ownerUserId: authUser!.id }, { likes: { some: { userId: authUser!.id } } }],
+  try {
+    const result = await listCatalogBooks({
+      scope,
+      viewer: authUser ? { id: authUser.id } : null,
+      q: searchParams.get("q"),
+      sort: parseCatalogSort(searchParams.get("sort")),
+      page: parsePositiveIntOrNull(searchParams.get("page")),
+      pageSize: parsePositiveIntOrNull(searchParams.get("pageSize")),
     });
-  } else {
-    andFilters.push({ isPublic: true });
+    return NextResponse.json(result);
+  } catch (error) {
+    if (error instanceof LibraryRequiresAuthError) {
+      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+    }
+    throw error;
   }
-
-  if (q) {
-    andFilters.push({
-      OR: [
-        { title: { contains: q, mode: "insensitive" } },
-        { author: { contains: q, mode: "insensitive" } },
-        { owner: { name: { contains: q, mode: "insensitive" } } },
-        { owner: { email: { contains: q, mode: "insensitive" } } },
-      ],
-    });
-  }
-
-  const where: Prisma.BookWhereInput =
-    andFilters.length > 1
-      ? { AND: andFilters }
-      : andFilters[0] || {};
-
-  const orderBy: Prisma.BookOrderByWithRelationInput[] =
-    sort === "popular"
-      ? [{ likes: { _count: "desc" } }, { createdAt: "desc" }]
-      : [{ createdAt: "desc" }];
-
-  const [total, rows] = await prisma.$transaction([
-    prisma.book.count({ where }),
-    prisma.book.findMany({
-      where,
-      orderBy,
-      skip,
-      take: pageSize,
-      include: {
-        owner: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            image: true,
-          },
-        },
-        likes: {
-          where: {
-            userId: viewerUserId,
-          },
-          select: {
-            bookId: true,
-          },
-        },
-        _count: {
-          select: {
-            likes: true,
-          },
-        },
-      },
-    }),
-  ]);
-
-  const cards = rows.map((row) => toBookCardDTO(row, authUser?.id || null));
-
-  return NextResponse.json({
-    items: cards,
-    page,
-    pageSize,
-    total,
-  });
 }
 
 export async function POST(request: Request) {

@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { motion } from "motion/react";
 import { BookmarkPlus, ChevronDown, ChevronLeft, ChevronRight, Search, Upload } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { type BookCardDTO } from "@/lib/books";
 import { addBookToLibrary, listBooks, removeBookFromLibrary } from "@/lib/booksClient";
 import { BookGalleryCard } from "@/components/BookGalleryCard";
@@ -11,7 +11,8 @@ import { appendBookDetailSource } from "@/lib/bookDetailNavigation";
 
 type SortBy = "recent" | "popular";
 
-const ITEMS_PER_PAGE = 10;
+export const EXPLORE_ITEMS_PER_PAGE = 10;
+const ITEMS_PER_PAGE = EXPLORE_ITEMS_PER_PAGE;
 const SEARCH_DEBOUNCE_MS = 350;
 const CATEGORIES = [
   "Все жанры",
@@ -32,21 +33,34 @@ function resolveBooksCountLabel(count: number): string {
   return "книг";
 }
 
-interface ExploreProps {
-  isAuthenticated?: boolean;
+export interface ExploreInitialData {
+  items: BookCardDTO[];
+  total: number;
+  page: number;
+  sort: SortBy;
+  q: string;
 }
 
-export function Explore({ isAuthenticated = false }: ExploreProps) {
-  const [sortBy, setSortBy] = useState<SortBy>("popular");
-  const [searchInput, setSearchInput] = useState("");
-  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
-  const [currentPage, setCurrentPage] = useState(1);
+interface ExploreProps {
+  isAuthenticated?: boolean;
+  initialData?: ExploreInitialData;
+}
+
+export function Explore({ isAuthenticated = false, initialData }: ExploreProps) {
+  const [sortBy, setSortBy] = useState<SortBy>(initialData?.sort ?? "popular");
+  const [searchInput, setSearchInput] = useState(initialData?.q ?? "");
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState(initialData?.q ?? "");
+  const [currentPage, setCurrentPage] = useState(initialData?.page ?? 1);
   const [activeCategory, setActiveCategory] = useState("Все жанры");
   const [libraryPendingIds, setLibraryPendingIds] = useState<Set<string>>(new Set());
-  const [books, setBooks] = useState<BookCardDTO[]>([]);
-  const [total, setTotal] = useState(0);
-  const [loading, setLoading] = useState(true);
+  const [books, setBooks] = useState<BookCardDTO[]>(initialData?.items ?? []);
+  const [total, setTotal] = useState(initialData?.total ?? 0);
+  const [loading, setLoading] = useState(!initialData);
   const [error, setError] = useState<string | null>(null);
+  // SSR-hydrate skip: первый useEffect не делает client-fetch если уже есть
+  // initialData с теми же query-params, что и первый рендер. Любое изменение
+  // sort/page/searchQuery дёргает свежий fetch как обычно.
+  const skipNextLoadRef = useRef(Boolean(initialData));
 
   const totalPages = Math.max(1, Math.ceil(total / ITEMS_PER_PAGE));
 
@@ -63,6 +77,10 @@ export function Explore({ isAuthenticated = false }: ExploreProps) {
   }, [searchInput]);
 
   useEffect(() => {
+    if (skipNextLoadRef.current) {
+      skipNextLoadRef.current = false;
+      return;
+    }
     let active = true;
     async function load() {
       setLoading(true);
