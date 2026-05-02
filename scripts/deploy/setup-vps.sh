@@ -89,8 +89,13 @@ ENV_FILE="$APP_HOME/shared/env/${ROLE}.env"
 if [[ ! -e "$ENV_FILE" ]]; then
   install -o "$APP_USER" -g "$APP_USER" -m 600 /dev/null "$ENV_FILE"
   cat >"$ENV_FILE" <<'EOF'
-# Fill in real values. See repo: scripts/deploy/.env.production.example
-# This file is loaded by systemd via EnvironmentFile=
+# This file is loaded by systemd via EnvironmentFile=.
+#
+# DO NOT edit by hand: the deploy pipeline renders it from GitHub-managed
+# secrets and variables on every push. See docs/deployment.md §6 for the
+# full env management flow. Only relevant case for manual edits is incident
+# response when CI is down — and even then, push the same value back to
+# GitHub afterwards or it will get clobbered on the next deploy.
 EOF
   chown "$APP_USER:$APP_USER" "$ENV_FILE"
   chmod 600 "$ENV_FILE"
