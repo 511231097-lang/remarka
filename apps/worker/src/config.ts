@@ -195,7 +195,12 @@ export const workerConfig = {
     baseUrl: String(process.env.SHOWCASE_INTERNAL_API_BASE_URL || "http://web:3000")
       .trim()
       .replace(/\/+$/, ""),
-    token: getSecretEnv("INTERNAL_WORKER_TOKEN", "remarka-internal-dev-token"),
+    // Optional in production: only the showcase-builder flow needs this
+    // token, and SHOWCASE_BUILD_ENABLED=false right now (UI shows
+    // placeholders). Keep it required in dev compose by falling back to
+    // the dev sentinel when absent — matches web's runtimeEnv.ts behavior.
+    // See web equivalent in apps/web/src/lib/runtimeEnv.ts.
+    token: getOptionalEnv("INTERNAL_WORKER_TOKEN"),
     timeoutMs: getIntEnv("SHOWCASE_INTERNAL_API_TIMEOUT_MS", 45_000),
     maxRetries: getIntEnv("SHOWCASE_INTERNAL_API_MAX_RETRIES", 2),
   },
